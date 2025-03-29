@@ -1,0 +1,114 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  CASHIER
+  WORKER
+}
+
+enum Status {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+model Branch {
+  id         String    @id @default(uuid())
+  title      String    @unique
+  code       String    @unique @db.VarChar(6)
+  totalSales Int       @default(0)
+  services   Service[]
+  accounts   Account[]
+}
+
+model Account {
+  id       String  @id @default(uuid())
+  username String  @unique @db.VarChar(6)
+  password String
+  name     String
+  email    String? @unique @db.VarChar(255)
+  role     Role[]  @default([WORKER])
+  salary   Int     @default(0)
+  branchId String?
+  branch   Branch? @relation(fields: [branchId], references: [id])
+
+  servicesServed  AvailedService[] @relation("ServedRelation")
+  servicesChecked AvailedService[] @relation("CheckedRelation")
+}
+
+model Service {
+  id String @id @default(uuid())
+
+  title          String           @unique
+  description    String?
+  price          Int              @default(0) // Price per unit
+  branchId       String
+  totalSales     Int              @default(0) // Consider Float
+  branch         Branch           @relation(fields: [branchId], references: [id])
+  AvailedService AvailedService[]
+}
+
+model Customer {
+  id                 String        @id @default(uuid())
+  name               String        @db.VarChar(50)
+  email              String?       @unique @db.VarChar(255)
+  totalPaid          Float         @default(0) // Float seems appropriate
+  nextAppointment    DateTime?
+  transactionHistory Transaction[]
+}
+
+model Voucher {
+  id          String        @id @default(uuid())
+  code        String        @unique
+  value       Int
+  usedAt      DateTime?
+  Transaction Transaction[]
+}
+
+model Transaction {
+  id              String           @id @default(uuid())
+  createdAt       DateTime         @default(now())
+  bookedFor       DateTime         @default(now())
+  customerId      String
+  customer        Customer         @relation(fields: [customerId], references: [id])
+  availedServices AvailedService[]
+  voucherId       String?
+  voucherUsed     Voucher?         @relation(fields: [voucherId], references: [id])
+  discount        Int              @default(0) // Maybe calculated from voucher or applied manually
+  paymentMethod   String
+  grandTotal      Int
+  status          Status           @default(PENDING)
+  branchId        String?
+}
+
+model AvailedService {
+  id            String      @id @default(uuid()) // Unique ID for EACH individual unit availed
+  transactionId String
+  transaction   Transaction @relation(fields: [transactionId], references: [id])
+
+  serviceId String
+  service   Service @relation(fields: [serviceId], references: [id])
+
+  quantity Int @default(1)
+
+  price Int
+
+  checkedById String?
+  checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
+
+  servedById String?
+  servedBy   Account? @relation("ServedRelation", fields: [servedById], references: [id])
+}
