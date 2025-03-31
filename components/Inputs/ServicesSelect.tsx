@@ -3,31 +3,33 @@
 import { ChevronDown } from "lucide-react";
 import Spinner from "../ui/Spinner";
 import { useDispatch, useSelector } from "react-redux";
-import { cashierActions } from "@/lib/Slices/CashierSlice";
-import { RootState } from "@/lib/reduxStore";
+import { cashierActions } from "@/lib/Slices/CashierSlice"; // Action creators
+import { RootState } from "@/lib/reduxStore"; // Root state type
 import { useEffect, useRef, useState } from "react";
 
+// Type for the raw service data fetched and passed as props
 type ServicesProps = {
   id: string;
-  title: string;
+  title: string; // The data fetched has 'title'
   price: number;
-  branchId: string;
+  branchId: string; // Include if needed, otherwise optional
 };
 
 export default function ServicesSelect({
   isLoading,
   data,
-  error, // Add error prop
+  error,
 }: {
   isLoading: boolean;
-  data: ServicesProps[] | null;
-  error?: string; // Make error optional
+  data: ServicesProps[] | null; // Expecting array of fetched services or null
+  error?: string;
 }) {
   const dispatch = useDispatch();
-  // Removed selectedService state as it wasn't directly used for display
   const [showServices, setShowServices] = useState(false);
-  const dropdownRef = useRef<HTMLDivElement>(null); // Reference for dropdown container
+  const dropdownRef = useRef<HTMLDivElement>(null);
 
+  // Select the services already added to the transaction from the cashier state
+  // Note: Items in servicesAvailed now have the structure { id, name, price, quantity }
   const servicesAvailed = useSelector(
     (state: RootState) => state.cashier.servicesAvailed,
   );
@@ -36,36 +38,60 @@ export default function ServicesSelect({
     setShowServices((prev) => !prev);
   }
 
+  // This function is called when a service from the *dropdown list* is clicked
   function handleSelectingService(service: ServicesProps) {
-    // Check if service already exists to avoid duplicates or implement quantity increase
-    const existingService = servicesAvailed.find((s) => s.id === service.id);
-    if (!existingService) {
-      // Only add if not already selected
-      dispatch(
-        cashierActions.selectingService({
-          id: service.id,
-          title: service.title,
-          price: service.price,
-        }),
-      );
-    } else {
-      // Optional: dispatch an action to increase quantity or show a message
-      console.log("Service already selected");
-    }
+    // service has { id, title, price, branchId }
+
+    // Check if the service (by ID) is already in the availed list in the Redux state
+    const isAlreadySelected = servicesAvailed.some(
+      (availed) => availed.id === service.id,
+    );
+
+    // Only dispatch the action if the service is NOT already selected.
+    // The reducer now handles adding/removing (toggle behavior from original slice)
+    // or just adding (if the original slice's toggle wasn't intended).
+    // The current slice code removes if existing, adds if new.
+    dispatch(
+      cashierActions.selectingService({
+        // Pass the necessary info for the reducer
+        id: service.id,
+        title: service.title, // Pass 'title', reducer maps it to 'name'
+        price: service.price,
+      }),
+    );
+
+    // Optional: Close dropdown after selection
+
+    // Note: The original component code prevented re-selection via the UI logic below.
+    // The updated reducer logic *also* handles this (removes if existing).
+    // If you *only* want to add and never remove by clicking the dropdown,
+    // you would add the `if (!isAlreadySelected)` check back here.
+    // Example:
+    // if (!isAlreadySelected) {
+    //    dispatch(cashierActions.selectingService({...}));
+    // } else {
+    //    console.log("Service already selected, not dispatching add/remove action again from dropdown.");
+    // }
   }
 
-  // Update total whenever `servicesAvailed` changes (keeping as is)
+  // *** REMOVED useEffect for handlingTotals ***
+  // Total calculation is now handled directly within the CashierSlice reducers
+  // (selectingService, handleServicesQuantity, setDiscount) whenever relevant state changes.
+  /*
   useEffect(() => {
+    // THIS IS NO LONGER NEEDED
     const total = servicesAvailed.reduce(
       (sum, service) => sum + service.price * service.quantity,
       0,
     );
     dispatch(
-      cashierActions.handlingTotals({ identifier: "grandTotal", value: total }),
+      // This action/reducer part was likely removed or changed in the slice
+      // cashierActions.handlingTotals({ identifier: "grandTotal", value: total }),
     );
   }, [servicesAvailed, dispatch]);
+  */
 
-  // Handle clicks outside dropdown (keeping as is)
+  // Handle clicks outside dropdown (Keep this as is)
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (
@@ -79,12 +105,11 @@ export default function ServicesSelect({
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, []);
+  }, []); // Empty dependency array is correct here
 
-  const hasError = !!error; // Boolean check
+  const hasError = !!error;
 
   return (
-    // Use the ref on the main container div
     <div className="relative mx-auto mt-8 w-[90%]" ref={dropdownRef}>
       <label
         htmlFor="service-select-button"
@@ -94,68 +119,74 @@ export default function ServicesSelect({
       </label>
       {isLoading ? (
         <div className="flex h-[50px] w-full items-center justify-center rounded-md border-2 border-gray-300 bg-gray-100 p-2 shadow-inner outline-none">
-          <Spinner />
+          <Spinner /> {/* Loading indicator */}
         </div>
       ) : (
         <>
-          {/* The clickable button to open dropdown */}
+          {/* Button to toggle dropdown */}
           <button
             id="service-select-button"
-            type="button" // Important for forms
-            // Apply error styling conditionally
+            type="button"
             className={`flex h-[50px] w-full cursor-pointer items-center justify-between rounded-md border-2 ${
-              hasError ? "border-red-500" : "border-customDarkPink"
+              hasError ? "border-red-500" : "border-customDarkPink" // Error styling
             } bg-white p-2 text-left shadow-custom outline-none focus:ring-2 focus:ring-blue-300`}
             onClick={handleShowingServices}
             aria-haspopup="listbox"
             aria-expanded={showServices}
           >
             <span className="text-gray-700">
-              {/* Maybe show count of selected services? */}
+              {/* Display count of selected services */}
               {servicesAvailed.length > 0
                 ? `${servicesAvailed.length} service(s) selected`
                 : "Select Service(s)..."}
             </span>
             <ChevronDown
               className={`transform transition-transform duration-150 ${
-                showServices ? "rotate-180" : ""
+                showServices ? "rotate-180" : "" // Rotate arrow icon
               }`}
               aria-hidden="true"
             />
           </button>
 
-          {/* The dropdown list */}
+          {/* Dropdown List */}
           {showServices && (
             <div
               className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border-2 border-customDarkPink bg-white shadow-lg"
               role="listbox"
             >
+              {/* Check if data exists and has items */}
               {data && data.length > 0 ? (
                 data.map((service) => {
-                  // Check if the service is already in the availed list
+                  // Map over the fetched service data
+                  // Check if this service ID is already in the availed list in Redux state
                   const isSelected = servicesAvailed.some(
                     (availed) => availed.id === service.id,
                   );
                   return (
                     <div
-                      key={service.id}
+                      key={service.id} // Use service ID as key
                       role="option"
-                      aria-selected={isSelected}
-                      // Apply different styling if already selected, make it non-clickable or handle differently
+                      aria-selected={isSelected} // Indicate selection state for accessibility
+                      // Apply styling based on selection state
                       className={`cursor-pointer p-2 text-sm ${
                         isSelected
-                          ? "cursor-not-allowed bg-customDarkPink/20 text-gray-500" // Style if selected
+                          ? "bg-customDarkPink/20 text-gray-500" // Style if selected (less emphasis)
                           : "hover:bg-customDarkPink/80 hover:text-white" // Style on hover if not selected
                       }`}
-                      onClick={() =>
-                        !isSelected && handleSelectingService(service)
-                      } // Only allow selection if not already selected
+                      // Call handler when an item is clicked
+                      onClick={() => handleSelectingService(service)}
+                      // Original code prevented clicking if already selected:
+                      // onClick={() => !isSelected && handleSelectingService(service)}
+                      // The current reducer handles the toggle/removal, so clicking again will deselect.
+                      // If you DON'T want deselection by clicking the dropdown, use the commented-out onClick.
                     >
+                      {/* Display service title (from fetched data) and price */}
                       {service.title} - ₱{service.price.toLocaleString()}
                     </div>
                   );
                 })
               ) : (
+                // Display message if no services are available in the fetched data
                 <div className="p-2 text-center text-sm text-gray-500">
                   No services available.
                 </div>
@@ -164,7 +195,7 @@ export default function ServicesSelect({
           )}
         </>
       )}
-      {/* Display error message below */}
+      {/* Display error message below the component if provided */}
       {error && <p className="mt-1 pl-1 text-xs text-red-600">{error}</p>}
     </div>
   );

@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 export default function LoginPage() {
   const router = useRouter();
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [inputs, setInputs] = useState({
     username: "",
     password: "",
@@ -25,9 +26,10 @@ export default function LoginPage() {
   }
 
   function handleLoggingIn() {
+    setIsSubmitting(true);
+
     if (inputs.username.trim() !== "" && inputs.password.trim() !== "") {
       const formData = new FormData();
-
       formData.append("username", inputs.username);
       formData.append("password", inputs.password);
 
@@ -37,6 +39,7 @@ export default function LoginPage() {
         }
       });
     }
+    setIsSubmitting(false);
   }
 
   return (
@@ -85,7 +88,9 @@ export default function LoginPage() {
           </div>
 
           <div className="flex justify-center pb-4">
-            <Button onClick={handleLoggingIn}>login</Button>
+            <Button onClick={handleLoggingIn} disabled={isSubmitting}>
+              login
+            </Button>
           </div>
         </form>
       </dialog>

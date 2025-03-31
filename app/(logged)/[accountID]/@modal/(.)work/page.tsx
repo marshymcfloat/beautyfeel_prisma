@@ -1,18 +1,18 @@
 "use client";
 
-import Button from "@/components/Buttons/Button";
+import Button from "@/components/Buttons/Button"; // Adjust path if needed
 import DialogBackground from "@/components/Dialog/DialogBackground";
 import DialogForm from "@/components/Dialog/DialogForm";
 import DialogTitle from "@/components/Dialog/DialogTitle";
-import { getActiveTransactions } from "@/lib/ServerAction"; // Assuming this fetches transactions with status PENDING
+import { getActiveTransactions } from "@/lib/ServerAction";
 import { useState, useEffect, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
-import { useParams, useRouter } from "next/navigation"; // Added useRouter
+import { useParams, useRouter } from "next/navigation";
 import { ChevronLeft } from "lucide-react";
 
 // --- Type Definitions (Keep as they are) ---
 type CustomerProp = {
-  email: string | null; // Make email nullable as per schema
+  email: string | null;
   id: string;
   name: string;
 };
@@ -23,13 +23,11 @@ type ServiceProps = {
 };
 
 type AccountInfo = {
-  // Added type for user info included in availedService
   id: string;
   name: string;
 } | null;
 
 type AvailedServicesProps = {
-  // Corrected naming convention and added included relations
   id: string;
   price: number;
   quantity: number;
@@ -37,9 +35,9 @@ type AvailedServicesProps = {
   transactionId: string;
   service: ServiceProps;
   checkedById: string | null;
-  checkedBy: AccountInfo; // Use AccountInfo type
-  servedById: string | null;
-  servedBy: AccountInfo; // Use AccountInfo type
+  checkedBy: AccountInfo;
+  servedById: string | null; // Keep for display/styling info if needed
+  servedBy: AccountInfo; // Keep for display/styling info if needed
 };
 
 type TransactionProps = {
@@ -52,15 +50,15 @@ type TransactionProps = {
   discount: number;
   paymentMethod: string;
   availedServices: AvailedServicesProps[];
-  grandTotal: number; // Ensure this type matches schema if it was Int
-  status: "PENDING" | "DONE" | "CANCELLED"; // Include CANCELLED from schema enum
+  grandTotal: number;
+  status: "PENDING" | "DONE" | "CANCELLED";
 };
 
 // --- Component ---
 
 export default function WorkInterceptedModal() {
-  const { accountID: accountId } = useParams(); // Rename for consistency
-  const router = useRouter(); // For closing the modal
+  const { accountID: accountId } = useParams();
+  const router = useRouter();
   const [fetchedTransactions, setFetchedTransactions] = useState<
     TransactionProps[] | null
   >(null);
@@ -68,50 +66,46 @@ export default function WorkInterceptedModal() {
     useState<TransactionProps | null>(null);
   const [loading, setLoading] = useState(true);
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [processingServices, setProcessingServices] = useState<Set<string>>(
-    new Set(),
-  ); // serviceId -> isProcessing
+  // --- STATE FOR PROCESSING CHECK/UNCHECK ACTIONS ---
+  const [processingCheckActions, setProcessingCheckActions] = useState<
+    Set<string>
+  >(
+    new Set(), // availedServiceId -> isProcessing Check/Uncheck
+  );
 
-  // --- Socket Connection ---
+  // --- Socket Connection (Keep as is) ---
   useEffect(() => {
-    // Ensure accountId is available and is a string
     if (typeof accountId !== "string") {
       console.error("Account ID is missing or invalid.");
-      // Handle error appropriately, maybe redirect or show message
-      // router.back(); // Example: Go back if no accountID
+      router.back(); // Go back if no accountID
       return;
     }
-
     const newSocket = io("http://localhost:4000");
     setSocket(newSocket);
     console.log("Socket connecting...");
-
-    newSocket.on("connect", () => {
-      console.log("Socket connected:", newSocket.id);
-    });
-
-    newSocket.on("disconnect", () => {
-      console.log("Socket disconnected");
-    });
-
+    newSocket.on("connect", () =>
+      console.log("Socket connected:", newSocket.id),
+    );
+    newSocket.on("disconnect", () => console.log("Socket disconnected"));
     newSocket.on("connect_error", (err) => {
       console.error("Socket connection error:", err);
       alert(`Failed to connect to server: ${err.message}`);
     });
-
     return () => {
       console.log("Socket disconnecting...");
       newSocket.disconnect();
       setSocket(null);
     };
-  }, [accountId]); // Add accountId dependency
+  }, [accountId, router]); // Added router to dependencies
 
   // --- Update State based on Socket Events ---
+  // This needs to handle updates originating from ANY source (checking, serving, completion)
   const handleAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
       console.log("Received availedServiceUpdated:", updatedAvailedService);
-      // Stop processing indicator for this service
-      setProcessingServices((prev) => {
+
+      // Stop processing indicator *for check/uncheck actions* if this update matches
+      setProcessingCheckActions((prev) => {
         const newSet = new Set(prev);
         newSet.delete(updatedAvailedService.id);
         return newSet;
@@ -150,89 +144,76 @@ export default function WorkInterceptedModal() {
       });
     },
     [],
-  ); // No dependencies needed as it uses state setters
+  );
 
+  // Keep transaction completion handler
   const handleTransactionCompletion = useCallback(
     (completedTransaction: TransactionProps) => {
       console.log("Received transactionCompleted:", completedTransaction);
       alert(
         `Transaction ${completedTransaction.id} for ${completedTransaction.customer.name} is completed!`,
       );
-
-      // Remove completed transaction from the list
       setFetchedTransactions(
         (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
       );
-
-      // If the completed transaction was selected, deselect it
       setSelectedTransaction((prev) =>
         prev?.id === completedTransaction.id ? null : prev,
       );
     },
     [],
-  ); // Empty dependency array
+  );
 
   // --- Socket Event Listeners ---
   useEffect(() => {
     if (!socket) return;
 
-    // --- Success Listener ---
     socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
-    socket.on("transactionCompleted", handleTransactionCompletion); // Listen for completion
+    socket.on("transactionCompleted", handleTransactionCompletion);
 
-    // --- Error Listeners ---
-    const handleServiceError = (error: {
+    // --- Error Listeners for Check/Uncheck Actions ---
+    const handleCheckError = (error: {
       availedServiceId: string;
       message: string;
     }) => {
-      console.error("Service Error:", error);
+      console.error("Service Check/Uncheck Error:", error);
       alert(
         `Error for service item ${error.availedServiceId}: ${error.message}`,
       );
-      // Stop processing indicator on error
-      setProcessingServices((prev) => {
+      setProcessingCheckActions((prev) => {
         const newSet = new Set(prev);
         newSet.delete(error.availedServiceId);
         return newSet;
       });
     };
 
-    socket.on("serviceCheckError", handleServiceError);
-    socket.on("serviceUncheckError", handleServiceError);
-    socket.on("serviceMarkServedError", handleServiceError);
-    socket.on("serviceUnmarkServedError", handleServiceError);
+    socket.on("serviceCheckError", handleCheckError);
+    socket.on("serviceUncheckError", handleCheckError);
+    // No longer need listeners for serve/unserve errors HERE
 
-    // Cleanup listeners on component unmount or socket change
     return () => {
       socket.off("availedServiceUpdated", handleAvailedServiceUpdate);
       socket.off("transactionCompleted", handleTransactionCompletion);
-
-      socket.off("serviceCheckError", handleServiceError);
-      socket.off("serviceUncheckError", handleServiceError);
-      socket.off("serviceMarkServedError", handleServiceError);
-      socket.off("serviceUnmarkServedError", handleServiceError);
+      socket.off("serviceCheckError", handleCheckError);
+      socket.off("serviceUncheckError", handleCheckError);
     };
-  }, [socket, handleAvailedServiceUpdate, handleTransactionCompletion]); // Add handlers as dependencies
+  }, [socket, handleAvailedServiceUpdate, handleTransactionCompletion]);
 
-  // --- Fetch Initial Data ---
+  // --- Fetch Initial Data (Keep as is) ---
   useEffect(() => {
     async function fetchTransactions() {
       setLoading(true);
       try {
-        // Ensure accountId is a string before fetching
         if (typeof accountId === "string") {
-          const data = await getActiveTransactions(); // Assuming this fetches PENDING transactions
-          // Convert date strings to Date objects
+          const data = await getActiveTransactions();
           const processedData = data.map((tx) => ({
             ...tx,
             createdAt: new Date(tx.createdAt),
             bookedFor: new Date(tx.bookedFor),
           }));
           setFetchedTransactions(processedData);
-          console.log("Fetched Transactions:", processedData);
         } else {
           console.error("Cannot fetch transactions: Account ID is invalid.");
-          setFetchedTransactions(null); // Clear data if ID is bad
+          setFetchedTransactions(null);
         }
       } catch (error) {
         console.error("Error fetching transactions:", error);
@@ -241,85 +222,47 @@ export default function WorkInterceptedModal() {
         setLoading(false);
       }
     }
-
     fetchTransactions();
-  }, [accountId]); // Re-fetch if accountId changes
+  }, [accountId]);
 
   // --- UI Event Handlers ---
-
   function handleSelectTransaction(transaction: TransactionProps) {
     setSelectedTransaction(transaction);
-    console.log("Selected Transaction:", transaction);
   }
 
   function handleCloseDetails() {
     setSelectedTransaction(null);
   }
 
-  // --- Check/Uncheck Handler ---
+  // --- Check/Uncheck Handler (Simplified) ---
   function handleServiceCheckToggle(
     availedService: AvailedServicesProps,
     isChecked: boolean, // The desired state from the checkbox click
   ) {
-    if (!socket || !selectedTransaction || typeof accountId !== "string")
-      return;
+    if (!socket || typeof accountId !== "string") return;
 
     const { id: availedServiceId, transactionId } = availedService;
 
-    // Prevent action if already processing
-    if (processingServices.has(availedServiceId)) return;
+    // Prevent action if already processing this specific check/uncheck
+    if (processingCheckActions.has(availedServiceId)) return;
 
-    setProcessingServices((prev) => new Set(prev).add(availedServiceId));
+    setProcessingCheckActions((prev) => new Set(prev).add(availedServiceId));
 
     if (isChecked) {
-      // Trying to check the box
-      if (
-        availedService.checkedById &&
-        availedService.checkedById !== accountId
-      ) {
-        alert(
-          `Already checked by ${availedService.checkedBy?.name ?? "another user"}.`,
-        );
-        setProcessingServices((prev) => {
-          const newSet = new Set(prev);
-          newSet.delete(availedServiceId);
-          return newSet;
-        });
-        return; // Prevent emitting
-      }
-      if (availedService.checkedById === accountId) {
-        console.log("Already checked by you."); // No need to emit again
-        setProcessingServices((prev) => {
-          const newSet = new Set(prev);
-          newSet.delete(availedServiceId);
-          return newSet;
-        });
-        return;
-      }
-
+      // --- Trying to CHECK the box ---
+      // No need to check if already checked by self - UI should reflect this.
+      // Check if checked by *someone else* is handled by the backend atomically.
       console.log(`Emitting checkService for ${availedServiceId}`);
       socket.emit("checkService", {
-        // CORRECT EVENT NAME
         availedServiceId,
         transactionId,
         accountId: accountId,
       });
     } else {
-      // Trying to uncheck the box
-      if (availedService.checkedById !== accountId) {
-        console.log("Cannot uncheck, not checked by you.");
-        // User might be clicking rapidly, or state is slightly out of sync.
-        // Don't emit if they aren't the checker.
-        setProcessingServices((prev) => {
-          const newSet = new Set(prev);
-          newSet.delete(availedServiceId);
-          return newSet;
-        });
-        return;
-      }
+      // --- Trying to UNCHECK the box ---
+      // Backend handles ensuring only the owner can uncheck.
       console.log(`Emitting uncheckService for ${availedServiceId}`);
       socket.emit("uncheckService", {
-        // CORRECT EVENT NAME
         availedServiceId,
         transactionId,
         accountId: accountId,
@@ -327,121 +270,96 @@ export default function WorkInterceptedModal() {
     }
   }
 
-  // --- Mark/Unmark Served Handlers ---
-  function handleMarkServed(availedService: AvailedServicesProps) {
-    if (!socket || !selectedTransaction || typeof accountId !== "string")
-      return;
-    const { id: availedServiceId, transactionId } = availedService;
-
-    if (processingServices.has(availedServiceId)) return;
-    if (availedService.servedById === accountId) {
-      console.log("Already marked as served by you.");
-      return; // Idempotent or prevent unnecessary emits
-    }
-    // Optional: Check if it's already served by someone else?
-    // if (availedService.servedById && availedService.servedById !== accountId) {
-    //     alert(`Already marked served by ${availedService.servedBy?.name ?? 'another user'}. Cannot change.`);
-    //     return;
-    // }
-
-    setProcessingServices((prev) => new Set(prev).add(availedServiceId));
-    console.log(`Emitting markServiceServed for ${availedServiceId}`);
-    socket.emit("markServiceServed", {
-      // CORRECT EVENT NAME
-      availedServiceId,
-      transactionId,
-      accountId: accountId, // The user taking the action is the server
-    });
-  }
-
-  function handleUnmarkServed(availedService: AvailedServicesProps) {
-    if (!socket || !selectedTransaction || typeof accountId !== "string")
-      return;
-    const { id: availedServiceId, transactionId } = availedService;
-
-    if (processingServices.has(availedServiceId)) return;
-
-    // IMPORTANT: Only allow unmarking if served *by the current user*
-    if (availedService.servedById !== accountId) {
-      alert("You cannot unmark a service you didn't mark as served.");
-      return;
-    }
-
-    setProcessingServices((prev) => new Set(prev).add(availedServiceId));
-    console.log(`Emitting unmarkServiceServed for ${availedServiceId}`);
-    socket.emit("unmarkServiceServed", {
-      // CORRECT EVENT NAME
-      availedServiceId,
-      transactionId,
-      accountId: accountId, // User performing the action
-    });
-  }
-
   // --- Checkbox Disabled Logic ---
   function isCheckboxDisabled(service: AvailedServicesProps): boolean {
-    // Disable if it's currently being processed
-    if (processingServices.has(service.id)) return true;
+    // Disable if a check/uncheck action is currently being processed for this item
+    if (processingCheckActions.has(service.id)) return true;
     // Disable if it's checked by *someone else*
     if (service.checkedById && service.checkedById !== accountId) return true;
-    // Disable if it's already marked as served (optional, maybe allow unchecking even if served?)
-    // if (service.servedById) return true;
+    // Maybe disable if served? Decide based on workflow. If you can uncheck even if served:
+    // return false;
+    // If checking/unchecking is locked once served:
+    if (service.servedById) return true;
+
     return false;
   }
 
-  // --- Mark Served Button Disabled Logic ---
-  function isMarkServedDisabled(service: AvailedServicesProps): boolean {
-    // Disable if processing
-    if (processingServices.has(service.id)) return true;
-    // Disable if already served by the current user (or anyone, depending on rules)
-    if (service.servedById === accountId) return true;
-    // Maybe disable if not checked by the current user? Depends on workflow.
-    // if (service.checkedById !== accountId) return true;
-    return false;
-  }
+  // --- Determine Background Color based on Check/Served Status ---
+  function getServiceBackgroundColor(service: AvailedServicesProps): string {
+    // Base color for available items using custom colors
+    const baseColor = "bg-customBlack text-customOffWhite"; // Dark base like screenshot
 
-  // --- Unmark Served Button Disabled Logic ---
-  function isUnmarkServedDisabled(service: AvailedServicesProps): boolean {
-    // Disable if processing
-    if (processingServices.has(service.id)) return true;
-    // Disable if *not* served by the current user
-    if (service.servedById !== accountId) return true;
-    return false;
+    if (processingCheckActions.has(service.id)) {
+      // Use a neutral processing state
+      return "animate-pulse bg-customGray text-customBlack opacity-70";
+    }
+    if (service.servedById) {
+      // Use a distinct success color (can be standard green or a custom one if defined)
+      // Sticking to a standard green variant for clarity
+      return "bg-green-600 text-customOffWhite";
+    }
+    if (service.checkedById === accountId) {
+      // Highlight strongly using primary accent color
+      return "bg-customDarkPink text-customOffWhite";
+    }
+    if (service.checkedById) {
+      // Muted state for "checked by other"
+      return "bg-customGray text-customBlack";
+    }
+    return baseColor; // Available state
   }
-
   // --- Render Logic ---
-
   if (loading) {
+    // Use custom colors for loading state
     return (
       <DialogBackground>
-        <DialogForm>
-          <DialogTitle>Loading...</DialogTitle>
+        <DialogForm titleComponent={<DialogTitle>Loading...</DialogTitle>}>
+          <div className="flex h-40 items-center justify-center">
+            <p className="text-customBlack/70">Loading Work Queue...</p>
+          </div>
         </DialogForm>
       </DialogBackground>
     );
   }
 
   return (
-    <DialogBackground>
-      <DialogForm>
-        <DialogTitle>Work List</DialogTitle>
-        <div className="mx-auto mt-4 h-[500px] min-w-[330px] rounded-md border-2 border-customDarkPink md:w-[95%]">
-          {selectedTransaction && (
-            <ChevronLeft
-              onClick={handleCloseDetails}
-              className="absolute left-4 top-4 cursor-pointer"
-            />
-          )}
-
+    // Using onClick on DialogBackground to close is optional
+    <DialogBackground onClick={() => router.back()}>
+      <DialogForm
+        onClose={() => router.back()}
+        titleComponent={
+          // Use custom colors for title area
+          <div className="relative flex items-center justify-center border-b border-customGray pb-3">
+            {selectedTransaction && (
+              <button
+                onClick={handleCloseDetails}
+                className="absolute left-0 top-1/2 -translate-y-1/2 p-2 text-customBlack/60 hover:text-customBlack"
+                aria-label="Back to list"
+              >
+                <ChevronLeft size={24} />
+              </button>
+            )}
+            <DialogTitle>Work Queue</DialogTitle>
+            <button
+              onClick={() => router.back()}
+              className="absolute right-0 top-1/2 -translate-y-1/2 p-2 text-customBlack/50 hover:text-customBlack"
+              aria-label="Close modal"
+            ></button>
+          </div>
+        }
+      >
+        {/* Content container with custom border */}
+        <div className="mx-auto mt-4 h-[500px] min-w-[350px] overflow-hidden rounded-md border-2 border-customDarkPink md:w-[95%] lg:w-[450px]">
           {selectedTransaction ? (
-            <>
-              <div className="sticky top-0 z-10 mb-2 border-b-2 border-customDarkPink p-2">
-                {" "}
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xl font-bold">
-                    {selectedTransaction.customer.name}
-                  </h2>
-                </div>
-                <div className="text-sm">
+            // --- Transaction Details View ---
+            <div className="flex h-full flex-col">
+              {/* Header Section - Using customDarkPink */}
+              <div className="flex-shrink-0 bg-customDarkPink p-4 text-customOffWhite">
+                <h2 className="mb-1 text-lg font-bold">
+                  {selectedTransaction.customer.name}
+                </h2>
+                {/* Lighter text for details on dark pink background */}
+                <div className="text-xs text-customOffWhite/80">
                   <p>
                     <span className="font-semibold">Created: </span>
                     {selectedTransaction.createdAt.toLocaleDateString()}
@@ -456,8 +374,13 @@ export default function WorkInterceptedModal() {
                   </p>
                   <p>
                     <span className="font-semibold">Status: </span>
+                    {/* Use standard status colors here for clarity? Or map them? */}
                     <span
-                      className={`font-medium ${selectedTransaction.status === "PENDING" ? "text-orange-500" : "text-green-500"}`}
+                      className={`font-medium ${
+                        selectedTransaction.status === "PENDING"
+                          ? "text-orange-200" // Lighter orange on dark pink
+                          : "text-green-200" // Lighter green on dark pink
+                      }`}
                     >
                       {selectedTransaction.status}
                     </span>
@@ -465,29 +388,22 @@ export default function WorkInterceptedModal() {
                 </div>
               </div>
 
-              <div className="h-[calc(100%-100px)] overflow-y-auto px-2 pb-2">
+              {/* Services List - Using custom light blue background */}
+              <div className="flex-grow overflow-y-auto bg-customWhiteBlue p-3">
                 {selectedTransaction.availedServices.length === 0 ? (
-                  <p className="mt-4 text-center italic text-gray-500">
+                  <p className="mt-10 text-center italic text-customBlack/60">
                     No services availed for this transaction.
                   </p>
                 ) : (
                   selectedTransaction.availedServices.map((service) => (
+                    // Individual Service Item Card
                     <div
                       key={service.id}
-                      className={`my-2 flex flex-col rounded-md p-2 shadow-custom transition-colors duration-200 ${
-                        processingServices.has(service.id)
-                          ? "animate-pulse bg-gray-300 dark:bg-gray-600"
-                          : service.servedById
-                            ? "bg-green-100 dark:bg-green-900"
-                            : service.checkedById === accountId
-                              ? "bg-blue-100 dark:bg-blue-900"
-                              : service.checkedById
-                                ? "bg-yellow-100 dark:bg-yellow-900"
-                                : "bg-customDarkPink dark:bg-gray-700"
-                      }`}
+                      className={`mb-3 flex flex-col rounded-lg p-3 shadow-custom transition-colors duration-200 ${getServiceBackgroundColor(service)}`}
                     >
+                      {/* Top Row: Checkbox, Title, Price */}
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
+                        <div className="relative flex flex-grow items-center">
                           <input
                             type="checkbox"
                             checked={!!service.checkedById}
@@ -497,14 +413,36 @@ export default function WorkInterceptedModal() {
                                 e.target.checked,
                               )
                             }
-                            className="size-5 accent-customDarkPink disabled:opacity-50"
+                            // Add 'peer' class for the SVG targeting
+                            // Keep appearance-none and basic box styling
+                            // Change checked state: set bg and border to pink
+                            className={`peer relative mr-3 size-5 flex-shrink-0 appearance-none rounded border border-customGray bg-customOffWhite checked:border-customDarkPink checked:bg-customDarkPink focus:outline-none focus:ring-2 focus:ring-customDarkPink/50 focus:ring-offset-1 focus:ring-offset-customWhiteBlue disabled:opacity-50 ${isCheckboxDisabled(service) ? "cursor-not-allowed" : "cursor-pointer"} `}
                             id={`check-${service.id}`}
                             disabled={isCheckboxDisabled(service)}
                             aria-label={`Check service ${service.service.title}`}
                           />
+                          {/* Add the SVG Checkmark Here */}
+                          <div
+                            className={`/* Allows clicking through to the checkbox */ pointer-events-none absolute left-[3px] top-[3px] hidden size-3.5 text-customOffWhite peer-checked:block peer-disabled:text-customGray/50`}
+                          >
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              viewBox="0 0 20 20"
+                              fill="currentColor"
+                              stroke="currentColor"
+                              strokeWidth={1} // Adjust stroke width if needed
+                            >
+                              <path
+                                fillRule="evenodd"
+                                d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                                clipRule="evenodd"
+                              />
+                            </svg>
+                          </div>
+
                           <label
                             htmlFor={`check-${service.id}`}
-                            className="text-lg font-medium"
+                            className={`text-base font-medium ${isCheckboxDisabled(service) ? "" : "cursor-pointer"}`}
                           >
                             {service.service.title}{" "}
                             {service.quantity > 1
@@ -512,148 +450,124 @@ export default function WorkInterceptedModal() {
                               : ""}
                           </label>
                         </div>
-                        <span className="text-sm font-semibold">
-                          ${service.price / 100}{" "}
-                          {/* Assuming price is in cents */}
+                        {/* Text color adjusts based on card background */}
+                        <span className="ml-4 flex-shrink-0 text-sm font-semibold">
+                          &#8369;{service.price}
                         </span>
                       </div>
 
-                      {/* Status Indicators */}
-                      <div className="mt-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 pl-7 text-xs">
-                        {" "}
-                        {/* Indent status */}
+                      {/* Bottom Row: Status Indicators */}
+                      {/* Adjust status text color based on card background */}
+                      <div
+                        className={`mt-1.5 flex justify-between pl-[calc(1.25rem+0.75rem)] text-xs ${service.checkedById ? "text-customOffWhite/70" : "text-customGray"}`}
+                      >
                         <span>
                           Checked by:{" "}
-                          <span className="font-medium">
+                          {/* Adjust name text color based on card background */}
+                          <span
+                            className={`font-medium ${service.checkedById ? "text-customOffWhite" : "text-customLightBlue"}`}
+                          >
                             {service.checkedBy?.name ?? "Nobody"}
                           </span>
                         </span>
                         <span className="text-right">
                           Served by:{" "}
                           <span
-                            className={`font-medium ${service.servedById ? "text-green-700 dark:text-green-300" : "text-gray-500"}`}
+                            className={`font-medium ${
+                              service.servedById
+                                ? "text-green-300" // Keep green distinct for served status
+                                : service.checkedById
+                                  ? "text-customOffWhite"
+                                  : "text-customLightBlue" // Adjust default based on card bg
+                            }`}
                           >
                             {service.servedBy?.name ?? "Not Served"}
                           </span>
                         </span>
                       </div>
-
-                      {/* Action Buttons */}
-                      <div className="mt-2 flex justify-end gap-2 pl-7">
-                        {!service.servedById ? (
-                          <Button
-                            onClick={() => handleMarkServed(service)}
-                            disabled={isMarkServedDisabled(service)}
-                            // The title attribute is standard HTML and should pass through
-                            title={
-                              isMarkServedDisabled(service)
-                                ? processingServices.has(service.id)
-                                  ? "Processing..."
-                                  : "Already served or cannot mark now"
-                                : "Mark as Served"
-                            }
-                            // Default style (invert=false) will be used
-                          >
-                            Mark Served
-                          </Button>
-                        ) : (
-                          <Button
-                            onClick={() => handleUnmarkServed(service)}
-                            disabled={isUnmarkServedDisabled(service)}
-                            // The title attribute is standard HTML and should pass through
-                            title={
-                              isUnmarkServedDisabled(service)
-                                ? processingServices.has(service.id)
-                                  ? "Processing..."
-                                  : "Cannot unmark (not served by you)"
-                                : "Unmark as Served"
-                            }
-                            // Default style (invert=false) will be used, perhaps use invert={true}?
-                            // Or modify Button component later if specific warning style needed
-                            invert={true} // Using invert to make it visually distinct from "Mark Served"
-                          >
-                            Unmark Served
-                          </Button>
-                        )}
-                      </div>
                     </div>
                   ))
                 )}
               </div>
-            </>
+            </div>
           ) : (
-            // --- Transaction List View ---
-            <table className="w-full table-fixed">
-              <thead className="sticky top-0">
-                <tr className="border-b-2 border-customDarkPink">
-                  <th className="w-1/4 px-1 py-2 text-left text-sm font-semibold">
-                    Date
-                  </th>
-                  <th className="w-1/2 px-1 py-2 text-left text-sm font-semibold">
-                    Customer
-                  </th>
-                  <th className="w-1/4 px-1 py-2 text-left text-sm font-semibold">
-                    Status
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {fetchedTransactions && fetchedTransactions.length > 0 ? (
-                  fetchedTransactions.map((transaction) => (
-                    <tr
-                      className="cursor-pointer border-b border-customDarkPink/50 hover:bg-customDarkPink/10 dark:hover:bg-gray-700/50"
-                      key={transaction.id}
-                      onClick={() => handleSelectTransaction(transaction)}
-                      tabIndex={0} // Make it focusable
-                      onKeyDown={(e) =>
-                        e.key === "Enter" &&
-                        handleSelectTransaction(transaction)
-                      } // Allow keyboard navigation
-                    >
-                      <td className="px-1 py-2 text-sm">
-                        {transaction.bookedFor.toLocaleDateString()}
-                      </td>
-                      <td className="max-w-[150px] truncate whitespace-nowrap px-1 py-2 text-sm">
-                        {transaction.customer.name}
-                      </td>
-                      <td
-                        className={`px-1 py-2 text-sm font-medium lowercase ${
-                          transaction.status === "PENDING"
-                            ? "text-orange-500"
-                            : transaction.status === "DONE"
-                              ? "text-green-500"
-                              : "text-red-500" // CANCELLED
-                        }`}
+            // --- Transaction List View - Using Custom Colors ---
+            <div className="h-full overflow-y-auto">
+              <table className="min-w-full table-fixed border-collapse">
+                {/* Use customGray for header background */}
+                <thead className="sticky top-0 z-10 bg-customGray">
+                  <tr>
+                    {/* Use customBlack for header text */}
+                    <th className="w-1/4 border-b border-customGray px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
+                      Date
+                    </th>
+                    <th className="w-1/2 border-b border-customGray px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
+                      Customer
+                    </th>
+                    <th className="w-1/4 border-b border-customGray px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                {/* Use customOffWhite for table body background */}
+                <tbody className="divide-y divide-customGray/50 bg-customOffWhite">
+                  {fetchedTransactions && fetchedTransactions.length > 0 ? (
+                    fetchedTransactions.map((transaction) => (
+                      <tr
+                        // Use customLightBlue for hover
+                        className="cursor-pointer hover:bg-customLightBlue/50"
+                        key={transaction.id}
+                        onClick={() => handleSelectTransaction(transaction)}
+                        tabIndex={0}
+                        onKeyDown={(e) =>
+                          e.key === "Enter" &&
+                          handleSelectTransaction(transaction)
+                        }
                       >
-                        {transaction.status.toLowerCase()}
+                        {/* Use customBlack for cell text */}
+                        <td className="whitespace-nowrap px-4 py-3 text-sm text-customBlack/80">
+                          {transaction.bookedFor.toLocaleDateString()}
+                        </td>
+                        <td className="truncate whitespace-nowrap px-4 py-3 text-sm font-medium text-customBlack">
+                          {transaction.customer.name}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-3 text-sm">
+                          {/* Map status badges to custom colors or keep standard */}
+                          <span
+                            className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold lowercase leading-tight ${
+                              transaction.status === "PENDING"
+                                ? "bg-customDarkPink/20 text-customDarkPink" // Example: Lighter pink bg, dark pink text
+                                : transaction.status === "DONE"
+                                  ? "bg-green-100 text-green-800" // Keep standard green?
+                                  : "bg-red-100 text-red-700"
+                            }`}
+                          >
+                            {transaction.status.toLowerCase()}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td
+                        colSpan={3}
+                        className="py-10 text-center text-sm italic text-customBlack/60"
+                      >
+                        {loading
+                          ? "Loading..."
+                          : "No pending transactions found."}
                       </td>
                     </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td
-                      colSpan={3}
-                      className="py-4 text-center italic text-gray-500"
-                    >
-                      {loading
-                        ? "Loading..."
-                        : "No pending transactions found."}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-        {/* Keep Done button or remove if not needed */}
-        {/* <div className="mt-4 flex justify-around">
-             <Button onClick={() => router.back()}>Close</Button>
-           </div> */}
       </DialogForm>
     </DialogBackground>
   );
 }
-
 /* "use client";
 
 import Button from "@/components/Buttons/Button";

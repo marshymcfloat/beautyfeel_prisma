@@ -1,11 +1,20 @@
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 
+// --- Define the structure for services *added* to the transaction ---
+type AvailedService = {
+  id: string;
+  name: string; // Use 'name' consistently as expected elsewhere
+  price: number;
+  quantity: number;
+};
+
+// --- Define the main state shape ---
 export interface CashierState {
   name: string;
-  date: string;
-  time: string;
-  email: string;
-  servicesAvailed: ServiceProps[];
+  date: string; // Consider storing as Date object or ISO string for easier manipulation
+  time: string; // Consider combining with date or using ISO string
+  email: string | null; // Allow null if email is optional
+  servicesAvailed: AvailedService[]; // Use the correct type here
   serviceType: "single" | "set";
   voucherCode: string;
   serveTime: "now" | "later";
@@ -14,20 +23,32 @@ export interface CashierState {
   totalDiscount: number;
 }
 
-type ServiceProps = {
+// --- Define Payload Action Types ---
+type SelectServicePayload = {
   id: string;
-  title: string;
+  title: string; // Comes in as 'title' from the fetched service list
   price: number;
-  quantity: number;
 };
 
+type UpdateQuantityPayload = {
+  identifier: "inc" | "dec";
+  id: string; // Use ID to identify the service
+};
+
+type SetDiscountPayload = {
+  status: boolean;
+  code: string;
+  value: number;
+};
+
+// --- Initial State ---
 const initialState: CashierState = {
   name: "",
   serviceType: "single",
   serveTime: "now",
   date: "",
   time: "",
-  email: "",
+  email: null, // Use null for optional string fields
   servicesAvailed: [],
   voucherCode: "",
   paymentMethod: "cash",
@@ -35,10 +56,21 @@ const initialState: CashierState = {
   totalDiscount: 0,
 };
 
+// --- Helper function to calculate total ---
+const calculateTotals = (state: CashierState) => {
+  const servicesTotal = state.servicesAvailed.reduce(
+    (sum, service) => sum + service.price * service.quantity,
+    0,
+  );
+  state.grandTotal = servicesTotal - state.totalDiscount;
+};
+
+// --- Create the Slice ---
 export const CashierSlice = createSlice({
   name: "cashier",
   initialState,
   reducers: {
+    // --- Customer Info Reducers ---
     selectCustomerSuggestion(
       state: CashierState,
       action: PayloadAction<string>,
@@ -48,15 +80,12 @@ export const CashierSlice = createSlice({
     setCustomerName(state: CashierState, action: PayloadAction<string>) {
       state.name = action.payload;
     },
-    setEmail(state: CashierState, action: PayloadAction<string>) {
+    setEmail(state: CashierState, action: PayloadAction<string | null>) {
+      // Allow setting to null
       state.email = action.payload;
     },
-    setServiceType(
-      state: CashierState,
-      action: PayloadAction<"single" | "set">,
-    ) {
-      state.serviceType = action.payload;
-    },
+
+    // --- Transaction Settings Reducers ---
     settingServiceTimeOrType<
       K extends keyof Pick<
         CashierState,
@@ -68,59 +97,74 @@ export const CashierSlice = createSlice({
     ) {
       state[action.payload.key] = action.payload.value;
     },
-    selectingService(state, action) {
-      const existingService = state.servicesAvailed.find(
-        (service) => service.title === action.payload.title,
+    setDateTime(
+      state: CashierState,
+      action: PayloadAction<{ date: string; time: string }>,
+    ) {
+      state.date = action.payload.date;
+      state.time = action.payload.time;
+    },
+
+    // --- Service Manipulation Reducers ---
+    selectingService(
+      state: CashierState,
+      action: PayloadAction<SelectServicePayload>,
+    ) {
+      // Find by ID is more reliable
+      const existingServiceIndex = state.servicesAvailed.findIndex(
+        (service) => service.id === action.payload.id,
       );
 
-      if (!existingService) {
-        // Ensure the service object matches ServiceProps structure
-        state.servicesAvailed.push({
+      if (existingServiceIndex === -1) {
+        // Service not found, add it
+        const newService: AvailedService = {
           id: action.payload.id,
-          title: action.payload.title,
+          name: action.payload.title, // Map incoming 'title' to 'name'
           price: action.payload.price,
-          quantity: 1,
-        });
+          quantity: 1, // Initialize quantity
+        };
+        state.servicesAvailed.push(newService);
       } else {
-        // Remove the service if it already exists
-        state.servicesAvailed = state.servicesAvailed.filter(
-          (service) => service.title !== action.payload.title,
-        );
+        // Service found, remove it (toggle behavior based on original code)
+        // If you want to increment quantity instead, modify this else block
+        state.servicesAvailed.splice(existingServiceIndex, 1);
       }
+      calculateTotals(state); // Recalculate totals after adding/removing
     },
-    handleServicesQuantity(state, action) {
+
+    handleServicesQuantity(
+      state: CashierState,
+      action: PayloadAction<UpdateQuantityPayload>,
+    ) {
+      const serviceIndex = state.servicesAvailed.findIndex(
+        (s) => s.id === action.payload.id,
+      ); // Find by ID
+
+      if (serviceIndex === -1) {
+        console.warn(
+          "Service not found for quantity update:",
+          action.payload.id,
+        );
+        return; // Service not found, do nothing
+      }
+
       if (action.payload.identifier === "inc") {
-        state.servicesAvailed = state.servicesAvailed.map((service) =>
-          service.title === action.payload.title
-            ? { ...service, quantity: service.quantity + 1 }
-            : service,
-        );
+        state.servicesAvailed[serviceIndex].quantity += 1;
+      } else if (action.payload.identifier === "dec") {
+        state.servicesAvailed[serviceIndex].quantity -= 1;
+        // Remove service if quantity drops to 0 or below
+        if (state.servicesAvailed[serviceIndex].quantity <= 0) {
+          state.servicesAvailed.splice(serviceIndex, 1);
+        }
       }
-
-      if (action.payload.identifier === "dec") {
-        state.servicesAvailed = state.servicesAvailed
-          .map((service) =>
-            service.title === action.payload.title
-              ? { ...service, quantity: service.quantity - 1 }
-              : service,
-          )
-          .filter((service) => service.quantity > 0);
-      }
-
-      // **Recalculate grandTotal after changing quantity**
-      const total = state.servicesAvailed.reduce(
-        (sum, service) => sum + service.price * service.quantity,
-        0,
-      );
-
-      state.grandTotal = total - state.totalDiscount;
+      calculateTotals(state); // Recalculate totals after quantity change
     },
-    handlingTotals(state, action) {
-      if (action.payload.identifier === "grandTotal") {
-        state.grandTotal = action.payload.value - state.totalDiscount;
-      }
-    },
-    setDiscount(state, action) {
+
+    // --- Discount and Totals Reducers ---
+    setDiscount(
+      state: CashierState,
+      action: PayloadAction<SetDiscountPayload>,
+    ) {
       if (action.payload.status) {
         state.voucherCode = action.payload.code;
         state.totalDiscount = action.payload.value;
@@ -128,18 +172,19 @@ export const CashierSlice = createSlice({
         state.voucherCode = "";
         state.totalDiscount = 0;
       }
-
-      state.grandTotal = state.grandTotal - state.totalDiscount;
-    },
-    setDateTime(state, action: PayloadAction<{ date: string; time: string }>) {
-      state.date = action.payload.date;
-      state.time = action.payload.time;
+      // Always recalculate grandTotal from scratch after discount changes
+      calculateTotals(state);
     },
 
-    reset() {
+    // handlingTotals is removed/refactored as totals are calculated directly
+
+    // --- Reset Reducer ---
+    reset(): CashierState {
+      // Explicitly return CashierState type
       return initialState;
     },
   },
 });
 
 export const cashierActions = CashierSlice.actions;
+export default CashierSlice.reducer; // Ensure you export the reducer as default

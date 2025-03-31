@@ -1,10 +1,28 @@
+// components/Dialog/DialogBackground.jsx
+import React from "react";
+
 export default function DialogBackground({
   children,
+  onClick, // Allow handling backdrop clicks
 }: {
   children: React.ReactNode;
+  onClick?: (event: React.MouseEvent<HTMLDivElement>) => void; // Optional click handler for backdrop
 }) {
+  // Handler to close only when clicking the backdrop itself, not children
+  const handleBackgroundClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // Check if the click target is the backdrop div itself
+    if (event.target === event.currentTarget && onClick) {
+      onClick(event);
+    }
+  };
+
   return (
-    <div className="absolute z-20 w-screen h-screen bg-black bg-opacity-50">
+    // Use fixed positioning to cover viewport, flex to center children
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 backdrop-blur-sm"
+      onClick={handleBackgroundClick} // Add backdrop click handler
+    >
+      {/* Children (e.g., DialogForm) will be centered by flex */}
       {children}
     </div>
   );
