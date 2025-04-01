@@ -4,20 +4,20 @@ import DialogBackground from "@/components/Dialog/DialogBackground";
 import DialogForm from "@/components/Dialog/DialogForm";
 import DateTimePicker from "@/components/Inputs/DateTimePicker";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
-import ServicesSelect from "@/components/Inputs/ServicesSelect"; // Keep using this
+import ServicesSelect from "@/components/Inputs/ServicesSelect";
 import VoucherInput from "@/components/Inputs/VoucherInput";
 import SelectedService from "@/components/ui/cashier/SelectedService";
 import CustomerInput from "@/components/Inputs/CustomerInput";
 
-import { transactionSubmission } from "@/lib/ServerAction"; // Your server action
-import { RootState, AppDispatch } from "@/lib/reduxStore"; // Import types from your store config
+import { transactionSubmission } from "@/lib/ServerAction";
+import { RootState, AppDispatch } from "@/lib/reduxStore";
 import { useSelector, useDispatch } from "react-redux";
 import { useParams, useRouter } from "next/navigation";
-import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice"; // Your cashier slice
-import { fetchServicesForAccount } from "@/lib/Slices/DataSlice"; // <-- Import the async thunk
+import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice";
+import { fetchServicesForAccount } from "@/lib/Slices/DataSlice";
 import { useEffect, useState, useCallback } from "react";
 
-// --- Type Definitions (Keep as they are) ---
+// --- Type Definitions ---
 type ServicesProps = {
   id: string;
   title: string;
@@ -49,29 +49,19 @@ const paymentMethodOptions = [
 export default function CashierInterceptedModal() {
   const { accountID: rawAccountID } = useParams();
   const router = useRouter();
-  const dispatch = useDispatch<AppDispatch>(); // Use the typed dispatch
+  const dispatch = useDispatch<AppDispatch>();
 
-  // Ensure accountID is a single string, handle potential array/undefined
   const accountID = Array.isArray(rawAccountID)
     ? rawAccountID[0]
     : rawAccountID;
 
-  // Local state for submission status and form validation errors
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  // *** REMOVED Local state for services and fetching status ***
-  // const [services, setServices] = useState<ServicesProps[] | null>(null);
-  // const [servicesIsFetching, setServicesIsFetching] = useState(false);
+  const { services, servicesLoading, servicesError } = useSelector(
+    (state: RootState) => state.data,
+  );
 
-  // *** SELECT services data and status FROM REDUX STORE ***
-  const {
-    services, // Now comes from state.data.services
-    servicesLoading, // Now comes from state.data.servicesLoading
-    servicesError, // Now comes from state.data.servicesError
-  } = useSelector((state: RootState) => state.data); // Ensure 'data' matches your slice name in the store
-
-  // Select cashier form state from Redux
   const cashierForm = useSelector((state: RootState) => state.cashier);
   const {
     name,
@@ -86,73 +76,70 @@ export default function CashierInterceptedModal() {
 
   const subTotal = grandTotal + totalDiscount;
 
-  // *** UPDATED useEffect to dispatch the thunk ***
   useEffect(() => {
-    // Only attempt to fetch if we have a valid accountID string
     if (typeof accountID === "string" && accountID) {
-      // Dispatch the thunk. It will check internally if a fetch is needed.
       dispatch(fetchServicesForAccount(accountID));
     } else {
-      // Handle the case where accountID is missing or invalid
       console.warn(
         "CashierInterceptedModal: Account ID is missing or invalid, cannot fetch services.",
       );
-      // Optionally set a general error or clear services via another dispatch
       setFormErrors((prev) => ({
         ...prev,
         general: "Cannot load services: Missing required account identifier.",
       }));
-      // Maybe dispatch(clearServices()); // If you want to ensure old data is gone
     }
-  }, [accountID, dispatch]); // Dependencies: fetch should re-evaluate if accountID changes
+  }, [accountID, dispatch]);
 
-  // --- Handle select changes (Keep as is, assuming types are correct) ---
+  // --- Handle select changes ---
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
-      // Type Guard approach (your existing logic)
-      if (key === "serviceType" && (value === "single" || value === "set")) {
-        dispatch(cashierActions.settingServiceTimeOrType({ key, value }));
-      } else if (
-        key === "serveTime" &&
-        (value === "now" || value === "later")
+      // Simplified dispatch logic - let the reducer handle type checking if needed
+      // This assumes your reducer 'settingServiceTimeOrType' can handle these keys.
+      if (
+        key === "serviceType" ||
+        key === "serveTime" ||
+        key === "paymentMethod"
       ) {
-        dispatch(cashierActions.settingServiceTimeOrType({ key, value }));
-      } else if (
-        key === "paymentMethod" &&
-        (value === "cash" || value === "ewallet" || value === "bank")
-      ) {
-        dispatch(cashierActions.settingServiceTimeOrType({ key, value }));
+        // You might need stricter type assertion here if the reducer expects specific types
+        dispatch(
+          cashierActions.settingServiceTimeOrType({
+            key: key as keyof Pick<
+              CashierState,
+              "serviceType" | "serveTime" | "paymentMethod"
+            >,
+            // Ensure the value matches the expected type for the key in the reducer
+            value: value as any, // Use 'as any' cautiously or add better type checks
+          }),
+        );
       } else {
-        console.warn(`Invalid value "${value}" for key "${key}"`);
+        console.warn(`Unhandled key in handleSelectChanges: "${key}"`);
       }
     },
     [dispatch],
   );
 
-  // --- Handle form submission (Keep as is) ---
+  // --- Handle form submission ---
   async function handleSubmitting() {
     setIsSubmitting(true);
     setFormErrors({});
 
-    // Frontend Checks (Keep as is)
+    // Frontend Checks
+    let errors: Record<string, string> = {};
     if (!name?.trim()) {
-      setFormErrors((prev) => ({
-        ...prev,
-        name: "Customer name is required.",
-      }));
-      setIsSubmitting(false);
-      return;
+      errors.name = "Customer name is required.";
     }
     if (!servicesAvailed || servicesAvailed.length === 0) {
-      setFormErrors((prev) => ({
-        ...prev,
-        servicesAvailed: "At least one service must be selected.",
-      }));
+      errors.servicesAvailed = "At least one service must be selected.";
+    }
+    // Add other frontend checks if needed
+
+    if (Object.keys(errors).length > 0) {
+      setFormErrors(errors);
       setIsSubmitting(false);
       return;
     }
 
-    // Call Server Action (Keep as is)
+    // Call Server Action
     const response = await transactionSubmission(cashierForm);
     setIsSubmitting(false);
 
@@ -168,16 +155,11 @@ export default function CashierInterceptedModal() {
     }
   }
 
-  // --- Handle cancel (Keep as is) ---
+  // --- Handle cancel ---
   const handleCancel = () => {
     dispatch(cashierActions.reset());
     router.back();
   };
-
-  // Optional: Log current states for debugging
-  // console.log("Current Form State:", cashierForm);
-  // console.log("Current Form Errors:", formErrors);
-  // console.log("Services (Redux):", { services, servicesLoading, servicesError });
 
   return (
     <DialogBackground>
@@ -197,21 +179,19 @@ export default function CashierInterceptedModal() {
         {/* Email Input (Optional) */}
         <div className="relative mt-8 flex w-full justify-center">
           <input
-            value={email ?? ""} // Use nullish coalescing for controlled input
+            value={email ?? ""}
             onChange={(e) => dispatch(cashierActions.setEmail(e.target.value))}
-            placeholder=" " // Keep placeholder for label animation
+            placeholder=" "
             className={`peer h-[50px] w-[90%] rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-customDarkPink"} px-2 shadow-custom outline-none`}
-            id="email-input" // Add id for label association
+            id="email-input"
           />
-          {/* Modified Label */}
           <label
-            htmlFor="email-input" // Associate label with input
+            htmlFor="email-input"
             className={`absolute left-10 top-1/2 -translate-y-1/2 font-medium transition-all duration-150 peer-focus:top-[-10px] peer-focus:text-sm peer-focus:tracking-widest peer-[&:not(:placeholder-shown)]:top-[-10px] peer-[&:not(:placeholder-shown)]:text-sm peer-[&:not(:placeholder-shown)]:tracking-widest ${formErrors.email ? "text-red-600" : "text-gray-600"} peer-focus:text-customDarkPink`}
           >
-            E-mail (Optional) {/* Indicate Optional */}
+            E-mail (Optional)
           </label>
         </div>
-        {/* Display Email Error */}
         {formErrors.email && (
           <p className="mx-auto mt-1 w-[90%] text-sm text-red-500">
             {formErrors.email}
@@ -220,10 +200,11 @@ export default function CashierInterceptedModal() {
 
         {/* Service Time/Type Selectors */}
         <div className="mx-auto mt-8 flex w-[90%] justify-between gap-4">
+          {/* --- Added onChange prop --- */}
           <SelectInputGroup
             label="Service Type"
             name="serviceType"
-            onChange={handleSelectChanges}
+            onChange={handleSelectChanges} // <-- FIX: Pass the handler
             id="serviceType"
             options={serviceTypeOptions}
             valueKey="id"
@@ -232,11 +213,12 @@ export default function CashierInterceptedModal() {
             error={formErrors.serviceType}
             required
           />
+          {/* --- Added onChange prop --- */}
           <SelectInputGroup
             label="Serve Time"
             name="serveTime"
             id="serveTime"
-            onChange={handleSelectChanges}
+            onChange={handleSelectChanges} // <-- FIX: Pass the handler
             options={serveTimeOptions}
             valueKey="id"
             labelKey="title"
@@ -245,29 +227,32 @@ export default function CashierInterceptedModal() {
             required
           />
         </div>
-        {formErrors.serveTime && <p className="...">{formErrors.serveTime}</p>}
+        {/* Conditionally display error paragraph for serveTime */}
+        {formErrors.serveTime && (
+          <p className="mx-auto mt-1 w-[90%] text-sm text-red-500">
+            {formErrors.serveTime}
+          </p>
+        )}
         {serveTime === "later" && (
-          <DateTimePicker error={formErrors.serveTime} />
+          <DateTimePicker error={formErrors.serveTime} /> // Pass potential error down
         )}
 
-        {/* Display general service loading error BEFORE the select component */}
+        {/* Display general service loading error */}
         {servicesError && !formErrors.general && (
           <p className="mx-auto mt-4 w-[90%] text-center text-sm font-medium text-red-600">
             Error loading services list: {servicesError}
           </p>
         )}
 
-        {/* *** Services Select - Use REDUX state for props *** */}
+        {/* Services Select */}
         <ServicesSelect
-          isLoading={servicesLoading} // <-- Use Redux loading state
-          data={services} // <-- Use Redux services data
-          // Pass down specific validation error OR the general fetch error message
+          isLoading={servicesLoading}
+          data={services}
           error={
             formErrors.servicesAvailed ||
             (servicesError ? "Failed to load services data." : undefined)
           }
         />
-        {/* Display specific validation error if it exists and isn't the fetch error */}
         {formErrors.servicesAvailed && !servicesError && (
           <p className="mx-auto mt-1 w-[90%] text-sm text-red-500">
             {formErrors.servicesAvailed}
@@ -277,54 +262,51 @@ export default function CashierInterceptedModal() {
         {/* Voucher and Payment Method */}
         <div className="mx-auto mt-8 flex w-[90%] justify-between gap-4">
           <div className="flex h-full w-[50%]">
-            {" "}
-            <VoucherInput />{" "}
+            <VoucherInput />
           </div>
           <div className="w-[50%]">
-            {" "}
+            {/* --- Added onChange prop --- */}
             <SelectInputGroup
               label="Payment Method"
               name="paymentMethod"
               id="paymentMethod"
-              onChange={handleSelectChanges}
+              onChange={handleSelectChanges} // <-- FIX: Pass the handler
               options={paymentMethodOptions}
               valueKey="id"
               labelKey="title"
               value={paymentMethod}
               error={formErrors.paymentMethod}
-            />{" "}
+            />
           </div>
         </div>
+        {/* Conditionally display error paragraphs */}
         {formErrors.paymentMethod && (
-          <p className="...">{formErrors.paymentMethod}</p>
+          <p className="mx-auto mt-1 w-[90%] text-right text-sm text-red-500">
+            {formErrors.paymentMethod}
+          </p>
         )}
         {formErrors.voucherCode && (
-          <p className="...">{formErrors.voucherCode}</p>
+          <p className="mx-auto mt-1 w-[90%] text-left text-sm text-red-500">
+            {formErrors.voucherCode}
+          </p>
         )}
 
         {/* Selected Services Display */}
         <div
-          className={`relative mx-auto mt-8 max-h-[200px] min-h-[100px] w-[90%] overflow-y-auto rounded-md border-2 ${formErrors.servicesAvailed ? "border-red-500" : "border-customDarkPink"} bg-white p-2 shadow-custom lg:min-h-[100px]`} // Added back some classes for context
+          className={`relative mx-auto mt-8 max-h-[200px] min-h-[100px] w-[90%] overflow-y-auto rounded-md border-2 ${formErrors.servicesAvailed ? "border-red-500" : "border-customDarkPink"} bg-white p-2 shadow-custom lg:min-h-[100px]`}
         >
           {servicesAvailed.length !== 0 ? (
-            servicesAvailed.map(
-              (
-                availed, // 'availed' is type AvailedService { id, name, price, quantity }
-              ) => (
-                <SelectedService
-                  key={availed.id}
-                  name={availed.name} // <-- CORRECTED: Use name property from AvailedService
-                  quantity={availed.quantity}
-                  price={availed.price}
-                  // You might also need to pass the ID if SelectedService has remove/update buttons
-                  // id={availed.id}
-                />
-              ),
-            )
+            servicesAvailed.map((availed) => (
+              <SelectedService
+                key={availed.id}
+                id={availed.id}
+                name={availed.name}
+                quantity={availed.quantity}
+                price={availed.price}
+              />
+            ))
           ) : (
             <p className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform whitespace-nowrap font-medium uppercase tracking-widest text-gray-500">
-              {" "}
-              {/* Added back classes */}
               No Selected Services Yet
             </p>
           )}
@@ -333,21 +315,18 @@ export default function CashierInterceptedModal() {
         {/* Totals Display */}
         <div className="mx-auto mt-8 flex w-[90%] flex-col text-sm">
           <div className="flex justify-between">
-            {" "}
-            <p>Total Discount: ₱ {totalDiscount.toLocaleString()}</p>{" "}
-            <p>Subtotal: ₱ {subTotal.toLocaleString()}</p>{" "}
+            <p>Total Discount: ₱ {totalDiscount.toLocaleString()}</p>
+            <p>Subtotal: ₱ {subTotal.toLocaleString()}</p>
           </div>
           <p className="mt-1 text-base font-semibold">
-            {" "}
-            Grand Total: ₱ {grandTotal.toLocaleString()}{" "}
+            Grand Total: ₱ {grandTotal.toLocaleString()}
           </p>
         </div>
 
         {/* General Form Error Display */}
         {formErrors.general && (
           <p className="mx-auto mt-2 w-[90%] text-center text-sm font-medium text-red-600">
-            {" "}
-            {formErrors.general}{" "}
+            {formErrors.general}
           </p>
         )}
 
@@ -355,7 +334,7 @@ export default function CashierInterceptedModal() {
         <div className="mx-auto mt-8 flex w-[90%] justify-around">
           <button
             disabled={isSubmitting}
-            onClick={handleCancel} // Use defined handler
+            onClick={handleCancel}
             type="button"
             className="min-w-[100px] rounded-md border-2 border-customDarkPink px-4 py-2 text-customDarkPink transition-all duration-150 hover:bg-customDarkPink hover:text-customOffWhite disabled:opacity-50"
           >
@@ -369,7 +348,7 @@ export default function CashierInterceptedModal() {
               servicesAvailed.length === 0 ||
               !name ||
               !name.trim()
-            } // Also disable if core fields missing
+            }
             className="min-w-[100px] rounded-md border-2 border-customDarkPink bg-customDarkPink px-4 py-2 font-medium text-white transition-all duration-150 hover:bg-transparent hover:text-customDarkPink disabled:cursor-not-allowed disabled:border-gray-400 disabled:bg-gray-400 disabled:text-gray-200 disabled:hover:bg-gray-400 disabled:hover:text-gray-200"
           >
             {isSubmitting ? "Submitting..." : "Confirm"}

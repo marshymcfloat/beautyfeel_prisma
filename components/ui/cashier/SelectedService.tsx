@@ -1,3 +1,4 @@
+// SelectedService.tsx
 "use client";
 
 import { Plus, Minus } from "lucide-react";
@@ -5,10 +6,12 @@ import { useDispatch } from "react-redux";
 import { cashierActions } from "@/lib/Slices/CashierSlice";
 
 export default function SelectedService({
+  id, // <-- Add id to props definition
   name,
   quantity,
   price,
 }: {
+  id: string; // <-- Define the type for id
   name: string;
   quantity: number;
   price: number;
@@ -16,26 +19,26 @@ export default function SelectedService({
   const dispatch = useDispatch();
 
   return (
-    <div className="flex  my-2 items-center shadow-custom min-h-[50px] rounded-md bg-customDarkPink">
-      <span className="w-[10%]  text-center text-lg font-medium">
+    <div className="my-2 flex min-h-[50px] items-center rounded-md bg-customDarkPink shadow-custom">
+      <span className="w-[10%] text-center text-lg font-medium">
         {quantity}x
       </span>
-      <div className="flex  w-[50%] flex-col pl-2">
-        <p className="tracking-widest font-medium">{name}</p>
+      <div className="flex w-[50%] flex-col pl-2">
+        <p className="font-medium tracking-widest">{name}</p>
         <p>{price}</p>
       </div>
-      <div className="flex  justify-around w-[20%]">
+      <div className="flex w-[20%] justify-around">
         <button
           type="button"
           onClick={() =>
             dispatch(
               cashierActions.handleServicesQuantity({
                 identifier: "dec",
-                title: name,
+                id: id, // <-- Use the id prop here
               }),
             )
           }
-          className="rounded-md size-6 border-2 border-black bg-black flex items-center justify-center"
+          className="flex size-6 items-center justify-center rounded-md border-2 border-black bg-black"
         >
           <Minus color="#C28583" />
         </button>
@@ -45,17 +48,18 @@ export default function SelectedService({
             dispatch(
               cashierActions.handleServicesQuantity({
                 identifier: "inc",
-                title: name,
+                id: id, // <-- Use the id prop here
               }),
             )
           }
-          className="rounded-md size-6 border-2 border-black flex items-center justify-center"
+          className="flex size-6 items-center justify-center rounded-md border-2 border-black"
         >
           <Plus color="black" />
         </button>
       </div>
       <span className="w-[20%] text-center font-medium">
-        &#x20B1;{quantity * price}
+        ₱{(quantity * price).toLocaleString()}{" "}
+        {/* Added toLocaleString for formatting */}
       </span>
     </div>
   );

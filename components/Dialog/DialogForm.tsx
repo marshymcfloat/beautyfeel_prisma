@@ -31,7 +31,7 @@ export default function DialogForm({
     // Added 'm-auto' to help centering within flex/grid parent. Added relative for absolute positioning of X.
     <dialog
       open
-      className="relative m-auto w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl lg:max-h-[85vh]"
+      className="relative m-auto max-h-[95vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl lg:max-h-[95vh]"
     >
       {/* Close Button - Calls the generic handler */}
       {/* Render the button only if onClose is provided */}

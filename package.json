@@ -11,7 +11,7 @@
   "dependencies": {
     "@million/lint": "^1.0.14",
     "@prisma/client": "^6.5.0",
-    "@prisma/extension-accelerate": "^1.2.2",
+    "@prisma/extension-accelerate": "^1.3.0",
     "@reduxjs/toolkit": "^2.6.1",
     "axios": "^1.8.3",
     "bcrypt": "^5.1.1",

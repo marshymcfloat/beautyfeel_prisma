@@ -1,62 +1,29 @@
+// components/ui/ExpandedListedServices.tsx (or your path)
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
 import Button from "../Buttons/Button"; // Adjust path
 import { Socket } from "socket.io-client"; // Import Socket type
+import { AvailedServicesProps } from "@/lib/Types";
 
-// --- Use the SAME Type Definitions as WorkInterceptedModal ---
-type CustomerProp = {
-  email: string | null;
-  id: string;
-  name: string;
-};
-
-type ServiceProps = {
-  title: string;
-  id: string;
-};
-
-type AccountInfo = {
-  id: string;
-  name: string;
-} | null;
-
-type AvailedServicesProps = {
-  id: string;
-  price: number;
-  quantity: number;
-  serviceId: string;
-  transactionId: string;
-  service: ServiceProps;
-  checkedById: string | null;
-  checkedBy: AccountInfo;
-  servedById: string | null; // Keep for display/styling info if needed
-  servedBy: AccountInfo; // Keep for display/styling info if needed
-};
-
-type ExpandedListedServicesProps = {
-  services: AvailedServicesProps[]; // Expects services CHECKED BY the current user
-  accountId: string; // ID of the logged-in user
-  socket: Socket | null; // Socket instance for emitting events
-  onClose: () => void; // Function to close the container (e.g., a dialog)
-  // Pass down processing state management from parent if needed globally
-  // Or manage processing state locally if this component is self-contained enough
-  processingServeActions: Set<string>;
-  setProcessingServeActions: React.Dispatch<React.SetStateAction<Set<string>>>;
-};
-
+// --- Component ---
 export default function ExpandedListedServices({
   services,
   accountId,
   socket,
   onClose,
-  processingServeActions, // Receive from parent
-  setProcessingServeActions, // Receive from parent
-}: ExpandedListedServicesProps) {
-  // --- Listen for External Updates/Errors (Optional but Recommended) ---
-  // This ensures the UI stays consistent if, for example, a service gets
-  // automatically unmarked due to some external logic or if an error occurs
-  // on the server during mark/unmark.
+  processingServeActions,
+  setProcessingServeActions,
+}: {
+  // Type annotation for props
+  services: AvailedServicesProps[];
+  accountId: string;
+  socket: Socket | null;
+  onClose: () => void;
+  processingServeActions: Set<string>;
+  setProcessingServeActions: React.Dispatch<React.SetStateAction<Set<string>>>;
+}) {
+  // --- Listen for External Updates/Errors ---
   useEffect(() => {
     if (!socket) return;
 
@@ -112,170 +79,196 @@ export default function ExpandedListedServices({
 
   // --- Mark/Unmark Served Handlers ---
   function handleMarkServed(availedService: AvailedServicesProps) {
-    if (!socket || !accountId) return;
-    const { id: availedServiceId, transactionId } = availedService;
-
-    if (processingServeActions.has(availedServiceId)) return; // Already processing this item
-
+    if (!socket || !accountId || processingServeActions.has(availedService.id))
+      return;
     // Basic check: Don't emit if already served by self (UI should disable button)
     if (availedService.servedById === accountId) {
       console.log("Already marked served by you.");
       return;
     }
 
-    setProcessingServeActions((prev) => new Set(prev).add(availedServiceId));
-    console.log(`Emitting markServiceServed for ${availedServiceId}`);
+    setProcessingServeActions((prev) => new Set(prev).add(availedService.id));
+    console.log(`Emitting markServiceServed for ${availedService.id}`);
     socket.emit("markServiceServed", {
-      availedServiceId,
-      transactionId,
+      availedServiceId: availedService.id,
+      transactionId: availedService.transactionId,
       accountId: accountId, // The user taking the action is the server
     });
   }
 
   function handleUnmarkServed(availedService: AvailedServicesProps) {
-    if (!socket || !accountId) return;
-    const { id: availedServiceId, transactionId } = availedService;
-
-    if (processingServeActions.has(availedServiceId)) return; // Already processing
-
+    if (!socket || !accountId || processingServeActions.has(availedService.id))
+      return;
     // IMPORTANT: Only allow unmarking if served *by the current user* (Backend enforces too)
     if (availedService.servedById !== accountId) {
       alert("You cannot unmark a service you didn't mark as served.");
-      // Optional: Remove processing state if added prematurely, though UI disable should prevent this
-      // setProcessingServeActions(prev => { const next = new Set(prev); next.delete(availedServiceId); return next; });
       return;
     }
 
-    setProcessingServeActions((prev) => new Set(prev).add(availedServiceId));
-    console.log(`Emitting unmarkServiceServed for ${availedServiceId}`);
+    setProcessingServeActions((prev) => new Set(prev).add(availedService.id));
+    console.log(`Emitting unmarkServiceServed for ${availedService.id}`);
     socket.emit("unmarkServiceServed", {
-      availedServiceId,
-      transactionId,
+      availedServiceId: availedService.id,
+      transactionId: availedService.transactionId,
       accountId: accountId, // User performing the action
     });
   }
 
-  // --- Mark Served Button Disabled Logic ---
+  // --- Button Disabled Logic ---
   function isMarkServedDisabled(service: AvailedServicesProps): boolean {
     if (processingServeActions.has(service.id)) return true; // Processing this action
-    if (service.servedById === accountId) return true; // Already served by self
-    // Optional: Prevent marking if served by *anyone*?
-    // if (service.servedById) return true;
+    // Allow marking even if served by someone else? Let backend handle conflicts if needed.
+    // if (service.servedById && service.servedById !== accountId) return true;
+    // Prevent re-marking if already served by self
+    if (service.servedById === accountId) return true;
     return false;
   }
 
-  // --- Unmark Served Button Disabled Logic ---
   function isUnmarkServedDisabled(service: AvailedServicesProps): boolean {
     if (processingServeActions.has(service.id)) return true; // Processing this action
     if (service.servedById !== accountId) return true; // Not served by self
     return false;
   }
 
-  // --- Determine Background Color ---
-  function getServiceBackgroundColor(service: AvailedServicesProps): string {
+  // --- Determine Background and Text Colors (Updated) ---
+  function getServiceItemStyles(service: AvailedServicesProps): {
+    bg: string;
+    text: string;
+    statusText: string;
+  } {
+    const baseText = "text-customOffWhite";
+    const baseStatusText = "text-customOffWhite/80";
+
     if (processingServeActions.has(service.id)) {
-      return "animate-pulse bg-gray-300 dark:bg-gray-600"; // Processing serve/unserve
+      // Processing: Gray background, black text
+      return {
+        bg: "animate-pulse bg-customGray",
+        text: "text-customBlack",
+        statusText: "text-customBlack/70",
+      };
     }
     if (service.servedById) {
-      // Could use a different green or just the standard 'served' green
-      return "bg-green-100 dark:bg-green-900"; // Served
+      // Served: Green background, white text (using a standard green)
+      return { bg: "bg-green-600", text: baseText, statusText: baseStatusText };
     }
-    // Since all services here are checked by the user, default is the 'checked by me' color
-    return "bg-blue-100 dark:bg-blue-900";
+    // Default (Checked by You, Not Served): Dark Blue Placeholder
+    // **RECOMMENDATION:** Add 'customDarkBlue: "#your_blue_hex"' to tailwind.config.js
+    // Using fallback:
+    return { bg: "bg-blue-800", text: baseText, statusText: baseStatusText };
   }
 
   return (
     <>
-      {/* List of user's checked services */}
-      {/* Adjusted max-height for dialog context */}
-      <div className="mb-4 max-h-[60vh] space-y-3 overflow-y-auto border-y border-gray-200 py-3 pr-1 md:max-h-[70vh]">
+      {/* List Container - Adjusted styles */}
+      <div className="mb-4 max-h-[60vh] space-y-3 overflow-y-auto border-y border-customGray bg-customWhiteBlue px-3 py-4 md:max-h-[70vh]">
         {services.length > 0 ? (
-          services.map((service) => (
-            <div
-              key={service.id}
-              className={`my-2 flex flex-col rounded-md p-3 shadow-custom transition-colors duration-200 ${getServiceBackgroundColor(service)}`}
-            >
-              {/* Service Info */}
-              <div className="flex items-center justify-between">
-                <span className="text-lg font-medium">
-                  {service.service.title}{" "}
-                  {service.quantity > 1 ? `(x${service.quantity})` : ""}
-                </span>
-                <span className="text-sm font-semibold">
-                  ${(service.price / 100).toFixed(2)}
-                </span>
-              </div>
-              {/* Customer Info (If available and needed) */}
-              {/* You might need to adjust data structure or pass customer info if required here */}
-              {/* <div className="text-xs text-gray-600 dark:text-gray-400">
-                 Customer: {service.transaction?.customer?.name ?? 'N/A'}
-              </div> */}
+          services.map((service) => {
+            // Get styles based on state
+            const itemStyles = getServiceItemStyles(service);
 
-              {/* Status Indicators */}
-              <div className="mt-1 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs">
-                <span>
-                  {/* Checked by will always be the current user here */}
-                  Checked by: <span className="font-medium">You</span>
-                </span>
-                <span className="text-right">
-                  Served by:{" "}
-                  <span
-                    className={`font-medium ${service.servedById ? "text-green-700 dark:text-green-300" : "text-gray-500"}`}
-                  >
-                    {service.servedBy?.name ?? "Not Served"}
-                  </span>
-                </span>
-              </div>
+            return (
+              <div
+                key={service.id}
+                // Apply dynamic background, relative positioning for button
+                className={`relative flex min-h-[80px] items-center rounded-lg p-3 shadow-custom transition-colors duration-200 ${itemStyles.bg}`}
+              >
+                {/* Left side content area - Adjusted padding-right */}
+                <div className={`flex-grow pr-24 md:pr-28 ${itemStyles.text}`}>
+                  {/* Service Info */}
+                  <div className="flex items-start justify-between">
+                    <span
+                      className={`text-base font-semibold ${itemStyles.text}`}
+                    >
+                      {service.service.title}{" "}
+                      {service.quantity > 1 ? `(x${service.quantity})` : ""}
+                    </span>
+                    <span
+                      className={`text-sm font-semibold ${itemStyles.text} pl-2`}
+                    >
+                      &#8369;{service.price.toFixed(2)}
+                    </span>
+                  </div>
 
-              {/* Action Buttons */}
-              <div className="mt-3 flex justify-end gap-2">
-                {!service.servedById || service.servedById !== accountId ? ( // Show Mark Served if not served by current user
-                  <Button
-                    onClick={() => handleMarkServed(service)}
-                    disabled={isMarkServedDisabled(service)}
-                    title={
-                      isMarkServedDisabled(service)
-                        ? processingServeActions.has(service.id)
-                          ? "Processing..."
-                          : "Already served or cannot mark now"
-                        : "Mark as Served"
-                    }
+                  {/* Status Indicators */}
+                  <div
+                    className={`mt-1.5 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs ${itemStyles.statusText}`}
                   >
-                    Mark Served
-                  </Button>
-                ) : (
-                  // Show Unmark Served if served by current user
-                  <Button
-                    invert={true} // Make it visually distinct
-                    onClick={() => handleUnmarkServed(service)}
-                    disabled={isUnmarkServedDisabled(service)}
-                    title={
-                      isUnmarkServedDisabled(service)
-                        ? processingServeActions.has(service.id)
-                          ? "Processing..."
-                          : "Cannot unmark (not served by you)"
-                        : "Unmark as Served"
-                    }
-                  >
-                    Unmark Served
-                  </Button>
-                )}
-              </div>
-            </div>
-          ))
+                    <span>
+                      Checked by: <span className="font-medium">You</span>
+                    </span>
+                    <span className="text-right">
+                      Served by:{" "}
+                      <span
+                        // Use appropriate text color based on background
+                        className={`font-medium ${
+                          service.servedById
+                            ? "text-green-200" // Lighter green on dark green bg
+                            : itemStyles.text // Use the main text color for the card state
+                        }`}
+                      >
+                        {service.servedBy?.name ?? "Not Served"}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+
+                {/* Action Buttons Area (Absolutely Positioned) */}
+                <div className="absolute right-3 top-1/2 flex -translate-y-1/2 flex-col items-end">
+                  {/* Conditionally render Mark or Unmark Button */}
+                  {!service.servedById || service.servedById !== accountId ? (
+                    <Button // Use Default Style (Solid Pink)
+                      size="sm" // Assuming Button component accepts size
+                      onClick={() => handleMarkServed(service)}
+                      disabled={isMarkServedDisabled(service)}
+                      // Add specific width/padding tweaks if needed via className
+                      className="min-w-[90px] px-2 md:min-w-[100px] md:px-3"
+                      title={
+                        isMarkServedDisabled(service)
+                          ? processingServeActions.has(service.id)
+                            ? "Processing..."
+                            : "Cannot mark now" // Simplified message
+                          : "Mark as Served"
+                      }
+                    >
+                      Mark Served
+                    </Button>
+                  ) : (
+                    <Button // Use Inverted Style (Outline)
+                      size="sm"
+                      invert={true} // Use the invert prop
+                      onClick={() => handleUnmarkServed(service)}
+                      disabled={isUnmarkServedDisabled(service)}
+                      // Add specific width/padding tweaks if needed via className
+                      className="min-w-[90px] px-2 md:min-w-[100px] md:px-3"
+                      // Adjust invert focus color if needed in Button.jsx (e.g., focus:ring-customOffWhite)
+                      title={
+                        isUnmarkServedDisabled(service)
+                          ? processingServeActions.has(service.id)
+                            ? "Processing..."
+                            : "Cannot unmark" // Simplified message
+                          : "Unmark as Served"
+                      }
+                    >
+                      Unmark Served
+                    </Button>
+                  )}
+                </div>
+              </div> // End Service Item Card
+            ); // End return inside map
+          }) // End map
         ) : (
-          <p className="py-4 text-center italic text-gray-500">
+          <p className="py-4 text-center italic text-customBlack/60">
             You haven't checked any services yet.
           </p>
         )}
       </div>
 
-      {/* Close button */}
-      <div className="flex justify-end border-t border-gray-200 pt-4">
+      {/* Close button - Use Inverted Style */}
+      <div className="flex justify-end border-t border-customGray px-3 pt-4">
         <Button
           type="button"
           onClick={onClose}
-          invert={true} // Use inverted style for close/cancel
+          invert={true} // Use inverted style for close
         >
           Close
         </Button>

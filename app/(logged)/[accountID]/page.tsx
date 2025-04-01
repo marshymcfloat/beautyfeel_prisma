@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { useParams, useRouter } from "next/navigation";
 
+import { getSalaryBreakdown, getCurrentAccountData } from "@/lib/ServerAction";
 import Link from "next/link";
 import Calendar from "@/components/ui/Calendar";
 import ExpandedListedServices from "@/components/ui/ExpandedListedServices"; // Adjust path if needed
@@ -13,7 +14,10 @@ import DialogForm from "@/components/Dialog/DialogForm";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button"; // Adjust path if needed
 import { getActiveTransactions } from "@/lib/ServerAction"; // Assuming this exists
-
+import ExpandedUserSalary from "@/components/ui/ExpandedUserSalary";
+import PreviewUserSalary from "@/components/ui/PreviewUserSalary";
+import { Role } from "@prisma/client";
+import { AccountData, SalaryBreakdownItem } from "@/lib/Types";
 // --- Use the SAME Type Definitions from previous refactoring ---
 type CustomerProp = {
   email: string | null;
@@ -67,19 +71,23 @@ export default function Home() {
   const accountId = Array.isArray(accountID) ? accountID[0] : accountID; // Ensure accountId is string
 
   const [socket, setSocket] = useState<Socket | null>(null);
-  // State for ALL pending transactions fetched
   const [allPendingTransactions, setAllPendingTransactions] = useState<
     TransactionProps[]
   >([]);
-  const [isLoading, setIsLoading] = useState(true);
-  // State for tracking processing actions (e.g., marking served)
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true); // Renamed isLoading
   const [processingActions, setProcessingActions] = useState<Set<string>>(
     new Set(),
   );
-  // State to control the modal for managing *user's* checked services
   const [isMyServicesModalOpen, setIsMyServicesModalOpen] = useState(false);
+  const [accountData, setAccountData] = useState<AccountData>(null);
+  const [salaryBreakdown, setSalaryBreakdown] = useState<SalaryBreakdownItem[]>(
+    [],
+  );
+  const [isLoadingAccount, setIsLoadingAccount] = useState(true);
+  const [isLoadingBreakdown, setIsLoadingBreakdown] = useState(false);
+  const [isSalaryDetailsModalOpen, setIsSalaryDetailsModalOpen] =
+    useState(false);
 
-  // --- Socket Connection ---
   useEffect(() => {
     if (typeof accountId !== "string" || !accountId) {
       console.error("Account ID is missing or invalid for socket connection.");
@@ -115,7 +123,7 @@ export default function Home() {
     };
   }, [accountId]); // Reconnect if accountId changes
 
-  useEffect(() => {
+  /*   useEffect(() => {
     async function fetchData() {
       if (typeof accountId !== "string" || !accountId) {
         console.error("Account ID missing, cannot fetch transactions.");
@@ -151,8 +159,82 @@ export default function Home() {
       }
     }
     fetchData();
-  }, [accountId]);
+  }, [accountId]); */
   // --- Centralized Socket Event Handler ---
+
+  // --- Fetch Initial Data (Transactions + Account Data) ---
+  useEffect(() => {
+    async function fetchInitialData() {
+      if (typeof accountId !== "string" || !accountId) {
+        console.error("Account ID missing.");
+        setIsLoadingTransactions(false);
+        setIsLoadingAccount(false);
+        return;
+      }
+      // Fetch both concurrently
+      setIsLoadingTransactions(true);
+      setIsLoadingAccount(true);
+      try {
+        // Use Promise.all to fetch concurrently
+        const [transactionsData, accData] = await Promise.all([
+          getActiveTransactions(),
+          getCurrentAccountData(accountId), // Fetch account data
+        ]);
+
+        // Process Transactions
+        const processedTransactions = transactionsData.map((tx) => ({
+          ...tx,
+          createdAt: new Date(tx.createdAt),
+          bookedFor: new Date(tx.bookedFor),
+          availedServices: tx.availedServices.map((as) => ({
+            ...as,
+            customerName: tx.customer?.name ?? "Unknown Customer",
+            service: {
+              id: as.service.id,
+              title: as.service.title,
+            },
+          })),
+        }));
+        setAllPendingTransactions(processedTransactions);
+        console.log("Fetched Transactions:", processedTransactions);
+
+        // Set Account Data
+        setAccountData(accData);
+        console.log("Fetched Account Data:", accData);
+      } catch (error) {
+        console.error("Error fetching initial dashboard data:", error);
+        alert("Failed to load initial dashboard data.");
+        setAllPendingTransactions([]);
+        setAccountData(null);
+      } finally {
+        setIsLoadingTransactions(false);
+        setIsLoadingAccount(false);
+      }
+    }
+    fetchInitialData();
+  }, [accountId]); // Re-fetch if accountId changes
+
+  const fetchBreakdown = useCallback(async () => {
+    if (typeof accountId !== "string" || !accountId || isLoadingBreakdown) {
+      console.log("Skipping breakdown fetch (missing ID or already loading)");
+      return;
+    }
+
+    setIsLoadingBreakdown(true);
+    try {
+      console.log("Fetching salary breakdown...");
+      const breakdownData = await getSalaryBreakdown(accountId);
+      setSalaryBreakdown(breakdownData);
+      console.log("Fetched Salary Breakdown:", breakdownData);
+    } catch (error) {
+      console.error("Error fetching salary breakdown:", error);
+      alert("Failed to load salary breakdown details.");
+      setSalaryBreakdown([]); // Clear on error
+    } finally {
+      setIsLoadingBreakdown(false);
+    }
+  }, [accountId, isLoadingBreakdown]); // Add dependencies
+
   const handleSocketUpdates = useCallback(
     (
       data: AvailedServicesProps | TransactionProps,
@@ -292,6 +374,16 @@ export default function Home() {
   const openMyServicesModal = () => setIsMyServicesModalOpen(true);
   const closeMyServicesModal = () => setIsMyServicesModalOpen(false);
 
+  const openSalaryDetailsModal = () => {
+    setIsSalaryDetailsModalOpen(true);
+    // Fetch breakdown data when opening the modal
+    fetchBreakdown();
+  };
+  const closeSalaryDetailsModal = () => {
+    setIsSalaryDetailsModalOpen(false);
+    // Optional: Clear breakdown data when closing modal to save memory if needed
+    // setSalaryBreakdown([]);
+  };
   // --- Loading UI ---
   const loadingComponent = (
     <div className="flex h-[150px] items-center justify-center rounded-lg border border-slate-200 bg-slate-100 p-4 text-gray-500 shadow-md dark:border-gray-600 dark:bg-gray-700 dark:text-gray-400">
@@ -300,45 +392,76 @@ export default function Home() {
   );
 
   // --- Render ---
+
   return (
     <>
+      {/* Main container excluding the fixed left sidebar */}
       <main className="flex h-screen w-screen items-end">
-        <div className="ml-auto h-[98vh] w-[80%] rounded-tl-3xl bg-customLightBlue bg-opacity-30 p-6 shadow-PageShadow">
-          {" "}
-          {/* Added padding */}
-          {/* --- Dashboard Content --- */}
-          <div className="mb-6 flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-gray-800 dark:text-gray-100">
-              Dashboard
+        {/* Apply background, padding, shadow to the main content area */}
+        <div className="ml-auto h-[98vh] w-[80%] overflow-y-auto rounded-tl-3xl bg-customLightBlue bg-opacity-30 p-6 shadow-PageShadow lg:p-8">
+          {/* --- Dashboard Header --- */}
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+            <h1 className="text-xl font-bold text-customBlack sm:text-2xl">
+              Dashboard {accountData ? `- Welcome, ${accountData.name}!` : ""}
             </h1>
-            {/* Button to navigate to the Work Queue (Intercepted Route) */}
           </div>
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-            {/* Calendar Component Area */}
+          {/* --- Main Content Grid --- */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 lg:gap-8">
+            {/* --- Left Column --- */}
             <div className="lg:col-span-2">
-              <Calendar />
-              {/* Other components */}
+              <div className="mb-6">
+                <Calendar />
+              </div>
             </div>
-
-            {/* Service List Area */}
-            <div className="lg:col-span-1">
-              {isLoading ? (
-                loadingComponent
+            {/* --- Right Column --- */}
+            <div className="flex flex-col space-y-6 lg:col-span-1">
+              {/* Claimed Services Preview */}
+              {isLoadingTransactions ? (
+                // Replace LoadingWidget with inline div
+                <div className="flex h-[150px] items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 text-customBlack/70 shadow-md">
+                  Loading claimed services...
+                </div>
               ) : (
                 <PreviewListedServices
-                  // Pass only the services CHECKED BY THE CURRENT USER
                   checkedServices={servicesCheckedByMe}
-                  onOpenModal={openMyServicesModal} // Open the modal for managing these items
+                  onOpenModal={openMyServicesModal}
                 />
               )}
-              {/* Other components for this column */}
-            </div>
-          </div>
-          {/* Add other dashboard sections here */}
-        </div>
+
+              {/* Salary Preview */}
+              {isLoadingAccount ? (
+                // Replace LoadingWidget with inline div
+                <div className="flex h-[150px] items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 text-customBlack/70 shadow-md">
+                  Loading salary info...
+                </div>
+              ) : (
+                accountData &&
+                !accountData.role.includes(Role.OWNER) && (
+                  <PreviewUserSalary
+                    salary={accountData.salary}
+                    onOpenDetails={openSalaryDetailsModal}
+                    isLoading={false}
+                  />
+                )
+              )}
+              {/* Owner message (optional) */}
+              {!isLoadingAccount &&
+                accountData &&
+                accountData.role.includes(Role.OWNER) && (
+                  <div className="rounded-lg border border-customGray/30 bg-customOffWhite p-4 text-center text-sm text-customBlack/70 shadow-md">
+                    Salary view not applicable for Owners.
+                  </div>
+                )}
+            </div>{" "}
+            {/* End Right Column */}
+          </div>{" "}
+          {/* End Main Grid */}
+        </div>{" "}
+        {/* End Main Content Area */}
       </main>
 
-      {/* --- Modal for Managing User's Checked Services --- */}
+      {/* --- Modals --- */}
+      {/* My Services Modal */}
       {isMyServicesModalOpen && (
         <DialogBackground onClick={closeMyServicesModal}>
           <DialogForm
@@ -347,21 +470,35 @@ export default function Home() {
               <DialogTitle>Manage Your Claimed Services</DialogTitle>
             }
           >
-            {/* Render the component to manage the CHECKED services */}
-            {typeof accountId === "string" ? (
+            {/* Removed explicit error state check, rely only on accountId type check */}
+            {typeof accountId === "string" && ( // Keep this check
               <ExpandedListedServices
-                services={servicesCheckedByMe} // Pass only checked items
-                accountId={accountId} // Pass current user's ID
-                socket={socket} // Pass socket instance
-                onClose={closeMyServicesModal} // Function to close modal
-                processingServeActions={processingActions} // Pass processing state
-                setProcessingServeActions={setProcessingActions} // Pass setter for processing state
+                services={servicesCheckedByMe}
+                accountId={accountId}
+                socket={socket}
+                onClose={closeMyServicesModal}
+                processingServeActions={processingActions}
+                setProcessingServeActions={setProcessingActions}
               />
-            ) : (
-              <div className="p-4 text-center text-red-500">
-                Error: Invalid User Account ID.
-              </div>
             )}
+            {/* If accountId is somehow not a string, nothing renders here */}
+          </DialogForm>
+        </DialogBackground>
+      )}
+
+      {/* Salary Details Modal */}
+      {isSalaryDetailsModalOpen && accountData && (
+        <DialogBackground onClick={closeSalaryDetailsModal}>
+          <DialogForm
+            onClose={closeSalaryDetailsModal}
+            titleComponent={<DialogTitle>Salary Details</DialogTitle>}
+          >
+            <ExpandedUserSalary
+              breakdownItems={salaryBreakdown}
+              onClose={closeSalaryDetailsModal}
+              isLoading={isLoadingBreakdown}
+              currentTotalSalary={accountData.salary}
+            />
           </DialogForm>
         </DialogBackground>
       )}
