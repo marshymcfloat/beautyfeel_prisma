@@ -27,7 +27,7 @@ export default function VoucherInput() {
     const debouncingTimeout = setTimeout(() => {
       // Only set debounceValue if input is not empty after debounce
       setDebounceValue(inputValue.trim()); // Trim whitespace
-    }, 500);
+    }, 1000);
 
     return () => clearTimeout(debouncingTimeout);
   }, [inputValue]);
@@ -120,7 +120,7 @@ export default function VoucherInput() {
 
   return (
     // Adjusted mt-6/lg:mt-7 - may need fine-tuning based on sibling elements
-    <div className="relative mt-8 flex w-full">
+    <div className="relative mt-6 flex w-full">
       <input
         type="text"
         placeholder=" "
@@ -128,21 +128,16 @@ export default function VoucherInput() {
         // Disable based on total AND if fetching
         disabled={grandTotal < 1 || isFetching} // Simplified disable condition? Adjust min total if needed
         value={inputValue}
-        className={`peer h-[50px] w-full rounded-md border-2 px-2 shadow-custom outline-none transition-colors duration-150 ${borderColor} ${textColor} disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-50 disabled:text-gray-400 disabled:opacity-70`}
+        className={`peer h-[43px] w-full rounded-md border-2 px-2 shadow-custom outline-none transition-colors duration-150 lg:h-[50px] ${borderColor} ${textColor} disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-50 disabled:text-gray-400 disabled:opacity-70`}
       />
 
       <label
-        className={`absolute left-3 top-1/2 -translate-y-1/2 font-medium transition-all duration-150 peer-focus:top-[-10px] peer-focus:tracking-widest peer-disabled:text-gray-400 peer-[&:not(:placeholder-shown)]:top-[-10px] peer-[&:not(:placeholder-shown)]:tracking-widest ${textColor} peer-focus:${textColor}`}
+        className={`absolute left-3 top-1/2 -translate-y-1/2 font-medium transition-all duration-150 peer-focus:top-[-12px] peer-focus:tracking-wider peer-disabled:text-gray-400 peer-[&:not(:placeholder-shown)]:top-[-10px] peer-[&:not(:placeholder-shown)]:tracking-widest ${textColor} peer-focus:${textColor}`}
       >
-        Voucher Code {/* Changed label text for clarity */}
+        Voucher{/* Changed label text for clarity */}
         {/* Optionally show status text or icon */}
         {isFetching && (
           <span className="ml-2 text-xs text-blue-500">(Checking...)</span>
-        )}
-        {voucherStatus?.error && (
-          <span className="ml-2 text-xs text-red-500">
-            ({voucherStatus.error})
-          </span>
         )}
         {voucherStatus?.status === true && (
           <span className="ml-2 text-xs text-green-500">(Applied!)</span>

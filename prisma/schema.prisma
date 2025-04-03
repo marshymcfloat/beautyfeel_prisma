@@ -52,14 +52,30 @@ model Account {
 model Service {
   id String @id @default(uuid())
 
-  title          String           @unique
+  title          String           @unique // Consider if title should be unique globally or per branch
   description    String?
   price          Int              @default(0) // Price per unit
   branchId       String
   totalSales     Int              @default(0) // Consider Float
   branch         Branch           @relation(fields: [branchId], references: [id])
   AvailedService AvailedService[]
+
+  // --- Relation to ServiceSet (Many-to-Many) ---
+  serviceSets ServiceSet[] @relation("ServiceToSet")
+  // --- End Relation ---
 }
+
+// --- NEW MODEL: ServiceSet ---
+model ServiceSet {
+  id    String @id @default(uuid())
+  title String @unique // Title for the set (e.g., "Spa Day Package")
+  price Int // Price for the entire set
+
+  // Many-to-Many relation with Service
+  services Service[] @relation("ServiceToSet")
+}
+
+// --- END NEW MODEL ---
 
 model Customer {
   id                 String        @id @default(uuid())
@@ -91,7 +107,7 @@ model Transaction {
   paymentMethod   String
   grandTotal      Int
   status          Status           @default(PENDING)
-  branchId        String?
+  branchId        String? // Consider if transactions are branch-specific
 }
 
 model AvailedService {
@@ -104,7 +120,7 @@ model AvailedService {
 
   quantity Int @default(1)
 
-  price Int
+  price Int // Price snapshot at time of transaction
 
   checkedById String?
   checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])

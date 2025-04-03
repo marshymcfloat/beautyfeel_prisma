@@ -39,7 +39,11 @@ export default function SideBar() {
         { href: `/${accountID}`, label: "Home", icon: House },
         { href: `/${accountID}/cashier`, label: "Cashier", icon: Banknote },
         { href: `/${accountID}/work`, label: "Work", icon: NotepadText },
-        { href: `/${accountID}/services`, label: "Services", icon: Settings2 },
+        {
+          href: `/${accountID}/manage`,
+          label: "Manage",
+          icon: Settings2,
+        },
       ]
     : [];
 

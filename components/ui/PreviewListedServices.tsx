@@ -20,7 +20,7 @@ export default function PreviewListedServices({
 
   return (
     <button // Make the whole thing clickable
-      className="mx-auto mt-4 block max-w-md rounded-lg border border-slate-200 bg-blue-50 p-4 text-left shadow-md transition hover:border-blue-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-blue-900/50"
+      className="min-w-md mx-auto mt-4 block w-[450px] rounded-lg border border-slate-200 bg-blue-50 p-4 text-left shadow-md transition hover:border-blue-300 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 disabled:cursor-not-allowed disabled:opacity-60 disabled:lg:max-w-[450px] dark:bg-blue-900/50"
       onClick={onOpenModal}
       disabled={checkedCount === 0} // Disable if nothing is checked
       aria-label={`View your ${checkedCount} claimed service(s)`}
