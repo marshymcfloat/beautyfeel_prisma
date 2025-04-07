@@ -4,9 +4,13 @@
   "private": true,
   "description": "Backend server for the Beautyfeel application",
   "main": "server.js",
+  "prisma": {
+    "schema": "../prisma/schema.prisma"
+  },
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
