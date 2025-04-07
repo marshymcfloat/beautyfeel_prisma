@@ -3,9 +3,25 @@
 import { formatName } from "./utils";
 import { compare } from "bcryptjs";
 import bcrypt from "bcryptjs";
-import { PrismaClient, Status } from "@prisma/client";
+import {
+  PrismaClient,
+  PaymentMethod,
+  Status,
+  GiftCertificate,
+  Service,
+  Role,
+  DiscountRule,
+  ServiceSet,
+  DiscountType,
+} from "@prisma/client";
 import { withAccelerate } from "@prisma/extension-accelerate";
-import { Role } from "@prisma/client";
+import {
+  MonthlySalesWithPaymentBreakdown,
+  SalesDataDetailed,
+  PaymentMethodTotals,
+  CheckGCResult,
+  UIDiscountRuleWithServices,
+} from "./Types";
 import {
   AccountData,
   SalaryBreakdownItem,
@@ -29,6 +45,14 @@ const updateBranchSchema = z.object({
 });
 
 const prisma = new PrismaClient().$extends(withAccelerate());
+
+export interface MonthlySalesData {
+  month: string; // e.g., "Jan 24"
+  ewallet: number;
+  cash: number;
+  bank: number;
+  total: number;
+}
 
 type ServiceProps = {
   id: string;
@@ -58,7 +82,7 @@ interface CashierState {
     quantity: number; // How many units of this service
   }[];
   voucherCode?: string | null;
-  paymentMethod: "cash" | "ewallet" | "bank" | string; // Use specific types if possible
+  paymentMethod: PaymentMethod;
   grandTotal: number;
   totalDiscount: number;
   // Add branchId if it comes from the form or context
@@ -104,6 +128,108 @@ export async function getVoucher(code: string) {
     };
   }
 }
+
+export async function getAllServices(): Promise<Service[]> {
+  try {
+    const services = await prisma.service.findMany({
+      orderBy: { title: "asc" },
+      // Add include/select if needed, e.g., include: { branch: true }
+    });
+    return services;
+  } catch (error) {
+    console.error("Error fetching only services:", error);
+    return [];
+  }
+}
+
+export async function getAllServicesOnly(): Promise<Service[]> {
+  try {
+    const services = await prisma.service.findMany({
+      orderBy: { title: "asc" },
+      // Add include/select if needed, e.g., include: { branch: true }
+    });
+    return services;
+  } catch (error) {
+    console.error("Error fetching only services:", error);
+    return [];
+  }
+}
+
+// --- Action to fetch ONLY Service Sets ---
+export async function getAllServiceSets(): Promise<ServiceSet[]> {
+  try {
+    const serviceSets = await prisma.serviceSet.findMany({
+      orderBy: { title: "asc" },
+      include: {
+        // Important: Include the services within the set if needed for display/validation
+        services: { select: { id: true, title: true } },
+      },
+    });
+    return serviceSets;
+  } catch (error) {
+    console.error("Error fetching service sets:", error);
+    return [];
+  }
+}
+
+const GiftCertificateCreateSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .min(4, "Code must be at least 4 characters")
+    .toUpperCase(),
+  serviceIds: z
+    .array(z.string().uuid("Invalid service ID format"))
+    .min(1, "At least one service must be selected"),
+  expiresAt: z
+    .string()
+    .optional()
+    .nullable()
+    .refine((val) => !val || !isNaN(Date.parse(val)), {
+      message: "Invalid expiry date",
+    }),
+  recipientName: z.string().trim().optional().nullable(),
+  // --- Make email optional, but validate if present ---
+  recipientEmail: z
+    .string()
+    .trim()
+    .email({ message: "Invalid email format provided." })
+    .optional() // Makes the field itself optional
+    .or(z.literal("")) // Allow empty string ''
+    .nullable(), // Allow null
+});
+
+const DiscountRuleSchema = z
+  .object({
+    description: z.string().trim().optional().nullable(),
+    discountType: z.enum([DiscountType.PERCENTAGE, DiscountType.FIXED_AMOUNT]),
+    discountValue: z.coerce
+      .number()
+      .positive("Discount value must be positive"),
+    startDate: z.string().date("Invalid start date"),
+    endDate: z.string().date("Invalid end date"),
+    applyTo: z.enum(["all", "specific"]),
+    serviceIds: z.array(z.string().uuid()).optional(),
+  })
+  .refine(
+    (data) => {
+      try {
+        return new Date(data.endDate) >= new Date(data.startDate);
+      } catch {
+        return false;
+      }
+    },
+    { message: "End date must be on or after start date", path: ["endDate"] },
+  )
+  .refine(
+    (data) =>
+      data.applyTo === "all" || (data.serviceIds && data.serviceIds.length > 0),
+    {
+      message:
+        "Please select at least one service when applying to specific services.",
+      path: ["serviceIds"],
+    },
+  );
 
 export async function transactionSubmission(transactionForm: CashierState) {
   try {
@@ -429,6 +555,119 @@ export async function transactionSubmission(transactionForm: CashierState) {
     return {
       success: false,
       errors: errors,
+    };
+  }
+}
+
+export async function createGiftCertificateAction(formData: FormData) {
+  const rawData = {
+    code: formData.get("code"),
+    serviceIds: formData.getAll("serviceIds"),
+    expiresAt: formData.get("expiresAt") || null,
+    recipientName: formData.get("recipientName") || null,
+    // --- Ensure empty string becomes null for the database ---
+    recipientEmail: (formData.get("recipientEmail") as string)?.trim() || null,
+  };
+
+  const validation = GiftCertificateCreateSchema.safeParse(rawData);
+
+  if (!validation.success) {
+    console.error(
+      "GC Validation Failed:",
+      validation.error.flatten().fieldErrors,
+    );
+    return {
+      success: false,
+      message: "Validation failed.",
+      errors: validation.error.flatten().fieldErrors,
+    };
+  }
+
+  // Use validated data (Zod handles the optional/null part)
+  const { code, serviceIds, expiresAt, recipientName, recipientEmail } =
+    validation.data;
+
+  try {
+    const existing = await prisma.giftCertificate.findUnique({
+      where: { code },
+    });
+    if (existing) {
+      return {
+        success: false,
+        message: `Code "${code}" already exists.`,
+        errors: { code: [`Code "${code}" already exists.`] },
+      };
+    }
+
+    const createdGC = await prisma.giftCertificate.create({
+      data: {
+        code,
+        // Use validated data, which might be null for email
+        recipientName: recipientName || null, // Ensure null if empty string passed validation
+        recipientEmail: recipientEmail || null, // Ensure null if empty string passed validation
+        expiresAt: expiresAt ? new Date(expiresAt) : null,
+        services: { connect: serviceIds.map((id) => ({ id })) },
+      },
+      include: { services: { select: { id: true, title: true } } },
+    });
+    console.log("GC Created:", createdGC);
+    revalidatePath("/customize");
+    return {
+      success: true,
+      message: `Gift Certificate ${code} created successfully.`,
+    };
+  } catch (error: any) {
+    // ... (existing error handling) ...
+    console.error("Error creating Gift Certificate:", error);
+    if (error.code === "P2002" && error.meta?.target?.includes("code")) {
+      return {
+        success: false,
+        message: `Code "${code}" already exists.`,
+        errors: { code: [`Code "${code}" already exists.`] },
+      };
+    }
+    return {
+      success: false,
+      message: "Database error creating Gift Certificate.",
+    };
+  }
+}
+
+// --- Action to check a GC code ---
+export async function checkGiftCertificateAction(
+  code: string,
+): Promise<CheckGCResult> {
+  if (!code || typeof code !== "string" || code.trim().length === 0) {
+    return {
+      status: "error",
+      message: "Gift Certificate code cannot be empty.",
+    };
+  }
+  const upperCode = code.trim().toUpperCase();
+  try {
+    const gc = await prisma.giftCertificate.findUnique({
+      where: { code: upperCode },
+      include: { services: { select: { id: true, title: true } } },
+    });
+    if (!gc) return { status: "not_found", code: upperCode };
+    if (gc.usedAt)
+      return { status: "used", code: upperCode, usedAt: gc.usedAt };
+    if (gc.expiresAt && gc.expiresAt < new Date())
+      return { status: "expired", code: upperCode, expiresAt: gc.expiresAt };
+    return {
+      status: "valid",
+      id: gc.id,
+      services: gc.services,
+      expiresAt: gc.expiresAt,
+    };
+  } catch (error) {
+    console.error(
+      `Error checking Gift Certificate code "${upperCode}":`,
+      error,
+    );
+    return {
+      status: "error",
+      message: "Database error checking Gift Certificate.",
     };
   }
 }
@@ -944,7 +1183,7 @@ export async function deleteServiceAction(id: string) {
 const ALL_ROLES = Object.values(Role); // For validation
 
 const createAccountSchema = z.object({
-  username: z.string().min(1).max(6, "Username must be 1-6 characters"),
+  username: z.string().min(1).max(20, "Username must be 1-6 characters"),
   password: z.string().min(6, "Password must be at least 6 characters"),
   name: z.string().min(1, "Name is required"),
   email: z
@@ -1573,6 +1812,369 @@ export async function deleteServiceSetAction(setId: string) {
     return {
       success: false,
       message: "Database error: Failed to delete service set.",
+    };
+  }
+}
+
+export async function getSalesDataLast6Months(): Promise<SalesDataDetailed> {
+  const now = new Date();
+  const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+
+  console.log(`Fetching sales data from: ${sixMonthsAgo.toISOString()}`);
+
+  try {
+    const transactions = await prisma.transaction.findMany({
+      where: { status: Status.DONE, createdAt: { gte: sixMonthsAgo } },
+      select: { createdAt: true, grandTotal: true, paymentMethod: true },
+      orderBy: { createdAt: "asc" },
+    });
+
+    console.log(`Fetched ${transactions.length} completed transactions.`);
+
+    // Map key: "YYYY-MM", value: object with totals for that month
+    const monthlyMap: Map<
+      string,
+      Omit<MonthlySalesWithPaymentBreakdown, "month" | "yearMonth">
+    > = new Map();
+    const overallPaymentTotals: PaymentMethodTotals = {
+      cash: 0,
+      ewallet: 0,
+      bank: 0,
+      unknown: 0,
+    };
+    let overallGrandTotal = 0;
+
+    // Initialize map for the last 6 months
+    for (let i = 0; i < 6; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const yearMonthKey = `${date.getFullYear()}-${(date.getMonth() + 1).toString().padStart(2, "0")}`;
+      if (!monthlyMap.has(yearMonthKey)) {
+        // Ensure not already initialized if loop overlaps somehow
+        monthlyMap.set(yearMonthKey, {
+          totalSales: 0,
+          cash: 0,
+          ewallet: 0,
+          bank: 0,
+          unknown: 0,
+        });
+      }
+    }
+
+    // Aggregate data
+    for (const tx of transactions) {
+      const year = tx.createdAt.getFullYear();
+      const month = tx.createdAt.getMonth() + 1;
+      const yearMonthKey = `${year}-${month.toString().padStart(2, "0")}`;
+
+      // Get or initialize the data object for the month
+      const currentMonthData = monthlyMap.get(yearMonthKey) ?? {
+        totalSales: 0,
+        cash: 0,
+        ewallet: 0,
+        bank: 0,
+        unknown: 0,
+      };
+
+      // Add to monthly totalSales
+      currentMonthData.totalSales += tx.grandTotal;
+
+      // Add to specific payment method total *for the month* AND *overall*
+      switch (tx.paymentMethod) {
+        case PaymentMethod.cash:
+          currentMonthData.cash += tx.grandTotal;
+          overallPaymentTotals.cash += tx.grandTotal;
+          break;
+        case PaymentMethod.ewallet:
+          currentMonthData.ewallet += tx.grandTotal;
+          overallPaymentTotals.ewallet += tx.grandTotal;
+          break;
+        case PaymentMethod.bank:
+          currentMonthData.bank += tx.grandTotal;
+          overallPaymentTotals.bank += tx.grandTotal;
+          break;
+        default:
+          currentMonthData.unknown += tx.grandTotal;
+          overallPaymentTotals.unknown += tx.grandTotal;
+          break;
+      }
+
+      // Update the map with the modified month data
+      monthlyMap.set(yearMonthKey, currentMonthData);
+
+      // Add to overall grand total
+      overallGrandTotal += tx.grandTotal;
+    }
+
+    // Format monthly data for the result
+    const monthNames = [
+      "Jan",
+      "Feb",
+      "Mar",
+      "Apr",
+      "May",
+      "Jun",
+      "Jul",
+      "Aug",
+      "Sep",
+      "Oct",
+      "Nov",
+      "Dec",
+    ];
+    const monthlySalesData: MonthlySalesWithPaymentBreakdown[] = Array.from(
+      monthlyMap.entries(),
+    )
+      .map(([yearMonth, totals]) => {
+        const [year, monthIndex] = yearMonth.split("-").map(Number);
+        const shortYear = year.toString().slice(-2);
+        const monthName = monthNames[monthIndex - 1];
+        return {
+          yearMonth: yearMonth,
+          month: `${monthName} '${shortYear}`,
+          ...totals, // Spread the calculated totals (totalSales, cash, ewallet, etc.)
+        };
+      })
+      .sort((a, b) => a.yearMonth.localeCompare(b.yearMonth)); // Sort chronologically
+
+    return {
+      monthlySales: monthlySalesData,
+      paymentMethodTotals: overallPaymentTotals, // Return overall totals
+      grandTotal: overallGrandTotal,
+    };
+  } catch (error) {
+    console.error("Error fetching detailed sales data:", error);
+    return {
+      monthlySales: [],
+      paymentMethodTotals: { cash: 0, ewallet: 0, bank: 0, unknown: 0 },
+      grandTotal: 0,
+    };
+  }
+}
+
+export async function getActiveGiftCertificates(): Promise<GiftCertificate[]> {
+  try {
+    const now = new Date();
+    const activeGCs = await prisma.giftCertificate.findMany({
+      where: {
+        usedAt: null, // Not used
+        OR: [
+          // Either no expiry OR expiry is in the future
+          { expiresAt: null },
+          { expiresAt: { gte: now } },
+        ],
+      },
+      orderBy: {
+        issuedAt: "desc", // Show newest first
+      },
+      // Optionally include services if you want to display them in the list
+      // include: { services: { select: { title: true } } }
+    });
+    return activeGCs;
+  } catch (error) {
+    console.error("Error fetching active gift certificates:", error);
+    return []; // Return empty on error
+  }
+}
+
+export async function toggleDiscountRuleAction(
+  id: string,
+  currentStatus: boolean,
+): Promise<{ success: boolean; message: string }> {
+  console.log(
+    `Toggling discount rule ${id} from isActive=${currentStatus} to ${!currentStatus}`,
+  );
+
+  // Basic validation for ID
+  if (!id || typeof id !== "string") {
+    console.error("Invalid ID provided for toggling discount rule.");
+    return { success: false, message: "Invalid discount rule ID." };
+  }
+
+  try {
+    // Find the rule first to ensure it exists (optional but good practice)
+    const existingRule = await prisma.discountRule.findUnique({
+      where: { id },
+      select: { id: true }, // Only select id to check existence
+    });
+
+    if (!existingRule) {
+      console.error(`Discount rule with ID ${id} not found.`);
+      return { success: false, message: "Discount rule not found." };
+    }
+
+    // Perform the update to toggle the isActive status
+    await prisma.discountRule.update({
+      where: { id: id },
+      data: {
+        isActive: !currentStatus, // Set to the opposite of the current status
+      },
+    });
+
+    // Revalidate the path where discounts are displayed/managed
+    revalidatePath("/customize"); // Adjust this path if needed
+
+    const newMessage = `Discount rule ${!currentStatus ? "activated" : "deactivated"} successfully.`;
+    console.log(newMessage);
+    return { success: true, message: newMessage };
+  } catch (error: any) {
+    console.error(`Error toggling discount rule status for ID ${id}:`, error);
+    // Provide a generic error message for database issues
+    return {
+      success: false,
+      message: "Database error updating discount status. Please try again.",
+    };
+  }
+}
+export async function createDiscountRuleAction(formData: FormData) {
+  const rawData = {
+    description: formData.get("description") || null,
+    discountType: formData.get("discountType"),
+    discountValue: formData.get("discountValue"),
+    startDate: formData.get("startDate"),
+    endDate: formData.get("endDate"),
+    applyTo: formData.get("applyTo"),
+    serviceIds: formData.getAll("serviceIds"),
+  };
+  const validation = DiscountRuleSchema.safeParse(rawData);
+
+  if (!validation.success) {
+    console.error(
+      "Discount Validation Failed:",
+      validation.error.flatten().fieldErrors,
+    );
+    return {
+      success: false,
+      message: "Validation failed.",
+      errors: validation.error.flatten().fieldErrors,
+    };
+  }
+
+  // Destructure applyTo from validated data
+  const {
+    discountType,
+    discountValue,
+    startDate,
+    endDate,
+    applyTo,
+    serviceIds,
+    description,
+  } = validation.data;
+
+  try {
+    // Base data includes the new applyToAll flag
+    const createData: {
+      description?: string | null;
+      discountType: DiscountType;
+      discountValue: number;
+      startDate: Date;
+      endDate: Date;
+      isActive: boolean;
+      applyToAll: boolean; // <<< Add applyToAll
+      services?: { connect: { id: string }[] };
+    } = {
+      description,
+      discountType,
+      discountValue,
+      startDate: new Date(startDate),
+      endDate: new Date(endDate),
+      isActive: true,
+      applyToAll: applyTo === "all", // <<< Set flag based on form value
+    };
+
+    // Connect services only if applying to specific ones
+    if (applyTo === "specific" && serviceIds && serviceIds.length > 0) {
+      createData.services = { connect: serviceIds.map((id) => ({ id })) };
+    }
+    // No need to explicitly handle 'services' field when applyTo is 'all'
+
+    await prisma.discountRule.create({ data: createData });
+
+    revalidatePath("/customize");
+    return { success: true, message: "Discount rule created successfully." };
+  } catch (error) {
+    /* ... handle errors ... */
+  }
+}
+// --- Action to FETCH Active/Inactive Discount Rules ---
+export async function getDiscountRules(): Promise<
+  UIDiscountRuleWithServices[]
+> {
+  console.log("Fetching all discount rules...");
+  try {
+    const rulesFromDb = await prisma.discountRule.findMany({
+      orderBy: { startDate: "desc" }, // Or any other preferred order
+      include: {
+        services: { select: { id: true, title: true } },
+      },
+    });
+
+    // --- Convert Dates to ISO Strings before returning ---
+    const rulesWithIsoDates = rulesFromDb.map((rule) => ({
+      ...rule,
+      // Convert each date field to ISO string format
+      startDate: rule.startDate.toISOString(),
+      endDate: rule.endDate.toISOString(),
+      createdAt: rule.createdAt.toISOString(),
+      updatedAt: rule.updatedAt.toISOString(),
+      // Ensure services array exists
+      services: rule.services || [],
+    }));
+
+    // Now the structure matches UIDiscountRuleWithServices (with string dates)
+    return rulesWithIsoDates;
+  } catch (error) {
+    console.error("Error fetching all discount rules:", error);
+    return []; // Return empty array on error
+  }
+}
+
+export async function getActiveDiscountRules(): Promise<
+  UIDiscountRuleWithServices[]
+> {
+  const now = new Date();
+  console.log(
+    "Fetching active discount rules effective now:",
+    now.toISOString(),
+  );
+  try {
+    const rulesFromDb = await prisma.discountRule.findMany({
+      where: { isActive: true, startDate: { lte: now }, endDate: { gte: now } },
+      orderBy: [{ discountValue: "desc" }, { createdAt: "desc" }],
+      include: { services: { select: { id: true, title: true } } },
+    });
+    console.log(`Found ${rulesFromDb.length} active discount rules.`);
+    // --- Convert Dates to ISO Strings ---
+    const rulesWithIsoDates = rulesFromDb.map((rule) => ({
+      ...rule,
+      startDate: rule.startDate.toISOString(),
+      endDate: rule.endDate.toISOString(),
+      createdAt: rule.createdAt.toISOString(),
+      updatedAt: rule.updatedAt.toISOString(),
+      services: rule.services || [],
+    }));
+    return rulesWithIsoDates;
+  } catch (error) {
+    /* ... error handling ... */ return [];
+  }
+}
+// --- Action to DELETE Discount Rule (Use with caution) ---
+export async function deleteDiscountRuleAction(id: string) {
+  try {
+    // Need to disconnect relations before deleting if using implicit many-to-many
+    await prisma.discountRule.update({
+      where: { id },
+      data: {
+        services: { set: [] }, // Disconnect all services first
+      },
+    });
+    await prisma.discountRule.delete({ where: { id } });
+
+    revalidatePath("/customize");
+    return { success: true, message: "Discount rule deleted." };
+  } catch (error) {
+    console.error("Error deleting discount rule:", error);
+    return {
+      success: false,
+      message: "Database error deleting discount rule.",
     };
   }
 }

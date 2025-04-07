@@ -309,12 +309,12 @@ export default function ManageAccounts() {
                     name="username"
                     id="username"
                     required
-                    maxLength={6}
+                    maxLength={20}
                     defaultValue={editingAccount?.username ?? ""}
                     className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
                   />
                   <p className="mt-1 text-xs text-gray-500">
-                    Max 6 characters.
+                    Max 20 characters.
                   </p>
                 </div>
                 <div>

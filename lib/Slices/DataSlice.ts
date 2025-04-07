@@ -1,106 +1,113 @@
+// lib/Slices/DataSlice.ts
 import { createSlice, createAsyncThunk } from "@reduxjs/toolkit";
-import { getServices } from "@/lib/utils";
+// Import NEW server actions
+import { getAllServicesOnly, getAllServiceSets } from "@/lib/ServerAction";
+// Import Prisma types directly if needed, or use simplified types
+import type {
+  Service as PrismaService,
+  ServiceSet as PrismaServiceSet,
+} from "@prisma/client";
+// Import your central FetchedItem type - MAKE SURE IT'S CORRECT
+import { FetchedItem } from "../Types";
 
-type Service = {
-  id: string;
-  title: string;
-  price: number;
-  branchId: string;
-};
-
+// Define state structure
 interface DataState {
-  services: Service[] | null;
-  servicesLoading: boolean;
-  servicesError: string | null;
-  servicesFetchedForAccountID: string | null;
+  services: PrismaService[] | null; // Store raw services
+  serviceSets: PrismaServiceSet[] | null; // Store raw service sets
+  itemsLoading: boolean; // Single loading state for simplicity, or separate ones
+  itemsError: string | null;
+  // Removed itemsFetchedForAccountID as we're fetching globally now
 }
 
 const initialState: DataState = {
   services: null,
-  servicesLoading: false,
-  servicesError: null,
-  servicesFetchedForAccountID: null,
+  serviceSets: null,
+  itemsLoading: false, // Start as false
+  itemsError: null,
 };
 
-export const fetchServicesForAccount = createAsyncThunk(
-  "data/fetchServicesForAccount",
-  async (accountID: string, { getState, rejectWithValue }) => {
-    const { data } = getState() as { data: DataState }; // Adjust 'data' if slice name is different
-
-    // *** Optimization Check ***
-    // If services are already loaded for this specific accountID, don't refetch
-    if (
-      data.services &&
-      data.servicesFetchedForAccountID === accountID &&
-      !data.servicesError
-    ) {
-      console.log(
-        `Services for account ${accountID} already loaded. Skipping fetch.`,
-      );
-      // Return the existing services to potentially use in component if needed,
-      // though usually selecting from state is sufficient.
-      // Or simply return a marker indicating no fetch was needed.
-      return { data: data.services, fetched: false, accountID };
-    }
-
-    console.log(`Fetching services for account ${accountID}...`);
+// Thunk to fetch Services ONLY
+export const fetchServices = createAsyncThunk(
+  "data/fetchServices",
+  async (_, { rejectWithValue }) => {
+    // No accountID needed now
+    console.log("Fetching services...");
     try {
-      // Ensure accountID is valid before fetching
-      if (!accountID) {
-        throw new Error("Account ID is required to fetch services.");
-      }
-      const fetchedServices = await getServices(accountID);
-      // Return data and the accountID it belongs to
-      return { data: fetchedServices, fetched: true, accountID };
+      const fetchedServices = await getAllServicesOnly();
+      return fetchedServices; // Return raw PrismaService array
     } catch (error: any) {
       console.error("Failed to fetch services:", error);
-      // Use rejectWithValue to send a structured error payload
       return rejectWithValue(error.message || "Failed to load services.");
+    }
+  },
+);
+
+// Thunk to fetch Service Sets ONLY
+export const fetchServiceSets = createAsyncThunk(
+  "data/fetchServiceSets",
+  async (_, { rejectWithValue }) => {
+    console.log("Fetching service sets...");
+    try {
+      const fetchedServiceSets = await getAllServiceSets();
+      return fetchedServiceSets; // Return raw PrismaServiceSet array
+    } catch (error: any) {
+      console.error("Failed to fetch service sets:", error);
+      return rejectWithValue(error.message || "Failed to load service sets.");
     }
   },
 );
 
 // Create the slice
 export const DataSlice = createSlice({
-  name: "data", // Or your preferred slice name
+  name: "data",
   initialState,
   reducers: {
-    // Optional: Reducer to clear services if needed (e.g., on logout)
-    clearServices: (state) => {
+    clearAllData: (state) => {
+      // Clear both lists
       state.services = null;
-      state.servicesFetchedForAccountID = null;
-      state.servicesLoading = false;
-      state.servicesError = null;
+      state.serviceSets = null;
+      state.itemsLoading = false;
+      state.itemsError = null;
     },
   },
   extraReducers: (builder) => {
+    // Handle fetchServices
     builder
-      .addCase(fetchServicesForAccount.pending, (state, action) => {
-        const accountID = action.meta.arg;
-        if (
-          state.servicesFetchedForAccountID !== accountID ||
-          state.servicesError
-        ) {
-          state.servicesLoading = true;
-          state.servicesError = null;
-        }
+      .addCase(fetchServices.pending, (state) => {
+        state.itemsLoading = true; // Use combined loading state
+        state.itemsError = null;
       })
-      .addCase(fetchServicesForAccount.fulfilled, (state, action) => {
-        if (action.payload.fetched) {
-          state.servicesLoading = false;
-          state.services = action.payload.data;
-          state.servicesFetchedForAccountID = action.payload.accountID;
-          state.servicesError = null;
-        } else {
-          state.servicesLoading = false;
-        }
+      .addCase(fetchServices.fulfilled, (state, action) => {
+        state.itemsLoading = false;
+        state.services = action.payload; // Store services
+        state.itemsError = null;
       })
-      .addCase(fetchServicesForAccount.rejected, (state, action) => {
-        state.servicesLoading = false;
-        state.servicesError = action.payload as string;
+      .addCase(fetchServices.rejected, (state, action) => {
+        state.itemsLoading = false;
+        state.itemsError =
+          (action.payload as string) ?? "Failed to fetch services";
+        state.services = null; // Clear on error
+      });
+
+    // Handle fetchServiceSets
+    builder
+      .addCase(fetchServiceSets.pending, (state) => {
+        state.itemsLoading = true; // Use combined loading state
+        state.itemsError = null;
+      })
+      .addCase(fetchServiceSets.fulfilled, (state, action) => {
+        state.itemsLoading = false;
+        state.serviceSets = action.payload; // Store service sets
+        state.itemsError = null;
+      })
+      .addCase(fetchServiceSets.rejected, (state, action) => {
+        state.itemsLoading = false;
+        state.itemsError =
+          (action.payload as string) ?? "Failed to fetch service sets";
+        state.serviceSets = null; // Clear on error
       });
   },
 });
 
-export const { clearServices } = DataSlice.actions;
+export const { clearAllData } = DataSlice.actions; // Export renamed action
 export default DataSlice.reducer;

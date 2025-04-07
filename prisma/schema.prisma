@@ -1,8 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
@@ -13,16 +11,50 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// --- Enums ---
 enum Role {
   OWNER
   CASHIER
   WORKER
 }
 
+enum DiscountType {
+  PERCENTAGE
+  FIXED_AMOUNT
+}
+
 enum Status {
   PENDING
   DONE
   CANCELLED
+}
+
+enum PaymentMethod {
+  ewallet
+  cash
+  bank
+}
+
+// --- Models ---
+
+model DiscountRule {
+  id            String       @id @default(uuid())
+  description   String?
+  discountType  DiscountType
+  discountValue Float
+  startDate     DateTime
+  endDate       DateTime
+  isActive      Boolean      @default(true)
+
+  // --- Applicability ---
+  applyToAll Boolean   @default(false) // <<< ADD THIS FLAG
+  services   Service[] @relation("DiscountedServices") // Still keep for specific discounts
+
+  // --- Tracking ---
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startDate, endDate])
 }
 
 model Branch {
@@ -36,7 +68,7 @@ model Branch {
 
 model Account {
   id       String  @id @default(uuid())
-  username String  @unique @db.VarChar(6)
+  username String  @unique @db.VarChar(20) // Increased length if needed
   password String
   name     String
   email    String? @unique @db.VarChar(255)
@@ -54,42 +86,47 @@ model Service {
 
   title          String           @unique // Consider if title should be unique globally or per branch
   description    String?
-  price          Int              @default(0) // Price per unit
+  price          Int              @default(0) // Price per unit in smallest unit (e.g., centavos)
   branchId       String
-  totalSales     Int              @default(0) // Consider Float
+  totalSales     Int              @default(0) // Total units sold perhaps? Or total value? Clarify meaning or use Float for value.
   branch         Branch           @relation(fields: [branchId], references: [id])
   AvailedService AvailedService[]
+  serviceSets    ServiceSet[]     @relation("ServiceToSet")
 
-  // --- Relation to ServiceSet (Many-to-Many) ---
-  serviceSets ServiceSet[] @relation("ServiceToSet")
-  // --- End Relation ---
+  // Relation to Gift Certificates (Many-to-Many)
+  giftCertificates GiftCertificate[] @relation("GCService")
+
+  discountRules DiscountRule[] @relation("DiscountedServices")
 }
 
-// --- NEW MODEL: ServiceSet ---
 model ServiceSet {
   id    String @id @default(uuid())
   title String @unique // Title for the set (e.g., "Spa Day Package")
-  price Int // Price for the entire set
+  price Int // Price for the entire set in smallest unit (e.g., centavos)
 
   // Many-to-Many relation with Service
   services Service[] @relation("ServiceToSet")
-}
 
-// --- END NEW MODEL ---
+  // Relation to Gift Certificates (Many-to-Many, if GCs can be for sets)
+  giftCertificates GiftCertificate[] @relation("GCServiceSet")
+}
 
 model Customer {
   id                 String        @id @default(uuid())
   name               String        @db.VarChar(50)
   email              String?       @unique @db.VarChar(255)
-  totalPaid          Float         @default(0) // Float seems appropriate
+  totalPaid          Float         @default(0) // Total value paid (e.g., Pesos)
   nextAppointment    DateTime?
   transactionHistory Transaction[]
+
+  // Relation to purchased GCs
+  purchasedGiftCertificates GiftCertificate[] @relation("PurchasedGiftCertificates")
 }
 
 model Voucher {
   id          String        @id @default(uuid())
   code        String        @unique
-  value       Int
+  value       Int // Discount value in smallest unit (e.g., centavos) or percentage? Clarify. Assuming amount for now.
   usedAt      DateTime?
   Transaction Transaction[]
 }
@@ -103,11 +140,15 @@ model Transaction {
   availedServices AvailedService[]
   voucherId       String?
   voucherUsed     Voucher?         @relation(fields: [voucherId], references: [id])
-  discount        Int              @default(0) // Maybe calculated from voucher or applied manually
-  paymentMethod   String
-  grandTotal      Int
+  discount        Int              @default(0) // Total discount amount in smallest unit (e.g., centavos)
+  paymentMethod   PaymentMethod? // e.g., 'cash', 'ewallet', 'bank'
+  grandTotal      Int // Final amount paid in smallest unit (e.g., centavos)
   status          Status           @default(PENDING)
-  branchId        String? // Consider if transactions are branch-specific
+  branchId        String? // Link to Branch if transactions are branch-specific
+
+  // Relation to used GCs (A transaction might use one GC)
+  giftCertificateUsedId String?          @unique // A GC can only be used once
+  giftCertificateUsed   GiftCertificate? @relation("UsedGiftCertificates", fields: [giftCertificateUsedId], references: [id])
 }
 
 model AvailedService {
@@ -120,11 +161,37 @@ model AvailedService {
 
   quantity Int @default(1)
 
-  price Int // Price snapshot at time of transaction
+  price Int // Price snapshot per unit in smallest unit (e.g., centavos) at time of transaction
 
   checkedById String?
   checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
 
   servedById String?
   servedBy   Account? @relation("ServedRelation", fields: [servedById], references: [id])
+}
+
+model GiftCertificate {
+  id        String    @id @default(uuid())
+  code      String    @unique // Unique code for redemption
+  issuedAt  DateTime  @default(now())
+  expiresAt DateTime? // Optional expiry date
+
+  // Who bought it (optional)
+  purchaserCustomerId String?
+  purchaserCustomer   Customer? @relation("PurchasedGiftCertificates", fields: [purchaserCustomerId], references: [id])
+
+  // Who is it for? (Optional details)
+  recipientName  String?
+  recipientEmail String?
+
+  // What services/sets is it valid for? (Many-to-Many)
+  services    Service[]    @relation("GCService")
+  serviceSets ServiceSet[] @relation("GCServiceSet") // If applicable
+
+  // Tracking Usage
+  usedAt            DateTime? // When it was redeemed
+  // Relation field defined by Transaction model (`giftCertificateUsed`)
+  usedInTransaction Transaction? @relation("UsedGiftCertificates")
+
+  @@index([purchaserCustomerId])
 }

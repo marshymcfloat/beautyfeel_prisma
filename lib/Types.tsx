@@ -1,4 +1,9 @@
-import type { Role } from "@prisma/client"; // Import Prisma enum if possible
+import type {
+  Role,
+  PaymentMethod,
+  Service,
+  DiscountRule,
+} from "@prisma/client"; // Import Prisma enum if possible
 import { Socket } from "socket.io-client"; // Import Socket type
 // Represents the essential data for the logged-in account
 export type AccountData = {
@@ -51,13 +56,101 @@ export type AvailedServicesProps = {
   servedBy: AccountInfo; // Keep for display/styling info if needed
 };
 
-export type ExpandedListedServicesProps = {
-  services: AvailedServicesProps[]; // Expects services CHECKED BY the current user
-  accountId: string; // ID of the logged-in user
-  socket: Socket | null; // Socket instance for emitting events
-  onClose: () => void; // Function to close the container (e.g., a dialog)
-  // Pass down processing state management from parent if needed globally
-  // Or manage processing state locally if this component is self-contained enough
-  processingServeActions: Set<string>;
-  setProcessingServeActions: React.Dispatch<React.SetStateAction<Set<string>>>;
+export type MonthlySalesWithPaymentBreakdown = {
+  month: string; // e.g., "Jan '24"
+  yearMonth: string; // e.g., "2024-01" for sorting
+  totalSales: number; // Total for the month
+  cash: number;
+  ewallet: number;
+  bank: number;
+  unknown: number;
 };
+
+// Keep the overall totals separate for the summary view
+export type PaymentMethodTotals = {
+  cash: number;
+  ewallet: number;
+  bank: number;
+  unknown: number;
+};
+
+// Updated main data structure
+export type SalesDataDetailed = {
+  // Use the new monthly type
+  monthlySales: MonthlySalesWithPaymentBreakdown[];
+  // Keep overall totals
+  paymentMethodTotals: PaymentMethodTotals;
+  grandTotal: number;
+};
+
+// Keep the simpler MonthlySales type for the preview chart if desired
+export type MonthlySales = {
+  month: string;
+  yearMonth: string;
+  totalSales: number;
+};
+export type TransactionProps = {
+  id: string;
+  createdAt: Date;
+  bookedFor: Date;
+  customer: CustomerProp;
+  customerId: string;
+  voucherId: string | null;
+  discount: number;
+  paymentMethod: string | null;
+  availedServices: AvailedServicesProps[];
+  grandTotal: number;
+  status: "PENDING" | "DONE" | "CANCELLED";
+};
+
+export type CheckGCResult =
+  | {
+      status: "valid";
+      id: string;
+      services: Pick<Service, "id" | "title">[];
+      expiresAt: Date | null;
+    }
+  | { status: "used"; code: string; usedAt: Date }
+  | { status: "expired"; code: string; expiresAt: Date }
+  | { status: "not_found"; code: string }
+  | { status: "error"; message: string };
+
+export type GiftCertificateValidationResult =
+  | {
+      status: "valid";
+      id: string;
+      services: Pick<Service, "id" | "title">[];
+      expiresAt: Date | null;
+    }
+  | { status: "used"; code: string; usedAt: Date }
+  | { status: "expired"; code: string; expiresAt: Date }
+  | { status: "not_found"; code: string }
+  | { status: "error"; message: string };
+
+// You might also want a simpler type for just the 'valid' case if used often
+export type ValidGiftCertificateResult = Extract<
+  GiftCertificateValidationResult,
+  { status: "valid" }
+>;
+
+export type FetchedItem = {
+  id: string;
+  title: string;
+  price: number;
+  type: "service" | "set"; // Ensure this is NOT optional 'type?'
+  // Add other fields returned by your fetch action if needed
+};
+
+export type UIDiscountRuleWithServices = Omit<
+  DiscountRule,
+  "startDate" | "endDate" | "createdAt" | "updatedAt"
+> & {
+  // Override date fields to be strings
+  startDate: string; // Store as ISO string
+  endDate: string; // Store as ISO string
+  createdAt: string; // Store as ISO string
+  updatedAt: string; // Store as ISO string
+  services?: Pick<Service, "id" | "title">[];
+  // applyToAll: boolean; // Make sure this is included if using it
+};
+export type ServiceOption = Pick<Service, "id" | "title">;

@@ -10,13 +10,17 @@ import ManageAccounts from "@/components/ui/customize/ManageAccounts";
 import ManageVouchers from "@/components/ui/customize/ManageVouchers";
 import ManageBranches from "@/components/ui/customize/ManageBranches";
 import ManageServiceSets from "@/components/ui/customize/ManageServiceSets";
+import ManageDiscounts from "@/components/ui/customize/ManageDiscounts";
+import ManageGiftCertificates from "@/components/ui/customize/ManageGiftCertificates";
 
 type ActiveTab =
   | "services"
   | "accounts"
   | "vouchers"
   | "branches"
-  | "serviceSets"; // Add serviceSets
+  | "serviceSets"
+  | "discounts"
+  | "giftCertificate";
 
 export default function CustomizePage() {
   // Default to services or maybe serviceSets if you prefer
@@ -32,8 +36,12 @@ export default function CustomizePage() {
         return <ManageVouchers />;
       case "branches":
         return <ManageBranches />;
-      case "serviceSets": // Render the new component
+      case "serviceSets":
         return <ManageServiceSets />;
+      case "discounts":
+        return <ManageDiscounts />;
+      case "giftCertificate":
+        return <ManageGiftCertificates />;
       default:
         return <ManageServices />;
     }
@@ -77,6 +85,18 @@ export default function CustomizePage() {
             className={getTabClassName("vouchers")}
           >
             Vouchers
+          </button>
+          <button
+            onClick={() => setActiveTab("giftCertificate")}
+            className={getTabClassName("giftCertificate")}
+          >
+            Gift Certificates
+          </button>
+          <button
+            onClick={() => setActiveTab("discounts")}
+            className={getTabClassName("discounts")}
+          >
+            Discounts
           </button>
           <button
             onClick={() => setActiveTab("branches")}
