@@ -48,7 +48,7 @@ type TransactionProps = {
   customerId: string;
   voucherId: string | null;
   discount: number;
-  paymentMethod: string;
+  paymentMethod: string | null;
   availedServices: AvailedServicesProps[];
   grandTotal: number;
   status: "PENDING" | "DONE" | "CANCELLED";
