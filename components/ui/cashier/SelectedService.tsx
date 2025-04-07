@@ -1,5 +1,4 @@
-// SelectedService.tsx
-"use client";
+/*"use client";
 
 import { Plus, Minus } from "lucide-react";
 import { useDispatch } from "react-redux";
@@ -59,8 +58,9 @@ export default function SelectedService({
       </div>
       <span className="w-[20%] text-center font-medium">
         ₱{(quantity * price).toLocaleString()}{" "}
-        {/* Added toLocaleString for formatting */}
       </span>
     </div>
   );
 }
+
+*/
