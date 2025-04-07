@@ -145,12 +145,11 @@ export type UIDiscountRuleWithServices = Omit<
   DiscountRule,
   "startDate" | "endDate" | "createdAt" | "updatedAt"
 > & {
-  // Override date fields to be strings
-  startDate: string; // Store as ISO string
-  endDate: string; // Store as ISO string
-  createdAt: string; // Store as ISO string
-  updatedAt: string; // Store as ISO string
+  startDate: string; // MUST be string
+  endDate: string; // MUST be string
+  createdAt: string; // MUST be string
+  updatedAt: string; // MUST be string
+  applyToAll: boolean; // Ensure this is included
   services?: Pick<Service, "id" | "title">[];
-  // applyToAll: boolean; // Make sure this is included if using it
 };
 export type ServiceOption = Pick<Service, "id" | "title">;
