@@ -6,8 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js",
-    "postinstall": "prisma generate --schema=../prisma/schema.prisma"
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "@prisma/client": "^6.5.0",
