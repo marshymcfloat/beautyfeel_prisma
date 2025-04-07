@@ -50,7 +50,7 @@ export default function Home() {
     new Set(),
   );
   const [isMyServicesModalOpen, setIsMyServicesModalOpen] = useState(false);
-  const [accountData, setAccountData] = useState<AccountData>(null);
+  const [accountData, setAccountData] = useState<AccountData | null>(null); // Corrected type
   const [salaryBreakdown, setSalaryBreakdown] = useState<SalaryBreakdownItem[]>(
     [],
   );
@@ -69,26 +69,54 @@ export default function Home() {
       console.error("Account ID is missing or invalid for socket connection.");
       return;
     }
-    const newSocket = io("http://localhost:4000");
+
+    // --- CORRECTED SECTION ---
+    // 1. Use the CORRECT environment variable name (must start with NEXT_PUBLIC_)
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL;
+
+    // 2. Add a check to ensure the variable is set
+    if (!backendUrl) {
+      console.error(
+        "FATAL ERROR: NEXT_PUBLIC_BACKEND_URL environment variable is not set in Vercel/frontend environment!",
+      );
+      alert(
+        "Configuration Error: Cannot connect to backend server. URL not found. Please check environment configuration.",
+      );
+      return; // Stop execution if the URL is missing
+    }
+
+    console.log(`Connecting socket to backend at: ${backendUrl}`);
+    const newSocket = io(backendUrl); // Use the correct variable
+    // --- END CORRECTED SECTION ---
+
     setSocket(newSocket);
-    console.log("Socket connecting...");
+
+    console.log("Socket attempting connection...");
     newSocket.on("connect", () =>
       console.log("Socket connected:", newSocket.id),
     );
-    newSocket.on("disconnect", () => console.log("Socket disconnected"));
+    newSocket.on("disconnect", (reason) =>
+      console.log("Socket disconnected:", reason),
+    );
     newSocket.on("connect_error", (err) => {
-      console.error("Socket connection error:", err);
-      alert(`Failed to connect to realtime server: ${err.message}.`);
+      // Log more details if possible
+      console.error("Socket connection error:", err.message, err);
+      alert(
+        `Failed to connect to realtime server: ${err.message}. Check console.`,
+      );
     });
+
+    // Cleanup function
     return () => {
-      if (socket) {
+      if (newSocket) {
+        // Reference newSocket directly for cleanup
         console.log("Socket disconnecting...");
-        socket.disconnect();
+        newSocket.disconnect();
       }
-      setSocket(null);
+      setSocket(null); // Clear socket state
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId]); // Only re-run if accountId changes
+  }, [accountId]); // Dependency array remains the same
 
   // --- Fetch Initial Data (Transactions, Account, Sales) ---
   useEffect(() => {

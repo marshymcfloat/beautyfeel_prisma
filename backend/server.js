@@ -7,7 +7,7 @@ require("dotenv").config(); // Load .env file for local development (optional)
 
 // --- Environment Variable Setup ---
 // PORT: Provided by Render (or similar host), defaults to 4000 for local dev
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 5000;
 // CORS_ORIGIN: Comma-separated list of allowed origins (e.g., https://your-frontend.vercel.app,http://localhost:3000)
 // Defaults to localhost:3000 for local development convenience
 const allowedOrigins = (
