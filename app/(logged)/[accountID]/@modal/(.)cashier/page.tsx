@@ -1,4 +1,4 @@
-// components/cashier/CashierInterceptedModal.tsx (or your path)
+// src/components/cashier/CashierInterceptedModal.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
@@ -6,32 +6,33 @@ import { useSelector, useDispatch } from "react-redux";
 import { useParams, useRouter } from "next/navigation";
 
 // --- Component Imports ---
-import DialogBackground from "@/components/Dialog/DialogBackground";
-import DialogForm from "@/components/Dialog/DialogForm";
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
 import DateTimePicker from "@/components/Inputs/DateTimePicker";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
 import ServicesSelect from "@/components/Inputs/ServicesSelect";
-import SelectedItem from "@/components/ui/cashier/SelectedItem"; // Ensure path is correct
+import SelectedItem from "@/components/ui/cashier/SelectedItem";
 import CustomerInput from "@/components/Inputs/CustomerInput";
 import Button from "@/components/Buttons/Button";
-import VoucherInput from "@/components/Inputs/VoucherInput"; // Keep if using vouchers
+import VoucherInput from "@/components/Inputs/VoucherInput";
 
 // --- Actions and State ---
-// --- ADD getActiveDiscountRules BACK ---
 import {
   transactionSubmission,
   getActiveDiscountRules,
 } from "@/lib/ServerAction";
 import { RootState, AppDispatch } from "@/lib/reduxStore";
-import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice"; // Import slice
-// Import NEW data slice actions
+import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice";
 import { fetchServices, fetchServiceSets } from "@/lib/Slices/DataSlice";
 
 // --- Types ---
-// Import types from CENTRAL location
-import { FetchedItem, UIDiscountRuleWithServices } from "@/lib/Types";
+import {
+  FetchedItem,
+  UIDiscountRuleWithServices,
+  TransactionSubmissionResponse,
+} from "@/lib/Types";
 
-// --- Options --- Define these constants ---
+// --- Options ---
 const serviceTypeOptions = [
   { id: "single", title: "Single Service" },
   { id: "set", title: "Service Set" },
@@ -48,20 +49,16 @@ const paymentMethodOptions = [
 // --- End Options ---
 
 export default function CashierInterceptedModal() {
-  const { accountID: rawAccountID } = useParams(); // Keep if needed for other logic, else remove
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
-  // const accountID = Array.isArray(rawAccountID) ? rawAccountID[0] : rawAccountID; // Keep if needed
 
   // --- State ---
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  // No local state needed for activeDiscounts, they live in Redux
 
   // --- Redux State ---
-  // Select services and serviceSets separately
   const { services, serviceSets, itemsLoading, itemsError } = useSelector(
-    (state: RootState) => state.data, // Assuming 'data' is the key for DataSlice reducer
+    (state: RootState) => state.data,
   );
   const cashierForm = useSelector((state: RootState) => state.cashier);
   const {
@@ -71,291 +68,247 @@ export default function CashierInterceptedModal() {
     grandTotal,
     totalDiscount,
     subTotal,
-    serviceType, // Crucial state for filtering
+    serviceType,
     serveTime,
     paymentMethod,
-    voucherCode,
-    // appliedDiscountRules // We get this from state but don't need to destructure if only used in slice
   } = cashierForm;
 
   // --- Effects ---
-  // Fetch BOTH services, sets, AND Discount Rules on initial mount
   useEffect(() => {
-    console.log("Dispatching fetchServices and fetchServiceSets");
     dispatch(fetchServices());
     dispatch(fetchServiceSets());
-
-    // --- ADDED BACK: Fetch and apply active discounts ---
-    console.log("Fetching active discount rules...");
     getActiveDiscountRules()
       .then((rules) => {
-        // Dispatch action to store rules in CashierSlice and trigger calculation
         dispatch(
           cashierActions.applyDiscounts({
             rules: rules as UIDiscountRuleWithServices[],
           }),
-        ); // Cast needed if return type isn't perfect
-        console.log("Fetched and applied active discounts:", rules.length);
+        );
       })
       .catch((err) => {
-        console.error("Failed to fetch active discounts:", err);
-        // Optionally set a general error in the form state
+        console.error("Failed fetch discounts:", err);
         setFormErrors((prev) => ({
           ...prev,
-          general: "Failed to load discount rules.",
+          general: "Failed load discounts.",
         }));
       });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispatch]); // Run once on mount
+  }, [dispatch]);
 
   // --- Callbacks ---
-  // Handle select changes for Service Type, Serve Time, Payment Method
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
-      function isValidServiceType(v: string): v is CashierState["serviceType"] {
-        return v === "single" || v === "set";
-      }
-      function isValidServeTime(v: string): v is CashierState["serveTime"] {
-        return v === "now" || v === "later";
-      }
-      function isValidPaymentMethod(
-        v: string,
-      ): v is CashierState["paymentMethod"] {
-        return v === "cash" || v === "ewallet" || v === "bank";
-      }
-
-      if (key === "serviceType" && isValidServiceType(value)) {
+      const isST = (v: string): v is CashierState["serviceType"] =>
+        v === "single" || v === "set";
+      const isServeT = (v: string): v is CashierState["serveTime"] =>
+        v === "now" || v === "later";
+      const isPM = (v: string): v is CashierState["paymentMethod"] =>
+        v === "cash" || v === "ewallet" || v === "bank";
+      if (key === "serviceType" && isST(value))
         dispatch(cashierActions.setServiceType(value));
-      } else if (key === "serveTime" && isValidServeTime(value)) {
+      else if (key === "serveTime" && isServeT(value))
         dispatch(cashierActions.setServeTime(value));
-      } else if (key === "paymentMethod" && isValidPaymentMethod(value)) {
+      else if (key === "paymentMethod" && isPM(value))
         dispatch(cashierActions.setPaymentMethod(value));
-      } else {
-        console.warn(
-          `Unhandled key or value in handleSelectChanges: "${key}":"${value}"`,
-        );
-      }
+      else console.warn(`Unhandled select: "${key}"`);
     },
     [dispatch],
   );
 
-  // Handle form submission click
   async function handleConfirmClick() {
     setIsSubmitting(true);
     setFormErrors({});
-
-    // Basic Frontend Checks
+    // Validation
     let errors: Record<string, string> = {};
-    if (!name?.trim()) errors.name = "Customer name is required.";
+    if (!name?.trim()) errors.name = "Customer name required.";
     if (!servicesAvailed || servicesAvailed.length === 0)
-      errors.servicesAvailed = "At least one service/set must be selected.";
+      errors.servicesAvailed = "Select service(s).";
     if (!paymentMethod) errors.paymentMethod = "Payment method required.";
-    if (serveTime === "later") {
-      const { date, time } = cashierForm;
-      if (!date || !time)
-        errors.serveTime = "Date and Time required for 'Later'.";
-    }
-
+    if (serveTime === "later" && (!cashierForm.date || !cashierForm.time))
+      errors.serveTime = "Date/Time required.";
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
       setIsSubmitting(false);
       return;
     }
-
-    // Prepare data - Send cashierForm state
-    const finalTransactionData = { ...cashierForm };
-
-    // Call Server Action
-    const response = await transactionSubmission(finalTransactionData);
+    // Action Call
+    const response: TransactionSubmissionResponse = await transactionSubmission(
+      { ...cashierForm },
+    );
     setIsSubmitting(false);
-
+    // Handle Response
     if (response.success) {
       dispatch(cashierActions.reset());
       router.back();
-    } else if (response.errors) {
-      const clientErrors: Record<string, string> = {};
-      for (const key in response.errors) {
-        clientErrors[key] = Array.isArray(response.errors[key])
-          ? response.errors[key].join("; ")
-          : (response.errors[key] as string);
-      }
-      setFormErrors(clientErrors);
     } else {
-      setFormErrors({ general: "An unknown error occurred." });
+      if (response.errors) {
+        const clientErrors: Record<string, string> = {};
+        for (const key in response.errors) {
+          clientErrors[key] = Array.isArray(response.errors[key])
+            ? response.errors[key].join("; ")
+            : String(response.errors[key]);
+        }
+        setFormErrors(clientErrors);
+      } else {
+        setFormErrors({ general: response.message });
+      }
+      console.error("Submit failed:", response.message, response.errors);
     }
   }
 
-  // Handle cancel
   const handleCancel = () => {
     dispatch(cashierActions.reset());
     router.back();
   };
 
-  // --- Create itemsToDisplay based on serviceType ---
   const itemsToDisplay = useMemo((): FetchedItem[] => {
-    console.log(`Filtering based on serviceType: ${serviceType}`);
-    if (serviceType === "single") {
-      // Map services to FetchedItem structure
+    if (serviceType === "single")
       return (
         services?.map((s) => ({
           id: s.id,
           title: s.title,
           price: s.price,
-          type: "service" as "service" | "set", // Assert type
+          type: "service" as const,
         })) ?? []
-      ); // Return empty array if services is null
-    } else if (serviceType === "set") {
-      // Map serviceSets to FetchedItem structure
+      );
+    if (serviceType === "set")
       return (
         serviceSets?.map((set) => ({
           id: set.id,
           title: set.title,
           price: set.price,
-          type: "set" as "service" | "set", // Assert type
+          type: "set" as const,
         })) ?? []
-      ); // Return empty array if serviceSets is null
-    }
-    return []; // Default empty if type is somehow invalid
-  }, [services, serviceSets, serviceType]); // Dependencies
+      );
+    return [];
+  }, [services, serviceSets, serviceType]);
 
   // --- Standard Classes ---
   const inputErrorClass = "mt-1 text-xs text-red-500";
   const generalErrorClass =
-    "mx-auto my-2 w-[90%] rounded border border-red-300 bg-red-100 p-2 text-center text-sm font-medium text-red-600";
+    "my-2 w-full rounded border border-red-300 bg-red-100 p-2 text-center text-sm font-medium text-red-600"; // Use w-full
   const selectedItemsContainerClass =
-    "relative mx-auto mt-8 max-h-[200px] min-h-[100px] w-[90%] overflow-y-auto rounded-md border-2 border-customDarkPink bg-white p-2 shadow-custom lg:min-h-[100px]";
+    "relative mt-4 max-h-[200px] min-h-[80px] w-full overflow-y-auto rounded-md border border-customGray/50 bg-white p-2 shadow-sm"; // Use w-full
   const noItemsMessageClass =
-    "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform whitespace-nowrap font-medium uppercase tracking-widest text-gray-500";
-  const totalsContainerClass = "mx-auto mt-8 flex w-[90%] flex-col text-sm";
+    "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform whitespace-nowrap text-sm italic text-gray-400";
+  const totalsContainerClass = "mt-4 flex w-full flex-col text-sm"; // Use w-full
   const grandTotalClass = "mt-1 text-base font-semibold";
-  const actionButtonsClass = "mx-auto mt-8 flex w-[90%] justify-around";
+  const actionButtonsClass =
+    "mt-6 flex w-full justify-around border-t border-customGray/30 pt-4";
 
-  // --- Render ---
   return (
-    <DialogBackground>
-      <DialogForm onClose={handleCancel}>
-        <h1 className="text-center text-2xl font-bold uppercase tracking-widest text-customBlack">
-          Beautyfeel Transaction
-        </h1>
-
+    <Modal
+      isOpen={true}
+      onClose={handleCancel}
+      title={<DialogTitle>Beautyfeel Transaction</DialogTitle>}
+      containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col" // Maybe max-w-xl for more space
+    >
+      {/* Scrollable Content Area */}
+      <div className="flex-grow space-y-5 overflow-y-auto p-4 sm:p-6">
+        {" "}
+        {/* Use space-y-5 */}
         {formErrors.general && (
           <p className={generalErrorClass}>{formErrors.general}</p>
         )}
-
-        <CustomerInput error={formErrors.name} />
-        {formErrors.name && !formErrors.general && (
-          <p className={`${inputErrorClass} mx-auto w-[90%]`}>
-            {formErrors.name}
-          </p>
-        )}
-
-        {/* Email Input */}
-        <div className="relative mt-8 flex w-full justify-center">
-          <input
-            value={email ?? ""}
-            onChange={(e) => dispatch(cashierActions.setEmail(e.target.value))}
-            placeholder=" "
-            type="email"
-            className={`peer h-[50px] w-[90%] rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-customDarkPink"} px-2 shadow-custom outline-none`}
-            id="email-input"
+        {/* Customer Input */}
+        <div className="w-full">
+          <CustomerInput error={formErrors.name} />
+          {/* Error is displayed inside CustomerInput now */}
+        </div>
+        <div className="w-full">
+          <div className="relative w-full">
+            <input
+              value={email ?? ""}
+              onChange={(e) =>
+                dispatch(cashierActions.setEmail(e.target.value))
+              }
+              placeholder=" "
+              type="email"
+              id="email-input"
+              className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${
+                formErrors.email ? "border-red-500" : "border-customDarkPink" // Default pink border when no error
+              } px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink`} // Removed focus ring, rely on border color
+            />
+            <label
+              htmlFor="email-input"
+              // Base centered state + transitions
+              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 px-1 text-base font-medium transition-all duration-150 ${formErrors.email ? "text-red-600" : "text-gray-500"} peer-focus:top-[-10px] peer-focus:z-10 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-[-10px] peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:bg-customOffWhite peer-[:not(:placeholder-shown)]:text-xs peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} peer-[:not(:placeholder-shown)]:${formErrors.email ? "text-red-600" : ""} `}
+            >
+              E-mail (Optional)
+            </label>
+          </div>
+          {formErrors.email && (
+            // Assuming inputErrorClass handles styling like text-xs text-red-600 pt-1 etc.
+            <p className={`${inputErrorClass} px-1`}>{formErrors.email}</p>
+          )}
+        </div>
+        {/* Service Type & Time Selectors - Grid */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <SelectInputGroup
+            label="Service Type"
+            name="serviceType"
+            id="serviceType"
+            onChange={handleSelectChanges}
+            options={serviceTypeOptions}
+            valueKey="id"
+            labelKey="title"
+            value={serviceType}
+            required
           />
-          <label
-            htmlFor="email-input"
-            className={`absolute left-10 top-1/2 -translate-y-1/2 font-medium transition-all duration-150 peer-focus:top-[-10px] peer-focus:text-sm peer-focus:tracking-widest peer-[&:not(:placeholder-shown)]:top-[-10px] peer-[&:not(:placeholder-shown)]:text-sm peer-[&:not(:placeholder-shown)]:tracking-widest ${formErrors.email ? "text-red-600" : "text-gray-600"} peer-focus:text-customDarkPink`}
-          >
-            {" "}
-            E-mail (Optional){" "}
-          </label>
+          <SelectInputGroup
+            label="Serve Time"
+            name="serveTime"
+            id="serveTime"
+            onChange={handleSelectChanges}
+            options={serveTimeOptions}
+            valueKey="id"
+            labelKey="title"
+            value={serveTime}
+            error={formErrors.serveTime}
+            required
+          />
         </div>
-        {formErrors.email && (
-          <p className={`${inputErrorClass} mx-auto w-[90%]`}>
-            {formErrors.email}
-          </p>
-        )}
-
-        {/* Service Type & Time Selectors */}
-        <div className="mx-auto mt-8 flex w-[90%] justify-between gap-4">
-          <div className="w-full md:w-1/2">
-            <SelectInputGroup
-              label="Service Type"
-              name="serviceType"
-              id="serviceType"
-              onChange={handleSelectChanges}
-              options={serviceTypeOptions}
-              valueKey="id"
-              labelKey="title"
-              value={serviceType}
-              required
-            />
-          </div>
-          <div className="w-full md:w-1/2">
-            <SelectInputGroup
-              label="Serve Time"
-              name="serveTime"
-              id="serveTime"
-              onChange={handleSelectChanges}
-              options={serveTimeOptions}
-              valueKey="id"
-              labelKey="title"
-              value={serveTime}
-              error={formErrors.serveTime}
-              required
-            />
-          </div>
-        </div>
-        {formErrors.serveTime && !formErrors.general && (
-          <p className={`${inputErrorClass} mx-auto w-[90%]`}>
-            {formErrors.serveTime}
-          </p>
-        )}
         {serveTime === "later" && (
           <DateTimePicker
             error={formErrors.serveTime || formErrors.date || formErrors.time}
           />
         )}
-
-        {/* Services/Sets Select - Pass FILTERED data */}
-        <ServicesSelect
-          isLoading={itemsLoading}
-          data={itemsToDisplay} // Pass the correctly filtered and mapped items
-          error={formErrors.servicesAvailed || itemsError || undefined}
-        />
-        {formErrors.servicesAvailed && !itemsError && (
-          <p className={`${inputErrorClass} mx-auto w-[90%]`}>
-            {formErrors.servicesAvailed}
-          </p>
+        {formErrors.serveTime && serveTime !== "later" && (
+          <p className={`${inputErrorClass} px-1`}>{formErrors.serveTime}</p>
         )}
-
-        {/* Voucher and Payment Method */}
-        <div className="mx-auto mt-8 flex w-[90%] flex-col gap-4 md:flex-row">
-          <div className="flex-1">
-            <VoucherInput /> {/* Keep if using simple vouchers */}
-          </div>
-          <div className="w-full md:w-[40%]">
-            <SelectInputGroup
-              label="Payment Method"
-              name="paymentMethod"
-              id="paymentMethod"
-              onChange={handleSelectChanges}
-              options={paymentMethodOptions}
-              valueKey="id"
-              labelKey="title"
-              value={paymentMethod}
-              error={formErrors.paymentMethod}
-              required // Always required now
-            />
-            {formErrors.paymentMethod && (
-              <p className={inputErrorClass}>{formErrors.paymentMethod}</p>
-            )}
-          </div>
+        {/* Services/Sets Select */}
+        <div className="w-full">
+          <ServicesSelect
+            isLoading={itemsLoading}
+            data={itemsToDisplay}
+            error={formErrors.servicesAvailed || itemsError || undefined}
+          />
+          {/* Error shown inside ServicesSelect */}
         </div>
-        {/* Display voucher error if needed */}
+        {/* Voucher and Payment Method - Grid */}
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <VoucherInput />
+          <SelectInputGroup
+            label="Payment Method"
+            name="paymentMethod"
+            id="paymentMethod"
+            onChange={handleSelectChanges}
+            options={paymentMethodOptions}
+            valueKey="id"
+            labelKey="title"
+            value={paymentMethod}
+            error={formErrors.paymentMethod}
+            required
+          />
+        </div>
+        {/* Display voucher/payment errors below grid if needed */}
         {formErrors.voucherCode && (
-          <p className={`${inputErrorClass} mx-auto w-[90%] text-left`}>
-            {formErrors.voucherCode}
+          <p className={`${inputErrorClass} px-1`}>{formErrors.voucherCode}</p>
+        )}
+        {formErrors.paymentMethod && (
+          <p className={`${inputErrorClass} px-1`}>
+            {formErrors.paymentMethod}
           </p>
         )}
-
         {/* Selected Items Display */}
         <div className={selectedItemsContainerClass}>
           {servicesAvailed.length !== 0 ? (
@@ -367,56 +320,63 @@ export default function CashierInterceptedModal() {
                 quantity={item.quantity}
                 originalPrice={item.originalPrice}
                 discountApplied={item.discountApplied}
-                type={item.type} // Type should be present now
+                type={item.type}
               />
             ))
           ) : (
             <p className={noItemsMessageClass}>No Selected Items Yet</p>
           )}
         </div>
-
         {/* Totals Display */}
         <div className={totalsContainerClass}>
-          <div className="flex justify-between">
-            <p>Subtotal: ₱ {subTotal.toLocaleString()}</p>
-            {/* Only show discount if it's greater than 0 */}
+          <div className="flex justify-between text-customBlack/80">
+            <p>
+              Subtotal: ₱{" "}
+              {subTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </p>
             {totalDiscount > 0 && (
-              <p>Total Discount: ₱ {totalDiscount.toLocaleString()}</p>
+              <p>
+                Discount: - ₱{" "}
+                {totalDiscount.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                })}
+              </p>
             )}
           </div>
-          <p className={`${grandTotalClass} text-right`}>
-            {" "}
-            {/* Align right */}
-            Grand Total: ₱ {grandTotal.toLocaleString()}
+          <p
+            className={`${grandTotalClass} text-right font-bold text-customDarkPink`}
+          >
+            Grand Total: ₱{" "}
+            {grandTotal.toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </p>
         </div>
-
-        {/* Action Buttons */}
-        <div className={actionButtonsClass}>
-          <Button
-            onClick={handleCancel}
-            disabled={isSubmitting}
-            type="button"
-            invert
-          >
-            {" "}
-            Cancel{" "}
-          </Button>
-          <Button
-            onClick={handleConfirmClick}
-            type="button"
-            disabled={
-              isSubmitting ||
-              itemsLoading ||
-              servicesAvailed.length === 0 ||
-              !name?.trim() ||
-              !paymentMethod
-            }
-          >
-            {isSubmitting ? "Submitting..." : "Confirm Transaction"}
-          </Button>
-        </div>
-      </DialogForm>
-    </DialogBackground>
+      </div>{" "}
+      {/* End Scrollable Content Area */}
+      {/* Action Buttons (Footer) */}
+      <div className={`flex-shrink-0 ${actionButtonsClass}`}>
+        <Button
+          onClick={handleCancel}
+          disabled={isSubmitting}
+          type="button"
+          invert
+        >
+          {" "}
+          Cancel{" "}
+        </Button>
+        <Button
+          onClick={handleConfirmClick}
+          type="button"
+          disabled={
+            isSubmitting ||
+            itemsLoading ||
+            servicesAvailed.length === 0 ||
+            !name?.trim() ||
+            !paymentMethod
+          }
+        >
+          {isSubmitting ? "Submitting..." : "Confirm Transaction"}
+        </Button>
+      </div>
+    </Modal>
   );
 }

@@ -1,467 +1,427 @@
-// src/app/(app)/customize/_components/ManageAccounts.tsx
+// src/components/ui/customize/ManageAccounts.tsx
 "use client";
-import React, { useState, useEffect, useTransition, useRef } from "react"; // Import useRef
 
+import React, {
+  useState,
+  useEffect,
+  useTransition,
+  useRef,
+  useCallback,
+} from "react";
 import {
   createAccountAction,
   updateAccountAction,
   deleteAccountAction,
+  getAccountsAction,
+  getBranchesForSelectAction,
 } from "@/lib/ServerAction";
+import Button from "@/components/Buttons/Button";
+import { AccountForManagement, BranchForSelect } from "@/lib/Types";
+import { Role } from "@prisma/client";
+import { Plus, Edit3, Trash2 } from "lucide-react";
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
 
-// Import Role enum from Prisma client
-import { Role } from "@prisma/client"; // Make sure Prisma client is generated
 const ALL_ROLES = Object.values(Role);
 
-// TODO: Replace 'any' with actual Prisma types
-import type {
-  Account as PrismaAccount,
-  Branch as PrismaBranch,
-} from "@prisma/client";
-type Account = PrismaAccount & { branch?: PrismaBranch | null }; // Include optional branch relation
-type Branch = PrismaBranch;
-
-// --- API Fetch Functions --- (Keep as is)
-const fetchAccounts = async (): Promise<Account[]> => {
-  console.log("Fetching /api/accounts...");
-  const response = await fetch("/api/accounts"); // GET request
-  if (!response.ok) {
-    const errorData = await response.text(); // Read error text
-    console.error("Fetch Accounts Error Response:", errorData);
-    throw new Error(`Failed to fetch accounts: ${response.statusText}`);
-  }
-  // Add explicit type casting if needed, or ensure API returns correct shape
-  const data = await response.json();
-  return data as Account[];
-};
-
-const fetchBranchesForAccounts = async (): Promise<Branch[]> => {
-  console.log("Fetching /api/branches...");
-  const response = await fetch("/api/branches"); // Reuse branch API
-  if (!response.ok) {
-    const errorData = await response.text();
-    console.error("Fetch Branches Error Response:", errorData);
-    throw new Error(`Failed to fetch branches: ${response.statusText}`);
-  }
-  // Add explicit type casting if needed
-  const data = await response.json();
-  return data as Branch[];
-};
-// --- End API Fetch ---
-
 export default function ManageAccounts() {
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
+  const [accounts, setAccounts] = useState<AccountForManagement[]>([]);
+  const [branches, setBranches] = useState<BranchForSelect[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [editingAccount, setEditingAccount] = useState<Account | null>(null);
+  const [editingAccount, setEditingAccount] =
+    useState<AccountForManagement | null>(null);
   const [isPending, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement>(null); // Ref for the form
+  const formRef = useRef<HTMLFormElement>(null);
 
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      setListError(null);
-      try {
-        const [fetchedAccounts, fetchedBranches] = await Promise.all([
-          fetchAccounts(),
-          fetchBranchesForAccounts(),
-        ]);
-        setAccounts(fetchedAccounts);
-        setBranches(fetchedBranches);
-      } catch (err: any) {
-        console.error("Failed to load account data:", err);
-        setListError(err.message || "Failed to load account data.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadData();
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setListError(null);
+    try {
+      const [fetchedAccounts, fetchedBranches] = await Promise.all([
+        getAccountsAction(),
+        getBranchesForSelectAction(),
+      ]);
+      setAccounts(fetchedAccounts);
+      setBranches(fetchedBranches);
+    } catch (err: any) {
+      setListError(err.message || "Failed load.");
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleAdd = () => {
     setEditingAccount(null);
     setFormError(null);
     setIsModalOpen(true);
+    formRef.current?.reset();
+    setTimeout(() => {
+      const input = formRef.current?.elements.namedItem(
+        "dailyRate",
+      ) as HTMLInputElement | null;
+      if (input && !input.value) input.value = "350";
+    }, 0);
   };
-
-  const handleEdit = (account: Account) => {
+  const handleEdit = (account: AccountForManagement) => {
     setEditingAccount(account);
     setFormError(null);
     setIsModalOpen(true);
   };
-
-  const handleDelete = async (accountId: string) => {
-    if (window.confirm("Are you sure you want to delete this account?")) {
-      setListError(null);
-      startTransition(async () => {
-        const result = await deleteAccountAction(accountId);
-        if (!result.success) {
-          setListError(result.message);
-          console.error("Delete failed:", result.message);
-        } else {
-          console.log("Delete successful");
-          // UI should update via revalidatePath in action
-        }
-      });
-    }
+  const closeModal = () => {
+    setIsModalOpen(false);
+    setEditingAccount(null);
+    setFormError(null);
+    formRef.current?.reset();
   };
-
-  // Modified handleSave for onClick
-  const handleSave = async () => {
-    if (!formRef.current) {
-      setFormError("Form reference is not available.");
-      console.error("Form ref not found");
-      return;
-    }
-
-    setFormError(null); // Clear previous form errors
-    const formData = new FormData(formRef.current); // Get form data using ref
-
-    // Basic client-side check (optional)
-    const selectedRoles = ALL_ROLES.filter(
-      (role) => formData.get(`role-${role}`) === "on",
-    );
-    if (selectedRoles.length === 0) {
-      setFormError("Please select at least one role.");
-      return;
-    }
+  const handleDelete = (accountId: string) => {
+    if (!window.confirm("Delete?")) return;
+    setListError(null);
+    startTransition(async () => {
+      const res = await deleteAccountAction(accountId);
+      if (!res.success) setListError(res.message);
+      else await loadData();
+    });
+  };
+  const handleSave = () => {
+    if (!formRef.current) return setFormError("Form error.");
+    setFormError(null);
+    const fd = new FormData(formRef.current);
+    if (!fd.get("username") || !fd.get("name"))
+      return setFormError("Username/Name required.");
     if (
       !editingAccount &&
-      (!formData.get("password") ||
-        (formData.get("password") as string).length < 6)
-    ) {
-      setFormError("Password is required for new accounts (min 6 characters).");
-      return;
-    }
-
+      (!fd.get("password") || (fd.get("password") as string).length < 6)
+    )
+      return setFormError("Password (min 6) required.");
+    const rate = fd.get("dailyRate");
+    if (!rate || isNaN(Number(rate)) || Number(rate) < 0)
+      return setFormError("Valid rate required.");
+    if (
+      ALL_ROLES.filter((role) => fd.get(`role-${role}`) === "on").length === 0
+    )
+      return setFormError("Select role.");
     startTransition(async () => {
       try {
-        let result;
-        if (editingAccount) {
-          result = await updateAccountAction(editingAccount.id, formData);
+        const action = editingAccount
+          ? updateAccountAction(editingAccount.id, fd)
+          : createAccountAction(fd);
+        const res = await action;
+        if (!res) throw new Error("No result");
+        if (res.success) {
+          closeModal();
+          await loadData();
         } else {
-          result = await createAccountAction(formData);
+          let msg = res.message;
+          if (res.errors)
+            msg += ` (${Object.entries(res.errors)
+              .map(([f, e]) => `${f}: ${e?.join(",")}`)
+              .join("; ")})`;
+          setFormError(msg);
         }
-
-        if (result.success) {
-          setIsModalOpen(false);
-          setEditingAccount(null);
-          console.log("Save successful:", result.message);
-          // UI updates via revalidatePath
-        } else {
-          // Combine general message with specific field errors if available
-          let errorMsg = result.message;
-          if (result.errors) {
-            const fieldErrors = Object.entries(result.errors)
-              .map(([field, errors]) => `${field}: ${errors?.join(", ")}`)
-              .join("; ");
-            errorMsg += ` (${fieldErrors})`;
-          }
-          setFormError(errorMsg); // Show error within the modal form
-          console.error("Save failed:", result.message, result.errors);
-        }
-      } catch (err) {
-        console.error("Unexpected error during save action:", err);
-        setFormError("An unexpected error occurred. Please try again.");
+      } catch (err: any) {
+        setFormError(err.message || "Error");
       }
     });
   };
 
   const isSaving = isPending;
+  const formatPHP = (value: number | null | undefined): string => {
+    return (value ?? 0).toLocaleString("en-PH", {
+      style: "currency",
+      currency: "PHP",
+      minimumFractionDigits: 0, // Show whole pesos for rate for brevity
+      maximumFractionDigits: 0,
+    });
+  };
+
+  // --- Styles ---
+  const thStyleBase =
+    "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
+  const inputStyle =
+    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
+  const labelStyle = "block text-sm font-medium text-customBlack/80";
+  const checkboxStyle =
+    "h-4 w-4 rounded border-customGray text-customDarkPink focus:ring-customDarkPink";
+  const checkboxLabelStyle = "ml-2 block text-sm text-customBlack";
+  const errorMsgStyle =
+    "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
+  const modalErrorStyle = "text-xs text-red-600 mb-3";
 
   return (
-    <div>
-      {/* Title and Add Button */}
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-gray-800">Manage Accounts</h2>
-        <button
+    <div className="p-1">
+      {/* Header */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-semibold text-customBlack">
+          Manage Accounts
+        </h2>
+        <Button
           onClick={handleAdd}
-          disabled={isPending}
-          className="rounded bg-pink-500 px-4 py-2 text-white hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-600 focus:ring-opacity-50 disabled:opacity-50"
+          disabled={isPending || isLoading}
+          size="sm"
+          className="w-full sm:w-auto"
         >
-          Add New Account
-        </button>
+          <Plus size={16} className="mr-1" /> Add New Account
+        </Button>
       </div>
 
-      {/* List Error Display */}
-      {listError && (
-        <p className="mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700">
-          {listError}
-        </p>
+      {listError && !isModalOpen && (
+        <p className={errorMsgStyle}>{listError}</p>
       )}
 
-      {/* Table Display */}
-      {isLoading && !accounts.length ? (
-        <p className="py-4 text-center text-gray-500">Loading accounts...</p>
-      ) : !isLoading && accounts.length === 0 && !listError ? (
-        <p className="py-4 text-center text-gray-500">No accounts found.</p>
-      ) : (
-        <div className="overflow-x-auto rounded bg-white bg-opacity-60 shadow">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50 bg-opacity-80">
+      {/* Table */}
+      <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
+        {isLoading ? (
+          <p className="py-10 text-center text-customBlack/70">Loading...</p>
+        ) : !listError && accounts.length === 0 ? (
+          <p className="py-10 text-center text-customBlack/60">No accounts.</p>
+        ) : (
+          <table className="min-w-full divide-y divide-customGray/30">
+            <thead className="bg-customGray/10">
               <tr>
-                {/* ... table headers ... */}
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Username
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Name
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Email
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Roles
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Salary
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                {/* User: Always Visible */}
+                <th className={thStyleBase}>User</th>
+                {/* Name: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>Name</th>
+                {/* Email: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>Email</th>
+                {/* Roles: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>Roles</th>
+                {/* Rate: Always Visible */}
+                <th className={thStyleBase}>Rate</th>
+                {/* Branch: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Branch
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Actions
-                </th>
+                {/* Actions: Always Visible */}
+                <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {accounts.map((account) => (
-                <tr
-                  key={account.id}
-                  className="transition-colors hover:bg-gray-50 hover:bg-opacity-50"
-                >
-                  {/* ... table cells ... */}
-                  <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900">
-                    {account.username}
+            <tbody className="divide-y divide-customGray/30">
+              {accounts.map((a) => (
+                <tr key={a.id} className="hover:bg-customLightBlue/10">
+                  {/* User: medium weight, can wrap */}
+                  <td className={`${tdStyleBase} font-medium`}>{a.username}</td>
+                  {/* Name: Hidden on xs */}
+                  <td className={`${tdStyleBase} hidden sm:table-cell`}>
+                    {a.name}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {account.name}
+                  {/* Email: Hidden on xs */}
+                  <td className={`${tdStyleBase} hidden sm:table-cell`}>
+                    {a.email ?? (
+                      <span className="italic text-gray-400">N/A</span>
+                    )}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {account.email ?? "-"}
-                  </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {(account.role || []) // Use `role` which should be Role[]
-                      .map(
-                        (r: Role) => r.charAt(0) + r.slice(1).toLowerCase(), // Use Role enum value
-                      )
+                  {/* Roles: Hidden on xs, capitalize */}
+                  <td
+                    className={`${tdStyleBase} hidden capitalize sm:table-cell`}
+                  >
+                    {(a.role || [])
+                      .map((r) => r.toLowerCase().replace("_", " "))
                       .join(", ") || "-"}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {/* Format salary if needed */}
-                    {account.salary}
+                  {/* Rate: Always visible, no wrap */}
+                  <td className={`${tdStyleBase} whitespace-nowrap`}>
+                    {formatPHP(a.dailyRate)}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {account.branch?.title ?? "N/A"}{" "}
-                    {/* Access nested property safely */}
+                  {/* Branch: Hidden on xs */}
+                  <td className={`${tdStyleBase} hidden sm:table-cell`}>
+                    {a.branch?.title ?? (
+                      <span className="italic text-gray-400">N/A</span>
+                    )}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                  {/* Actions: Always visible, no wrap, right aligned */}
+                  <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
-                      onClick={() => handleEdit(account)}
+                      onClick={() => handleEdit(a)}
                       disabled={isPending}
-                      className="mr-3 text-indigo-600 transition-colors hover:text-indigo-900 disabled:opacity-50"
+                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      title="Edit"
                     >
-                      Edit
+                      <Edit3 size={16} />
                     </button>
                     <button
-                      onClick={() => handleDelete(account.id)}
-                      disabled={isPending}
-                      className="text-red-600 transition-colors hover:text-red-900 disabled:opacity-50"
+                      onClick={() => handleDelete(a.id)}
+                      disabled={isPending || a.role.includes(Role.OWNER)}
+                      className={`inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50 ${a.role.includes(Role.OWNER) ? "cursor-not-allowed" : ""}`}
+                      title={
+                        a.role.includes(Role.OWNER)
+                          ? "Cannot delete OWNER"
+                          : "Delete"
+                      }
                     >
-                      Delete
+                      <Trash2 size={16} />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Add/Edit Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 transition-opacity duration-300 ease-in-out">
-          <div className="max-h-[90vh] w-full max-w-lg scale-100 transform overflow-y-auto rounded-lg bg-white p-6 shadow-xl transition-all duration-300 ease-in-out">
-            <h3 className="mb-4 text-lg font-semibold leading-6 text-gray-900">
-              {editingAccount ? "Edit Account" : "Add New Account"}
-            </h3>
-            {/* Display form-specific errors */}
-            {formError && (
-              <p className="mb-4 rounded border border-red-400 bg-red-100 p-2 text-xs text-red-700">
-                {formError}
-              </p>
-            )}
-            {/* Add ref and onSubmit prevent default */}
-            <form ref={formRef} onSubmit={(e) => e.preventDefault()}>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                {/* ... form fields ... */}
-                <div>
-                  <label
-                    htmlFor="username"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Username <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    name="username"
-                    id="username"
-                    required
-                    maxLength={20}
-                    defaultValue={editingAccount?.username ?? ""}
-                    className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                  />
-                  <p className="mt-1 text-xs text-gray-500">
-                    Max 20 characters.
-                  </p>
-                </div>
-                <div>
-                  <label
-                    htmlFor="name"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Full Name <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    name="name"
-                    id="name"
-                    required
-                    defaultValue={editingAccount?.name ?? ""}
-                    className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                  />
-                </div>
-                {!editingAccount && (
-                  <div>
-                    <label
-                      htmlFor="password"
-                      className="block text-sm font-medium text-gray-700"
-                    >
-                      Password <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="password"
-                      name="password"
-                      id="password"
-                      required
-                      minLength={6}
-                      className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                    />
-                    <p className="mt-1 text-xs text-gray-500">
-                      Required for new accounts. Min 6 characters.
-                    </p>
-                  </div>
-                )}
-                <div>
-                  <label
-                    htmlFor="email"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Email
-                  </label>
-                  <input
-                    type="email"
-                    name="email"
-                    id="email"
-                    defaultValue={editingAccount?.email ?? ""}
-                    className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="salary"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Salary <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="number"
-                    name="salary"
-                    id="salary"
-                    required
-                    min="0"
-                    step="1"
-                    defaultValue={editingAccount?.salary ?? 0}
-                    className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                  />
-                </div>
-                <div>
-                  <label
-                    htmlFor="branchId"
-                    className="block text-sm font-medium text-gray-700"
-                  >
-                    Branch
-                  </label>
-                  <select
-                    name="branchId"
-                    id="branchId"
-                    defaultValue={editingAccount?.branchId ?? ""}
-                    className="mt-1 block w-full rounded border border-gray-300 bg-white p-2 shadow-sm sm:text-sm"
-                  >
-                    <option value="">-- No Branch Assigned --</option>
-                    {branches.map((branch) => (
-                      <option key={branch.id} value={branch.id}>
-                        {branch.title}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="mt-4">
-                <label className="block text-sm font-medium text-gray-700">
-                  Roles <span className="text-red-500">*</span>
+      {/* Modal (No changes needed here for table responsiveness) */}
+      <Modal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        title={
+          <DialogTitle>
+            {editingAccount ? "Edit Account" : "Add New Account"}
+          </DialogTitle>
+        }
+        containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
+      >
+        {formError && <p className={modalErrorStyle}>{formError}</p>}
+        <form
+          key={editingAccount?.id ?? "new"}
+          ref={formRef}
+          onSubmit={(e) => e.preventDefault()}
+          className="space-y-4"
+        >
+          {/* Modal Form Fields... (keep existing) */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="username" className={labelStyle}>
+                Username*
+              </label>
+              <input
+                type="text"
+                name="username"
+                id="username"
+                required
+                maxLength={20}
+                defaultValue={editingAccount?.username ?? ""}
+                className={inputStyle}
+              />
+              <p className="mt-1 text-xs text-gray-500">Max 20 chars.</p>
+            </div>
+            <div>
+              <label htmlFor="name" className={labelStyle}>
+                Full Name*
+              </label>
+              <input
+                type="text"
+                name="name"
+                id="name"
+                required
+                defaultValue={editingAccount?.name ?? ""}
+                className={inputStyle}
+              />
+            </div>
+            {!editingAccount && (
+              <div>
+                <label htmlFor="password" className={labelStyle}>
+                  Password*
                 </label>
-                <div className="mt-2 space-y-2 sm:flex sm:space-x-4 sm:space-y-0">
-                  {ALL_ROLES.map((role) => (
-                    <div key={role} className="flex items-center">
-                      <input
-                        id={`role-${role}`}
-                        name={`role-${role}`}
-                        type="checkbox"
-                        defaultChecked={editingAccount?.role?.includes(role)}
-                        className="h-4 w-4 rounded border-gray-300 text-pink-600 focus:ring-pink-500"
-                      />
-                      <label
-                        htmlFor={`role-${role}`}
-                        className="ml-2 block text-sm text-gray-900"
-                      >
-                        {role.charAt(0) + role.slice(1).toLowerCase()}{" "}
-                        {/* Capitalize */}
-                      </label>
-                    </div>
-                  ))}
-                </div>
+                <input
+                  type="password"
+                  name="password"
+                  id="password"
+                  required
+                  minLength={6}
+                  className={inputStyle}
+                />
+                <p className="mt-1 text-xs text-gray-500">Min 6 chars.</p>
               </div>
-              {/* Modal Buttons */}
-              <div className="mt-6 flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  disabled={isSaving}
-                  className="rounded bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                {/* Change type to "button" and add onClick */}
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="rounded bg-pink-500 px-4 py-2 text-sm font-medium text-white hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isSaving
-                    ? "Saving..."
-                    : editingAccount
-                      ? "Save Changes"
-                      : "Create Account"}
-                </button>
-              </div>
-            </form>
+            )}
+            <div>
+              <label htmlFor="email" className={labelStyle}>
+                Email
+              </label>
+              <input
+                type="email"
+                name="email"
+                id="email"
+                defaultValue={editingAccount?.email ?? ""}
+                className={inputStyle}
+              />
+            </div>
+            <div>
+              <label htmlFor="dailyRate" className={labelStyle}>
+                Daily Rate (PHP)*
+              </label>
+              <input
+                type="number"
+                name="dailyRate"
+                id="dailyRate"
+                required
+                min="0"
+                step="1"
+                defaultValue={editingAccount?.dailyRate?.toString() ?? "350"}
+                className={inputStyle}
+                placeholder="e.g., 350"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                e.g., 350 for ₱350.00
+              </p>
+            </div>
+            <div>
+              <label htmlFor="branchId" className={labelStyle}>
+                Branch
+              </label>
+              <select
+                name="branchId"
+                id="branchId"
+                defaultValue={editingAccount?.branchId ?? ""}
+                className={`${inputStyle} bg-white`}
+              >
+                <option value="">-- No Branch --</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.title}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
-      )}
+          <fieldset className="pt-2">
+            <legend className={labelStyle}>Roles*</legend>
+            <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
+              {ALL_ROLES.map((role) => (
+                <div key={role} className="flex items-center">
+                  <input
+                    id={`role-${role}`}
+                    name={`role-${role}`}
+                    type="checkbox"
+                    defaultChecked={editingAccount?.role?.includes(role)}
+                    className={checkboxStyle}
+                  />
+                  <label
+                    htmlFor={`role-${role}`}
+                    className={checkboxLabelStyle}
+                  >
+                    {role.charAt(0) +
+                      role.slice(1).toLowerCase().replace("_", " ")}
+                  </label>
+                </div>
+              ))}
+            </div>
+          </fieldset>
+          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+            <Button
+              type="button"
+              onClick={closeModal}
+              disabled={isSaving}
+              invert
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSave} disabled={isSaving}>
+              {isSaving
+                ? "Saving..."
+                : editingAccount
+                  ? "Save Changes"
+                  : "Create Account"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

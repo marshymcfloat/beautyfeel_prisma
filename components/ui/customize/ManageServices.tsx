@@ -1,48 +1,32 @@
-// src/app/(app)/customize/_components/ManageServices.tsx
+// src/components/ui/customize/ManageServices.tsx
 "use client";
-import React, { useState, useEffect, useTransition, useRef } from "react"; // Import useRef
-
+import React, {
+  useState,
+  useEffect,
+  useTransition,
+  useRef,
+  useCallback,
+} from "react";
 import {
   createServiceAction,
   updateServiceAction,
   deleteServiceAction,
-} from "@/lib/ServerAction";
-
-// TODO: Replace 'any' with actual Prisma types
+  getAllServices,
+  getBranchesForSelectAction,
+} from "@/lib/ServerAction"; // Adjust paths
 import type {
   Service as PrismaService,
   Branch as PrismaBranch,
 } from "@prisma/client";
-type Service = PrismaService & { branch?: PrismaBranch | null }; // Include optional branch
-type Branch = PrismaBranch;
+import Button from "@/components/Buttons/Button"; // Adjust path
+import Modal from "@/components/Dialog/Modal"; // Import the reusable Modal
+import DialogTitle from "@/components/Dialog/DialogTitle"; // Import DialogTitle
+import { Plus, Edit3, Trash2 } from "lucide-react";
 
-// --- API Fetch Functions --- (Keep as is)
-const fetchServices = async (): Promise<Service[]> => {
-  console.log("Fetching /api/services...");
-  const response = await fetch("/api/services"); // GET request
-  if (!response.ok) {
-    const errorData = await response.text();
-    console.error("Fetch Services Error Response:", errorData);
-    throw new Error(`Failed to fetch services: ${response.statusText}`);
-  }
-  // Add explicit type casting if needed
-  const data = await response.json();
-  return data as Service[];
+type Service = PrismaService & {
+  branch?: Pick<PrismaBranch, "id" | "title"> | null;
 };
-
-const fetchBranchesForServices = async (): Promise<Branch[]> => {
-  console.log("Fetching /api/branches...");
-  const response = await fetch("/api/branches"); // Reuse branch API
-  if (!response.ok) {
-    const errorData = await response.text();
-    console.error("Fetch Branches Error Response:", errorData);
-    throw new Error(`Failed to fetch branches: ${response.statusText}`);
-  }
-  // Add explicit type casting if needed
-  const data = await response.json();
-  return data as Branch[];
-};
-// --- End API Fetch ---
+type Branch = Pick<PrismaBranch, "id" | "title">;
 
 export default function ManageServices() {
   const [services, setServices] = useState<Service[]>([]);
@@ -53,34 +37,35 @@ export default function ManageServices() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [isPending, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement>(null); // Ref for the form
+  const formRef = useRef<HTMLFormElement>(null);
 
-  // Fetch initial data
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      setListError(null);
-      try {
-        const [fetchedServices, fetchedBranches] = await Promise.all([
-          fetchServices(),
-          fetchBranchesForServices(),
-        ]);
-        setServices(fetchedServices);
-        setBranches(fetchedBranches);
-      } catch (err: any) {
-        console.error("Failed to load data:", err);
-        setListError(err.message || "Failed to load data. Please try again.");
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadData();
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setListError(null);
+    try {
+      const [fetchedServicesData, fetchedBranchesData] = await Promise.all([
+        getAllServices(),
+        getBranchesForSelectAction(),
+      ]);
+      setServices(fetchedServicesData as Service[]);
+      setBranches(fetchedBranchesData);
+    } catch (err: any) {
+      console.error("Failed to load service/branch data:", err);
+      setListError(err.message || "Failed to load data. Please refresh.");
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleAdd = () => {
     setEditingService(null);
     setFormError(null);
     setIsModalOpen(true);
+    formRef.current?.reset();
   };
 
   const handleEdit = (service: Service) => {
@@ -89,287 +74,299 @@ export default function ManageServices() {
     setIsModalOpen(true);
   };
 
-  const handleDelete = async (serviceId: string) => {
-    if (window.confirm("Are you sure you want to delete this service?")) {
-      setListError(null);
-      startTransition(async () => {
-        const result = await deleteServiceAction(serviceId);
-        if (!result.success) {
-          setListError(result.message);
-          console.error("Delete failed:", result.message);
-        } else {
-          console.log("Delete successful");
-          // UI update via revalidatePath
-        }
-      });
-    }
+  const handleDelete = (serviceId: string) => {
+    if (!window.confirm("Delete this service permanently?")) return;
+    setListError(null);
+    startTransition(async () => {
+      const result = await deleteServiceAction(serviceId);
+      if (!result.success) {
+        setListError(result.message);
+      } else {
+        await loadData();
+      }
+    });
   };
 
-  // Modified handleSave for onClick
-  const handleSave = async () => {
+  const handleSave = () => {
     if (!formRef.current) {
-      setFormError("Form reference is not available.");
-      console.error("Form ref not found");
+      setFormError("Form reference error.");
       return;
     }
     setFormError(null);
-    const formData = new FormData(formRef.current); // Get form data using ref
+    const formData = new FormData(formRef.current);
 
-    // Optional: Client-side check
     if (
       !formData.get("title") ||
       !formData.get("price") ||
       !formData.get("branchId")
     ) {
-      setFormError("Please fill in Title, Price, and Branch.");
+      setFormError("Title, Price, and Branch are required.");
+      return;
+    }
+    const priceValue = formData.get("price");
+    if (priceValue === null || Number(priceValue) < 0) {
+      setFormError("Price must be a non-negative number.");
       return;
     }
 
     startTransition(async () => {
       try {
-        let result;
-        if (editingService) {
-          result = await updateServiceAction(editingService.id, formData);
-        } else {
-          result = await createServiceAction(formData);
-        }
+        const action = editingService
+          ? updateServiceAction(editingService.id, formData)
+          : createServiceAction(formData);
+        const result = await action;
 
         if (result.success) {
           setIsModalOpen(false);
           setEditingService(null);
-          console.log("Save successful:", result.message);
-          // UI update via revalidatePath
+          await loadData();
         } else {
           let errorMsg = result.message;
           if (result.errors) {
-            const fieldErrors = Object.entries(result.errors)
-              .map(([field, errors]) => `${field}: ${errors?.join(", ")}`)
-              .join("; ");
-            errorMsg += ` (${fieldErrors})`;
+            errorMsg += ` (${Object.values(result.errors).join(", ")})`;
           }
           setFormError(errorMsg);
-          console.error("Save failed:", result.message, result.errors);
         }
       } catch (err) {
-        console.error("Unexpected error during save action:", err);
-        setFormError("An unexpected error occurred. Please try again.");
+        console.error("Error during save action:", err);
+        setFormError("An unexpected error occurred during save.");
       }
     });
   };
 
+  const closeModal = () => setIsModalOpen(false);
   const isSaving = isPending;
 
+  // --- Style constants ---
+  // Base styles, responsiveness handled by utility classes below
+  const thStyleBase =
+    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Use align-top for consistency if rows wrap slightly
+  const inputStyle =
+    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
+  const selectStyle = `${inputStyle} bg-white`;
+  const labelStyle = "block text-sm font-medium text-customBlack/80";
+  const listErrorMsgStyle =
+    "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
+  const modalErrorStyle = "text-xs text-red-600 mb-3";
+
   return (
-    <div>
-      {/* Title and Add Button */}
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-gray-800">Manage Services</h2>
-        <button
+    <div className="p-1">
+      {/* Header */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-semibold text-customBlack">
+          Manage Services
+        </h2>
+        <Button
           onClick={handleAdd}
-          disabled={isPending}
-          className="rounded bg-pink-500 px-4 py-2 text-white transition-colors hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-600 focus:ring-opacity-50 disabled:opacity-50"
+          disabled={isPending || isLoading}
+          size="sm"
+          className="w-full sm:w-auto"
         >
-          {" "}
-          Add New Service{" "}
-        </button>
+          <Plus size={16} className="mr-1" /> Add New Service
+        </Button>
       </div>
 
-      {/* List Error Display */}
-      {listError && (
-        <p className="mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700">
-          {listError}
-        </p>
-      )}
+      {/* List Error */}
+      {listError && <p className={listErrorMsgStyle}>{listError}</p>}
 
       {/* Table Display */}
-      {isLoading && !services.length ? (
-        <p className="py-4 text-center text-gray-500">Loading services...</p>
-      ) : !isLoading && services.length === 0 && !listError ? (
-        <p className="py-4 text-center text-gray-500">
-          No services found. Add one!
-        </p>
-      ) : (
-        <div className="overflow-x-auto rounded bg-white bg-opacity-60 shadow">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50 bg-opacity-80">
+      {/* Add min-w-full even within overflow-x-auto for better consistency */}
+      <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
+        {isLoading ? (
+          <p className="py-10 text-center text-customBlack/70">
+            Loading services...
+          </p>
+        ) : !listError && services.length === 0 ? (
+          <p className="py-10 text-center text-customBlack/60">
+            No services found.
+          </p>
+        ) : (
+          <table className="min-w-full divide-y divide-customGray/30">
+            <thead className="bg-customGray/10">
               <tr>
-                {/* ... table headers ... */}
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Title
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                {/* Title: Always Visible */}
+                <th className={`${thStyleBase}`}>Title</th>
+
+                {/* Description: Hidden on xs, visible sm and up */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Description
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Price
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+
+                {/* Price: Always Visible */}
+                <th className={`${thStyleBase}`}>Price (cents)</th>
+
+                {/* Branch: Hidden on xs, visible sm and up */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Branch
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Actions
-                </th>
+
+                {/* Actions: Always Visible */}
+                <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
+            <tbody className="divide-y divide-customGray/30">
               {services.map((service) => (
-                <tr
-                  key={service.id}
-                  className="transition-colors hover:bg-gray-50 hover:bg-opacity-50"
-                >
-                  {/* ... table cells ... */}
-                  <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900">
+                <tr key={service.id} className="hover:bg-customLightBlue/10">
+                  {/* Title: Allow wrap, medium weight */}
+                  <td className={`${tdStyleBase} font-medium`}>
                     {service.title}
                   </td>
-                  <td className="max-w-xs whitespace-normal break-words px-6 py-4 text-sm text-gray-500">
-                    {service.description ?? "-"}
+
+                  {/* Description: Hidden on xs, allow wrap on sm+ */}
+                  <td
+                    className={`${tdStyleBase} hidden whitespace-normal break-words sm:table-cell`}
+                  >
+                    {service.description || (
+                      <span className="italic text-gray-400">None</span>
+                    )}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
+
+                  {/* Price: No wrap */}
+                  <td className={`${tdStyleBase} whitespace-nowrap`}>
                     {service.price}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {service.branch?.title ?? "N/A"}{" "}
-                    {/* Use optional chaining */}
+
+                  {/* Branch: Hidden on xs, no wrap on sm+ */}
+                  <td
+                    className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
+                  >
+                    {service.branch?.title ?? (
+                      <span className="italic text-gray-400">N/A</span>
+                    )}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+
+                  {/* Actions: No wrap, right-aligned */}
+                  <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(service)}
                       disabled={isPending}
-                      className="mr-3 text-indigo-600 transition-colors hover:text-indigo-900 disabled:opacity-50"
+                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      title="Edit Service"
                     >
-                      Edit
+                      <Edit3 size={16} />
                     </button>
                     <button
                       onClick={() => handleDelete(service.id)}
                       disabled={isPending}
-                      className="text-red-600 transition-colors hover:text-red-900 disabled:opacity-50"
+                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      title="Delete Service"
                     >
-                      Delete
+                      <Trash2 size={16} />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Add/Edit Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 transition-opacity duration-300 ease-in-out">
-          <div className="w-full max-w-md scale-100 transform rounded-lg bg-white p-6 shadow-xl transition-all duration-300 ease-in-out">
-            <h3 className="mb-4 text-lg font-semibold leading-6 text-gray-900">
-              {editingService ? "Edit Service" : "Add New Service"}
-            </h3>
-            {/* Form Error Display */}
-            {formError && (
-              <p className="mb-4 rounded border border-red-400 bg-red-100 p-2 text-xs text-red-700">
-                {formError}
-              </p>
-            )}
-            {/* Add ref and onSubmit prevent default */}
-            <form ref={formRef} onSubmit={(e) => e.preventDefault()}>
-              <div className="mb-4">
-                <label
-                  htmlFor="title"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Title <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="title"
-                  id="title"
-                  required
-                  defaultValue={editingService?.title ?? ""}
-                  className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm focus:border-pink-500 focus:ring-pink-500 sm:text-sm"
-                />
-              </div>
-              <div className="mb-4">
-                <label
-                  htmlFor="description"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Description
-                </label>
-                <textarea
-                  name="description"
-                  id="description"
-                  rows={3}
-                  defaultValue={editingService?.description ?? ""}
-                  className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm focus:border-pink-500 focus:ring-pink-500 sm:text-sm"
-                ></textarea>
-              </div>
-              <div className="mb-4">
-                <label
-                  htmlFor="price"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Price <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  name="price"
-                  id="price"
-                  required
-                  min="0"
-                  step="1" // Use step="1" for integer price based on schema
-                  defaultValue={editingService?.price ?? 0}
-                  className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm focus:border-pink-500 focus:ring-pink-500 sm:text-sm"
-                />
-              </div>
-              <div className="mb-4">
-                <label
-                  htmlFor="branchId"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Branch <span className="text-red-500">*</span>
-                </label>
-                <select
-                  name="branchId"
-                  id="branchId"
-                  required
-                  defaultValue={editingService?.branchId ?? ""}
-                  className="mt-1 block w-full rounded border border-gray-300 bg-white p-2 shadow-sm focus:border-pink-500 focus:ring-pink-500 sm:text-sm"
-                >
-                  <option value="" disabled>
-                    Select a branch
-                  </option>
-                  {branches.map((branch) => (
-                    <option key={branch.id} value={branch.id}>
-                      {branch.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {/* Modal Buttons */}
-              <div className="mt-6 flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  disabled={isSaving}
-                  className="rounded bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-300 focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                {/* Change type to "button" and add onClick */}
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="rounded bg-pink-500 px-4 py-2 text-sm font-medium text-white hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isSaving
-                    ? "Saving..."
-                    : editingService
-                      ? "Save Changes"
-                      : "Create Service"}
-                </button>
-              </div>
-            </form>
+      {/* Add/Edit Modal (No changes needed here for table responsiveness) */}
+      <Modal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        title={
+          <DialogTitle>
+            {editingService ? "Edit Service" : "Add New Service"}
+          </DialogTitle>
+        }
+        containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
+      >
+        {formError && <p className={modalErrorStyle}>{formError}</p>}
+        <form
+          ref={formRef}
+          onSubmit={(e) => e.preventDefault()}
+          className="space-y-4"
+        >
+          {/* Form Fields... (keep existing) */}
+          <div>
+            <label htmlFor="title" className={labelStyle}>
+              Service Title <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              name="title"
+              id="title"
+              required
+              defaultValue={editingService?.title ?? ""}
+              className={inputStyle}
+              disabled={isSaving}
+            />
           </div>
-        </div>
-      )}
+          <div>
+            <label htmlFor="description" className={labelStyle}>
+              Description
+            </label>
+            <textarea
+              name="description"
+              id="description"
+              rows={3}
+              defaultValue={editingService?.description ?? ""}
+              className={inputStyle}
+              disabled={isSaving}
+            ></textarea>
+          </div>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="price" className={labelStyle}>
+                Price (in cents) <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="number"
+                name="price"
+                id="price"
+                required
+                min="0"
+                step="1"
+                defaultValue={editingService?.price ?? 0}
+                className={inputStyle}
+                disabled={isSaving}
+              />
+            </div>
+            <div>
+              <label htmlFor="branchId" className={labelStyle}>
+                Branch <span className="text-red-500">*</span>
+              </label>
+              <select
+                name="branchId"
+                id="branchId"
+                required
+                defaultValue={editingService?.branchId ?? ""}
+                className={selectStyle}
+                disabled={isSaving || branches.length === 0}
+              >
+                <option value="" disabled>
+                  {branches.length === 0 ? "Loading..." : "Select branch"}
+                </option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={branch.id}>
+                    {branch.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {/* Action Buttons */}
+          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+            <Button
+              type="button"
+              onClick={closeModal}
+              disabled={isSaving}
+              invert
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSave} disabled={isSaving}>
+              {isSaving
+                ? "Saving..."
+                : editingService
+                  ? "Save Changes"
+                  : "Create Service"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

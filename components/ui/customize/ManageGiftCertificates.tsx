@@ -22,12 +22,14 @@ import Select, { MultiValue, ActionMeta } from "react-select";
 import { RefreshCw } from "lucide-react";
 
 // --- Types ---
-type ServiceOption = Pick<PrismaService, "id" | "title">;
-type ActiveGiftCertificate = PrismaGC;
+// Use value/label for react-select compatibility
+type SelectOption = { value: string; label: string };
+type ActiveGiftCertificate = PrismaGC; // Use full Prisma type for list
 
-// --- Helper Function ---
-function generateRandomCode(length: number = 8): string {
-  const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789";
+// --- Helper Function --- (Keep as is)
+function generateRandomCode(length: number = 5): string {
+  // Adjusted default length
+  const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789"; // Removed O
   let result = "";
   const charactersLength = characters.length;
   for (let i = 0; i < length; i++) {
@@ -36,20 +38,21 @@ function generateRandomCode(length: number = 8): string {
   return result;
 }
 
-// --- Reusable MultiSelect Component ---
-interface MultiSelectProps {
+// --- Reusable MultiSelect Component --- (Use definition from ManageDiscounts or shared file)
+interface MultiSelectPropsGC {
+  // Renamed slightly to avoid potential conflicts if copy-pasted directly
   name: string;
-  options: { value: string; label: string }[];
+  options: SelectOption[];
   isLoading?: boolean;
   placeholder?: string;
-  value: MultiValue<{ value: string; label: string }>;
+  value: MultiValue<SelectOption>;
   onChange: (
-    newValue: MultiValue<{ value: string; label: string }>,
-    actionMeta: ActionMeta<{ value: string; label: string }>,
+    newValue: MultiValue<SelectOption>,
+    actionMeta: ActionMeta<SelectOption>,
   ) => void;
 }
 
-const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
+const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
   name,
   options,
   isLoading,
@@ -57,9 +60,10 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
   value,
   onChange,
 }) => {
+  // This component definition should ideally live in a shared file
+  // Copied here for completeness based on your provided code structure
   return (
     <div>
-      {/* Hidden inputs remain useful if other parts of system expect standard form data */}
       {value.map((option) => (
         <input
           key={option.value}
@@ -70,7 +74,7 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
       ))}
       <Select
         isMulti
-        name={name + "_select"}
+        name={name + "_select"} // Avoid name clash with hidden inputs
         options={options}
         className="basic-multi-select"
         classNamePrefix="select"
@@ -80,10 +84,30 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
         placeholder={placeholder}
         inputId={name}
         styles={{
-          control: (base) => ({
+          // Use consistent styling from other components
+          control: (base, state) => ({
             ...base,
-            borderColor: "#D1D5DB",
+            borderColor: state.isFocused ? "#C28583" : "#D1D5DB",
+            boxShadow: state.isFocused ? "0 0 0 1px #C28583" : "none",
+            "&:hover": { borderColor: "#C28583" },
             minHeight: "42px",
+          }),
+          option: (base, state) => ({
+            ...base,
+            backgroundColor: state.isSelected
+              ? "#C28583"
+              : state.isFocused
+                ? "#F6F4EB"
+                : "white",
+            color: state.isSelected ? "#F6F4EB" : "#2E2A2A",
+            "&:active": { backgroundColor: "#C28583aa" },
+          }),
+          multiValue: (base) => ({ ...base, backgroundColor: "#E5E7EB" }),
+          multiValueLabel: (base) => ({ ...base, color: "#374151" }),
+          multiValueRemove: (base) => ({
+            ...base,
+            color: "#9CA3AF",
+            "&:hover": { backgroundColor: "#EF4444", color: "white" },
           }),
         }}
         aria-label={placeholder || "Select services"}
@@ -95,34 +119,46 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
 
 // --- Main Component ---
 export default function ManageGiftCertificates() {
-  const [availableServices, setAvailableServices] = useState<ServiceOption[]>(
+  const [availableServices, setAvailableServices] = useState<SelectOption[]>(
     [],
-  );
+  ); // Use SelectOption
   const [activeGCs, setActiveGCs] = useState<ActiveGiftCertificate[]>([]);
   const [isLoadingServices, setIsLoadingServices] = useState(true);
   const [isLoadingGCs, setIsLoadingGCs] = useState(true);
   const [formError, setFormError] = useState<Record<string, string[]>>({});
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement>(null); // Ref remains useful to access form elements
+  const formRef = useRef<HTMLFormElement>(null);
   const codeInputRef = useRef<HTMLInputElement>(null);
   const [selectedServices, setSelectedServices] = useState<
-    MultiValue<{ value: string; label: string }>
-  >([]);
+    MultiValue<SelectOption>
+  >([]); // Use SelectOption
 
   // --- Fetch Data ---
   const loadInitialData = useCallback(async () => {
     setIsLoadingServices(true);
     setIsLoadingGCs(true);
+    setFormError({}); // Clear errors on load
+    // Keep success message or clear it? Decide based on UX. Clearing here.
+    // setSuccessMessage(null);
     try {
-      const [services, gcs] = await Promise.all([
-        getAllServices(),
+      const [servicesData, gcs] = await Promise.all([
+        getAllServices(), // Assuming this returns PrismaService[]
         getActiveGiftCertificates(),
       ]);
-      setAvailableServices(services);
+      // Map PrismaService[] to SelectOption[]
+      const serviceOptions = servicesData.map((s) => ({
+        value: s.id,
+        label: s.title,
+      }));
+      setAvailableServices(serviceOptions);
       setActiveGCs(gcs);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to load initial data for GCs:", err);
+      // Show error to user?
+      setFormError({
+        general: ["Failed to load required data. Please refresh."],
+      });
     } finally {
       setIsLoadingServices(false);
       setIsLoadingGCs(false);
@@ -135,73 +171,101 @@ export default function ManageGiftCertificates() {
 
   // --- Generate Code ---
   const handleGenerateCode = () => {
-    const newCode = generateRandomCode(5);
+    const newCode = generateRandomCode(5); // Generate 5-char code
     if (codeInputRef.current) {
       codeInputRef.current.value = newCode;
+      // Optionally trigger change event if needed by other logic
     }
   };
 
-  // --- NEW: Button Click Handler for Submission ---
-  const handleSaveClick = async () => {
+  // --- Form Submission Handler ---
+  const handleSaveClick = () => {
+    // Keep async for await inside
     if (!formRef.current) {
-      console.error("Form ref is not available.");
       setFormError({ general: ["Form reference error."] });
       return;
     }
-
     setFormError({});
     setSuccessMessage(null);
 
-    // Manually construct FormData from the current form state
     const formData = new FormData(formRef.current);
 
-    // Manually add selected service IDs again, just in case hidden inputs weren't updated perfectly
-    formData.delete("serviceIds"); // Clear any existing hidden inputs first
-    selectedServices.forEach((option) => {
-      formData.append("serviceIds", option.value);
-    });
+    // Manually add selected service IDs
+    formData.delete("serviceIds"); // Clear existing if any
+    selectedServices.forEach((option) =>
+      formData.append("serviceIds", option.value),
+    );
 
-    // Perform client-side validation before calling the action
-    if (!formData.getAll("serviceIds").length) {
-      setFormError({ serviceIds: ["Please select at least one service."] });
-      return;
+    // Client-side validation
+    let errors: Record<string, string[]> = {};
+    if (selectedServices.length === 0) {
+      errors.serviceIds = ["Please select at least one service."];
     }
     const codeValue = formData.get("code") as string;
     if (!codeValue || codeValue.trim().length < 4) {
-      setFormError({ code: ["Code is required (min 4 chars)."] });
+      // Keep min 4 check
+      errors.code = ["Code is required (min 4 chars)."];
+    }
+    const emailValue = formData.get("recipientEmail") as string;
+    if (emailValue && !/\S+@\S+\.\S+/.test(emailValue)) {
+      // Basic email format check
+      errors.recipientEmail = ["Please enter a valid email address."];
+    }
+    const expiresValue = formData.get("expiresAt") as string;
+    if (
+      expiresValue &&
+      new Date(expiresValue) < new Date(new Date().setHours(0, 0, 0, 0))
+    ) {
+      // Check if expiry is past
+      errors.expiresAt = ["Expiry date cannot be in the past."];
+    }
+
+    if (Object.keys(errors).length > 0) {
+      setFormError(errors);
       return;
     }
-    // Add any other client-side checks here if needed
 
-    // Start the server action transition
     startTransition(async () => {
       const result = await createGiftCertificateAction(formData);
       if (result.success) {
-        setSuccessMessage(result.message);
-        formRef.current?.reset();
+        setSuccessMessage(
+          result.message || "Gift certificate created successfully!",
+        );
+        formRef.current?.reset(); // Reset form fields
         setSelectedServices([]); // Clear multi-select state
-        await loadInitialData(); // Refresh list
+        if (codeInputRef.current) codeInputRef.current.value = ""; // Clear code input
+        await loadInitialData(); // Refresh active GC list
+        setTimeout(() => setSuccessMessage(null), 5000); // Clear success message after delay
       } else {
         setSuccessMessage(null);
         setFormError(
-          result.errors ?? { general: [result.message || "Unknown error."] },
+          result.errors ?? {
+            general: [result.message || "Failed to create certificate."],
+          },
         );
-        console.error("GC Creation failed:", result.message, result.errors);
       }
     });
   };
 
-  const serviceOptionsForSelect = availableServices.map((s) => ({
-    value: s.id,
-    label: s.title,
-  }));
   const isSaving = isPending;
 
+  // --- Style constants --- (Adopt from other components)
+  const inputStyle =
+    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
+  const labelStyle = "block text-sm font-medium text-customBlack/80";
+  const errorTextStyle = "mt-1 text-xs text-red-500";
+  const formSectionStyle =
+    "rounded border border-customGray/30 bg-white/80 shadow-sm p-4 md:p-6"; // Harmonized style
+  const listSectionStyle =
+    "rounded border border-customGray/30 bg-white/80 shadow-sm"; // Harmonized style
+  const thStyleBase =
+    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider"; // Harmonized style
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Harmonized style
+
   return (
-    <div className="space-y-8">
-      {/* --- Creation Form Section --- */}
-      <div className="rounded bg-white bg-opacity-70 p-6 shadow-md">
-        <h2 className="mb-4 text-xl font-semibold text-gray-800">
+    <div className="space-y-6 p-1">
+      <div className={formSectionStyle}>
+        <h2 className="mb-4 text-lg font-semibold text-customBlack">
           Create Gift Certificate
         </h2>
 
@@ -216,15 +280,14 @@ export default function ManageGiftCertificates() {
           </p>
         )}
 
-        {/* REMOVED onSubmit from form */}
-        <form ref={formRef} className="space-y-4">
-          {/* Code Input with Generator */}
+        <form
+          ref={formRef}
+          className="space-y-4"
+          onSubmit={(e) => e.preventDefault()}
+        >
           <div>
-            <label
-              htmlFor="code"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Certificate Code*
+            <label htmlFor="code" className={labelStyle}>
+              Certificate Code <span className="text-red-500">*</span>
             </label>
             <div className="mt-1 flex rounded-md shadow-sm">
               <input
@@ -234,24 +297,26 @@ export default function ManageGiftCertificates() {
                 id="code"
                 required
                 minLength={4}
-                className="block w-full flex-1 rounded-none rounded-l-md border border-r-0 border-gray-300 p-2 focus:border-pink-500 focus:ring-pink-500 sm:text-sm"
-                style={{ textTransform: "uppercase" }}
-                placeholder="Enter code or generate"
+                className={`block w-full flex-1 rounded-none rounded-l-md border border-r-0 border-customGray p-2 uppercase focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:text-sm`} // Added uppercase class
+                placeholder="Enter or Generate"
+                aria-invalid={!!formError.code}
+                aria-describedby={formError.code ? "code-error" : undefined}
               />
               <Button
                 type="button"
                 onClick={handleGenerateCode}
-                className="relative -ml-px inline-flex items-center space-x-2 rounded-r-md border border-gray-300 bg-gray-50 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 focus:border-pink-500 focus:outline-none focus:ring-1 focus:ring-pink-500"
-                title="Generate Random Code"
-                size="sm"
+                className="relative -ml-px inline-flex items-center space-x-2 rounded-r-md border border-customGray bg-customGray/10 px-3 py-2 text-sm font-medium hover:bg-customGray/20 focus:border-customDarkPink focus:outline-none focus:ring-1 focus:ring-customDarkPink"
+                title="Generate Random Code (5 chars)"
+                size="sm" // Ensure size prop works if Button component supports it
                 invert
               >
-                <RefreshCw size={16} />
-                <span>Generate</span>
+                <RefreshCw size={16} className="h-4 w-4" />
+                <span className="hidden sm:inline">Generate</span>{" "}
+                {/* Hide text on small screens */}
               </Button>
             </div>
             {formError.code && (
-              <p className="mt-1 text-xs text-red-500">
+              <p id="code-error" className={errorTextStyle}>
                 {formError.code.join(", ")}
               </p>
             )}
@@ -260,168 +325,164 @@ export default function ManageGiftCertificates() {
             </p>
           </div>
 
-          {/* Service Multi-Select (Controlled) */}
           <div>
-            <label
-              htmlFor="serviceIds"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Included Services*
+            <label htmlFor="serviceIds" className={labelStyle}>
+              Included Services <span className="text-red-500">*</span>
             </label>
-            <ServiceMultiSelect
+            <ServiceMultiSelectGC
               name="serviceIds"
-              options={serviceOptionsForSelect}
+              options={availableServices} // Use state with SelectOption[]
               isLoading={isLoadingServices}
               placeholder="Select one or more services..."
-              value={selectedServices}
-              onChange={(newValue) => setSelectedServices(newValue)}
+              value={selectedServices} // Use state with MultiValue<SelectOption>
+              onChange={setSelectedServices} // Directly use the setter
             />
             {formError.serviceIds && (
-              <p className="mt-1 text-xs text-red-500">
+              <p className={errorTextStyle}>
                 {formError.serviceIds.join(", ")}
               </p>
             )}
           </div>
 
-          {/* Recipient Info (Optional) */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label
-                htmlFor="recipientName"
-                className="block text-sm font-medium text-gray-700"
-              >
-                Recipient Name
+              <label htmlFor="recipientName" className={labelStyle}>
+                {" "}
+                Recipient Name{" "}
               </label>
               <input
                 type="text"
                 name="recipientName"
                 id="recipientName"
-                className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
+                className={inputStyle}
+                aria-invalid={!!formError.recipientName}
               />
               {formError.recipientName && (
-                <p className="mt-1 text-xs text-red-500">
+                <p className={errorTextStyle}>
                   {formError.recipientName.join(", ")}
                 </p>
               )}
             </div>
             <div>
-              <label
-                htmlFor="recipientEmail"
-                className="block text-sm font-medium text-gray-700"
-              >
-                Recipient Email (Optional)
+              <label htmlFor="recipientEmail" className={labelStyle}>
+                {" "}
+                Recipient Email{" "}
               </label>
               <input
                 type="email"
                 name="recipientEmail"
                 id="recipientEmail"
-                className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
+                className={inputStyle}
+                aria-invalid={!!formError.recipientEmail}
+                aria-describedby={
+                  formError.recipientEmail ? "email-error" : undefined
+                }
               />
               {formError.recipientEmail && (
-                <p className="mt-1 text-xs text-red-500">
+                <p id="email-error" className={errorTextStyle}>
                   {formError.recipientEmail.join(", ")}
                 </p>
               )}
             </div>
           </div>
 
-          {/* Expiry Date (Optional) */}
           <div>
-            <label
-              htmlFor="expiresAt"
-              className="block text-sm font-medium text-gray-700"
-            >
-              Expires At (Optional)
+            <label htmlFor="expiresAt" className={labelStyle}>
+              {" "}
+              Expires At (Optional){" "}
             </label>
             <input
               type="date"
               name="expiresAt"
               id="expiresAt"
-              className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-              min={new Date().toISOString().split("T")[0]}
+              className={inputStyle}
+              min={new Date().toISOString().split("T")[0]} // Prevent past dates
+              aria-invalid={!!formError.expiresAt}
+              aria-describedby={
+                formError.expiresAt ? "expires-error" : undefined
+              }
             />
             {formError.expiresAt && (
-              <p className="mt-1 text-xs text-red-500">
+              <p id="expires-error" className={errorTextStyle}>
                 {formError.expiresAt.join(", ")}
               </p>
             )}
           </div>
 
-          {/* Submit Button - Changed type to "button", added onClick */}
+          {/* Submit Button */}
           <div className="flex justify-end pt-2">
             <Button
-              type="button" // Changed from submit
-              onClick={handleSaveClick} // Added onClick handler
-              disabled={isSaving || isLoadingServices}
+              type="button"
+              onClick={handleSaveClick}
+              disabled={isSaving || isLoadingServices || isLoadingGCs} // Disable if loading anything
             >
-              {isSaving ? "Creating..." : "Create Gift Certificate"}
+              {isSaving ? "Creating..." : "Create Certificate"}
             </Button>
           </div>
         </form>
       </div>
-
-      {/* --- Active Gift Certificates List Section --- */}
-      <div className="rounded bg-white bg-opacity-70 p-6 shadow-md">
-        {/* ... (table display logic remains the same) ... */}
-        <h2 className="mb-4 text-xl font-semibold text-gray-800">
+      <div className={listSectionStyle}>
+        <h3 className="border-b border-customGray/30 bg-customGray/10 p-3 text-base font-semibold text-gray-700">
           Active Gift Certificates
-        </h2>
-        {isLoadingGCs ? (
-          <p className="py-4 text-center text-customBlack/70">
-            Loading active certificates...
-          </p>
-        ) : activeGCs.length === 0 ? (
-          <p className="py-4 text-center text-customBlack/60">
-            No active gift certificates found.
-          </p>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-customGray/50">
-              <thead className="bg-customGray/30">
+        </h3>
+        <div className="min-w-full overflow-x-auto">
+          {isLoadingGCs ? (
+            <p className="py-10 text-center text-customBlack/70">
+              Loading certificates...
+            </p>
+          ) : !formError.general && activeGCs.length === 0 ? ( // Check for general loading errors too
+            <p className="py-10 text-center text-customBlack/60">
+              No active gift certificates found.
+            </p>
+          ) : (
+            <table className="min-w-full divide-y divide-customGray/30">
+              <thead className="bg-customGray/10">
                 <tr>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-customBlack">
-                    Code
-                  </th>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-customBlack">
+                  <th className={thStyleBase}>Code</th>
+                  <th className={`${thStyleBase} hidden sm:table-cell`}>
                     Recipient
                   </th>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-customBlack">
+                  <th className={`${thStyleBase} hidden sm:table-cell`}>
                     Expires
                   </th>
-                  <th className="px-4 py-2 text-left text-xs font-medium uppercase tracking-wider text-customBlack">
+                  <th className={`${thStyleBase} hidden sm:table-cell`}>
                     Issued
                   </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-customGray/30">
                 {activeGCs.map((gc) => (
-                  <tr key={gc.id} className="hover:bg-customWhiteBlue">
-                    <td className="px-4 py-2 font-mono text-sm text-customBlack">
+                  <tr key={gc.id} className="hover:bg-customLightBlue/10">
+                    <td
+                      className={`${tdStyleBase} whitespace-nowrap font-mono uppercase`}
+                    >
                       {gc.code}
                     </td>
-                    <td className="px-4 py-2 text-sm text-customBlack/90">
+                    <td className={`${tdStyleBase} hidden sm:table-cell`}>
                       {gc.recipientName || (
-                        <span className="italic text-customBlack/50">N/A</span>
+                        <span className="italic text-gray-400">N/A</span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-sm text-customBlack/90">
+                    <td
+                      className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
+                    >
                       {gc.expiresAt ? (
                         new Date(gc.expiresAt).toLocaleDateString()
                       ) : (
-                        <span className="italic text-customBlack/50">
-                          Never
-                        </span>
+                        <span className="italic text-gray-400">Never</span>
                       )}
                     </td>
-                    <td className="px-4 py-2 text-sm text-customBlack/90">
+                    <td
+                      className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
+                    >
                       {new Date(gc.issuedAt).toLocaleDateString()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

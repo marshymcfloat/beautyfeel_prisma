@@ -12,6 +12,7 @@ import {
   Role,
   DiscountRule,
   ServiceSet,
+  Voucher,
   DiscountType,
 } from "@prisma/client";
 import { withAccelerate } from "@prisma/extension-accelerate";
@@ -21,15 +22,32 @@ import {
   PaymentMethodTotals,
   CheckGCResult,
   UIDiscountRuleWithServices,
+  AccountForManagement,
+  TransactionSubmissionResponse,
 } from "./Types";
 import {
   AccountData,
   SalaryBreakdownItem,
   SALARY_COMMISSION_RATE,
+  BranchForSelect,
+  EmployeeForAttendance,
 } from "./Types";
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { ParamValue } from "next/dist/server/request/params";
+
+function convertErrorsToStringArrays(
+  errorObj: Record<string, string>,
+): Record<string, string[]> {
+  const newErrors: Record<string, string[]> = {};
+  for (const key in errorObj) {
+    if (Object.prototype.hasOwnProperty.call(errorObj, key)) {
+      newErrors[key] = [errorObj[key]]; // Wrap the string message in an array
+    }
+  }
+  return newErrors;
+}
 
 const branchSchema = z.object({
   title: z.string().min(1, "Title is required"),
@@ -53,6 +71,20 @@ export interface MonthlySalesData {
   bank: number;
   total: number;
 }
+
+type AccountForComponent = {
+  id: string;
+  username: string;
+  name: string;
+  email: string | null;
+  role: Role[];
+  dailyRate: number; // Ensure Prisma returns number
+  branchId: string | null;
+  branch: {
+    id: string;
+    title: string;
+  } | null; // Include branch details
+};
 
 type ServiceProps = {
   id: string;
@@ -126,6 +158,28 @@ export async function getVoucher(code: string) {
       status: false,
       error: "An error occurred while fetching the voucher",
     };
+  }
+}
+
+export async function getAllVouchers(): Promise<Voucher[]> {
+  console.log("Server Action: getAllVouchers executing...");
+  try {
+    const vouchers = await prisma.voucher.findMany({
+      orderBy: {
+        // Order by used status first (Active first), then by code
+        usedAt: "asc", // nulls first (Active)
+        // Optionally add a secondary sort
+        // code: 'asc',
+      },
+    });
+    console.log(
+      `Server Action: Fetched ${vouchers.length} vouchers successfully.`,
+    );
+    // Ensure dates are serializable if necessary, Prisma usually handles this
+    return vouchers;
+  } catch (error) {
+    console.error("Server Action Error [getAllVouchers]:", error);
+    throw new Error("Failed to fetch vouchers via server action.");
   }
 }
 
@@ -231,7 +285,10 @@ const DiscountRuleSchema = z
     },
   );
 
-export async function transactionSubmission(transactionForm: CashierState) {
+export async function transactionSubmission(
+  transactionForm: CashierState,
+): Promise<TransactionSubmissionResponse> {
+  // Explicitly type the return Promise
   try {
     console.log("Received Transaction Form:", transactionForm);
 
@@ -241,7 +298,7 @@ export async function transactionSubmission(transactionForm: CashierState) {
       time,
       serveTime,
       email,
-      servicesAvailed, // Array like: [{ id: 'svc1', name: 'Haircut', price: 50, quantity: 3 }, ...]
+      servicesAvailed,
       voucherCode,
       paymentMethod,
       grandTotal,
@@ -250,7 +307,7 @@ export async function transactionSubmission(transactionForm: CashierState) {
     } = transactionForm;
 
     // --- Validation Logic ---
-    const errors: Record<string, string> = {};
+    const errors: Record<string, string> = {}; // Keep internal errors as string for simplicity here
 
     // MANDATORY: Customer Name
     if (!name || !name.trim()) {
@@ -269,6 +326,7 @@ export async function transactionSubmission(transactionForm: CashierState) {
     // MANDATORY: Services Availed
     if (!servicesAvailed || servicesAvailed.length === 0) {
       errors.servicesAvailed = "At least one service must be selected.";
+      // Add a general message for easier display
       if (!errors.general)
         errors.general = "Please select at least one service.";
     } else {
@@ -284,11 +342,16 @@ export async function transactionSubmission(transactionForm: CashierState) {
           service.quantity < 1 ||
           !Number.isInteger(service.quantity)
         ) {
-          errors.servicesAvailed = `Invalid quantity for service ${service.name || service.id}. Quantity must be a positive whole number.`;
+          errors.servicesAvailed = `Invalid quantity for service ${
+            service.name || service.id
+          }. Quantity must be a positive whole number.`;
           break;
         }
+        // Allow price 0 (e.g., free gift), but not negative
         if (typeof service.price !== "number" || service.price < 0) {
-          errors.servicesAvailed = `Invalid price for service ${service.name || service.id}. Price must be a non-negative number.`;
+          errors.servicesAvailed = `Invalid price for service ${
+            service.name || service.id
+          }. Price must be a non-negative number.`;
           break;
         }
       }
@@ -315,7 +378,12 @@ export async function transactionSubmission(transactionForm: CashierState) {
     // --- Return errors if any ---
     if (Object.keys(errors).length > 0) {
       console.log("Validation Errors:", errors);
-      return { success: false, errors };
+      // FIX: Add message and convert errors
+      return {
+        success: false,
+        message: errors.general || "Validation failed. Please check the form.",
+        errors: convertErrorsToStringArrays(errors),
+      };
     }
 
     // --- Process Valid Data ---
@@ -326,19 +394,18 @@ export async function transactionSubmission(transactionForm: CashierState) {
     let bookedFor = new Date(); // Default to now
     if (serveTime === "later" && date && time) {
       try {
-        // IMPORTANT: Ensure date and time strings combine correctly for your timezone.
-        // Using UTC for consistency might be safer if clients/servers are in different zones.
-        // Example: Use a library like date-fns or dayjs for robust parsing.
-        // Basic JS Date parsing can be tricky with timezones.
-        bookedFor = new Date(`${date}T${time}:00`); // Assumes local timezone if no zone specified
+        bookedFor = new Date(`${date}T${time}:00`);
         if (isNaN(bookedFor.getTime())) {
           throw new Error("Invalid date/time format resulting in NaN");
         }
       } catch (dateError) {
         console.error("Error parsing date/time:", dateError);
+        const errorMsg = "Invalid date or time format provided.";
+        // FIX: Add message and format errors correctly
         return {
           success: false,
-          errors: { serveTime: "Invalid date or time format provided." },
+          message: errorMsg,
+          errors: { serveTime: [errorMsg] }, // Ensure array format
         };
       }
     }
@@ -348,8 +415,6 @@ export async function transactionSubmission(transactionForm: CashierState) {
       // Find or Create Customer
       let customer = await tx.customer.findFirst({
         where: { name: newlyFormattedName },
-        // Consider if email should be part of the unique identification or just updated
-        // where: { name: newlyFormattedName, email: customerEmailData }, // Stricter match
       });
 
       if (!customer) {
@@ -365,6 +430,7 @@ export async function transactionSubmission(transactionForm: CashierState) {
           });
           console.log("New customer created:", customer);
         } catch (createError: any) {
+          let userMessage = "Failed to create customer record."; // Default message
           if (
             createError.code === "P2002" &&
             createError.meta?.target?.includes("email")
@@ -373,54 +439,46 @@ export async function transactionSubmission(transactionForm: CashierState) {
               "Unique constraint failed for email:",
               customerEmailData,
             );
-            // You might want to fetch the customer with this email instead
             const existingCustomerWithEmail = await tx.customer.findUnique({
               where: { email: customerEmailData! },
             });
             if (existingCustomerWithEmail) {
-              throw new Error(
-                `The email "${customerEmailData}" is already associated with customer "${existingCustomerWithEmail.name}". Please use a different email or find the existing customer.`,
-              );
+              userMessage = `The email "${customerEmailData}" is already associated with customer "${existingCustomerWithEmail.name}". Please use a different email or find the existing customer.`;
             } else {
-              // Should not happen if constraint failed, but as a fallback:
-              throw new Error(
-                `The email "${customerEmailData}" is already in use.`,
-              );
+              userMessage = `The email "${customerEmailData}" is already in use.`;
             }
           }
-          throw createError; // Rethrow other errors
+          // Throw error to be caught by the outer catch block of transactionSubmission
+          throw new Error(userMessage);
         }
       } else {
         console.log("Found existing customer:", customer);
-        // Optional: Update existing customer's email if provided and different
-        // Be careful if email is meant to be a unique identifier
         if (customerEmailData && customer.email !== customerEmailData) {
           console.log(
             `Updating email for customer ${customer.id} to ${customerEmailData}`,
           );
-          // Add try-catch here too for potential unique constraint violation during update
           try {
             await tx.customer.update({
               where: { id: customer.id },
               data: { email: customerEmailData },
             });
           } catch (updateError: any) {
+            let userMessage = "Failed to update customer email.";
             if (
               updateError.code === "P2002" &&
               updateError.meta?.target?.includes("email")
             ) {
-              throw new Error(
-                `The email "${customerEmailData}" is already associated with another customer.`,
-              );
+              userMessage = `The email "${customerEmailData}" is already associated with another customer.`;
             }
-            throw updateError;
+            // Throw error to be caught by the outer catch block
+            throw new Error(userMessage);
           }
         }
       }
 
       // Handle Voucher
       let voucher = null;
-      let actualDiscount = totalDiscount; // Use the form's discount by default
+      let actualDiscount = totalDiscount;
 
       if (voucherCode) {
         voucher = await tx.voucher.findUnique({
@@ -429,57 +487,48 @@ export async function transactionSubmission(transactionForm: CashierState) {
 
         if (voucher) {
           if (voucher.usedAt) {
+            // Throw error to be caught by the outer catch block
             throw new Error(`Voucher "${voucherCode}" has already been used.`);
           }
-          // Optional: Verify voucher applicability (e.g., min spend, specific services) here
-          // Optional: Recalculate discount based *only* on the voucher if form discount is unreliable
-          // actualDiscount = calculateDiscount(voucher, servicesAvailed); // Implement this function if needed
+          // Optional: Add more voucher validation logic here
           await tx.voucher.update({
             where: { id: voucher.id },
             data: { usedAt: new Date() },
           });
           console.log(`Voucher "${voucherCode}" marked as used.`);
         } else {
+          // Throw error to be caught by the outer catch block
           throw new Error(`Invalid voucher code "${voucherCode}".`);
         }
-      } else {
-        // If no voucher code, ensure the discount isn't coming from a non-existent voucher
-        // You might want validation to ensure totalDiscount is 0 if no voucherCode is present,
-        // unless you allow manual discounts.
-        // actualDiscount = totalDiscount; // Keep manual discount if allowed
       }
 
       // Create the main Transaction record
       const transaction = await tx.transaction.create({
         data: {
           customerId: customer.id,
-          paymentMethod: paymentMethod,
-          grandTotal, // Ensure this is calculated correctly on the frontend/backend
-          discount: actualDiscount, // Use the determined discount
-          status: Status.PENDING, // Use Enum if available
+          paymentMethod: paymentMethod as PaymentMethod, // Cast if using Prisma enum type
+          grandTotal,
+          discount: actualDiscount,
+          status: Status.PENDING,
           bookedFor,
           voucherId: voucher ? voucher.id : null,
-          /* branchId: determinedBranchId, // Link the determined branch ID */
+          // branchId: determinedBranchId, // Add if needed
         },
       });
       console.log("Transaction record created:", transaction.id);
 
-      // --- >>> CORE CHANGE HERE <<< ---
-      // Create individual AvailedService records for each unit of quantity
+      // Create individual AvailedService records
       const availedServiceCreatePromises = [];
       let totalCreated = 0;
-
       for (const inputService of servicesAvailed) {
-        // The input validation for quantity > 0 happened earlier
         for (let i = 0; i < inputService.quantity; i++) {
           availedServiceCreatePromises.push(
             tx.availedService.create({
               data: {
                 transactionId: transaction.id,
                 serviceId: inputService.id,
-                quantity: 1, // Set quantity to 1 for each individual record
-                price: inputService.price, // Price per unit of the service at time of transaction
-                // checkedById and servedById will be null initially
+                quantity: 1,
+                price: inputService.price,
                 checkedById: null,
                 servedById: null,
               },
@@ -488,73 +537,59 @@ export async function transactionSubmission(transactionForm: CashierState) {
           totalCreated++;
         }
       }
-
-      // Wait for all individual AvailedService records to be created
       await Promise.all(availedServiceCreatePromises);
       console.log(
         `${totalCreated} individual AvailedService records created and linked.`,
       );
-      // --- >>> END OF CORE CHANGE <<< ---
 
-      // Optionally: Update Customer's totalPaid or other stats (consider doing this elsewhere, e.g., when status becomes COMPLETED)
-      // await tx.customer.update({
-      //   where: { id: customer.id },
-      //   data: { totalPaid: { increment: grandTotal } }, // Maybe only increment when paid?
-      // });
-
-      return transaction; // Return the created transaction
+      return transaction;
     }); // End of prisma.$transaction
 
     console.log("Transaction successfully created! ID:", result.id);
-    /*   revalidatePath("/path/to/transactions"); // Example: Revalidate relevant pages */
+    // Revalidate paths if necessary
+    // revalidatePath("/admin/transactions");
+    // revalidatePath("/reports/sales");
+
+    // FIX: Return correct success shape
     return { success: true, transactionId: result.id };
   } catch (error: unknown) {
     console.error("Error submitting transaction:", error);
 
-    const errors: Record<string, string> = {};
-    let specificErrorHandled = false;
+    const responseErrors: Record<string, string[]> = {}; // Use string[] for final errors
+    let responseMessage = "An unexpected error occurred during submission."; // Default message
 
     if (error instanceof Error) {
-      // Handle specific known errors first
-      if (
-        error.message.includes("Voucher") &&
-        error.message.includes("already been used")
-      ) {
-        errors.voucherCode = error.message;
-        specificErrorHandled = true;
+      responseMessage = error.message; // Use the caught error message by default
+
+      // Handle specific known errors and map to fields if possible
+      if (error.message.includes("already been used")) {
+        responseErrors.voucherCode = [error.message];
       } else if (error.message.includes("Invalid voucher code")) {
-        errors.voucherCode = error.message;
-        specificErrorHandled = true;
-      } else if (
-        error.message.includes("associated with another customer") ||
-        error.message.includes("already in use")
-      ) {
-        errors.email = error.message; // Error related to customer email uniqueness
-        specificErrorHandled = true;
+        responseErrors.voucherCode = [error.message];
+      } else if (error.message.includes("already associated with")) {
+        responseErrors.email = [error.message];
+      } else if (error.message.includes("already in use")) {
+        responseErrors.email = [error.message];
       } else if (error.message.includes("Invalid date or time")) {
-        errors.serveTime = error.message;
-        specificErrorHandled = true;
-      } else if (
-        error.message.includes("Invalid quantity") ||
-        error.message.includes("Invalid price")
-      ) {
-        errors.servicesAvailed = error.message; // Error related to service data
-        specificErrorHandled = true;
+        responseErrors.serveTime = [error.message];
       }
-      // Add more specific error checks as needed
+      // Add more specific mappings if needed
+
+      // If no specific field error was mapped, but we have a message, use general
+      if (Object.keys(responseErrors).length === 0 && responseMessage) {
+        responseErrors.general = [responseMessage];
+      }
+    }
+    // Ensure there's always a general message if no specific errors were mapped
+    if (!responseErrors.general && Object.keys(responseErrors).length === 0) {
+      responseErrors.general = [responseMessage];
     }
 
-    // If no specific error matched, provide a general error message
-    if (!specificErrorHandled) {
-      errors.general =
-        "An unexpected error occurred while processing the transaction. Please try again.";
-      // Log the detailed error for debugging, but don't expose it to the user
-      console.error("Unhandled transaction error details:", error);
-    }
-
+    // FIX: Return correct error shape
     return {
       success: false,
-      errors: errors,
+      message: responseMessage, // Provide the main error message
+      errors: responseErrors, // Provide the field-specific errors (can be empty)
     };
   }
 }
@@ -1183,168 +1218,420 @@ export async function deleteServiceAction(id: string) {
 const ALL_ROLES = Object.values(Role); // For validation
 
 const createAccountSchema = z.object({
-  username: z.string().min(1).max(20, "Username must be 1-6 characters"),
+  username: z
+    .string()
+    .trim()
+    .min(1, "Username required")
+    .max(20, "Username too long"),
   password: z.string().min(6, "Password must be at least 6 characters"),
-  name: z.string().min(1, "Name is required"),
+  name: z.string().trim().min(1, "Name required"),
   email: z
     .string()
+    .trim()
     .email("Invalid email format")
-    .optional()
     .nullable()
-    .or(z.literal("")), // Allow empty string from form
-  // Use preprocess for salary
-  salary: z.preprocess(
-    (val) => {
-      if (typeof val === "string") return parseInt(val, 10);
-      if (typeof val === "number") return val;
-      return NaN;
-    },
-    z
-      .number({ invalid_type_error: "Salary must be a number" })
-      .int()
-      .min(0, "Salary must be non-negative"),
-  ),
-  branchId: z
-    .string()
-    .uuid("Invalid Branch ID")
     .optional()
-    .nullable()
-    .or(z.literal("")), // Allow empty string
-  role: z.array(z.nativeEnum(Role)).min(1, "At least one role is required"),
+    .or(z.literal("")),
+  dailyRate: z.coerce // Use coerce for FormData which sends strings
+    .number({ invalid_type_error: "Daily Rate must be a number" })
+    .int("Daily Rate must be a whole number")
+    .nonnegative("Daily Rate must be non-negative") // Use non-negative shorthand
+    .optional(), // Keep optional if you rely on Prisma default
+  branchId: z.string().uuid("Invalid Branch ID format").nullable().optional(),
+  role: z.array(z.nativeEnum(Role)).min(1, "At least one role required"),
 });
 
-// Schema for update (password excluded)
-const updateAccountSchema = createAccountSchema
-  .omit({ password: true })
-  .partial();
+const updateAccountSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .min(1, "Username required")
+    .max(20, "Username too long"),
+  name: z.string().trim().min(1, "Name required"),
+  email: z
+    .string()
+    .trim()
+    .email("Invalid email format")
+    .nullable()
+    .optional()
+    .or(z.literal("")),
+  dailyRate: z.coerce
+    .number({ invalid_type_error: "Daily Rate must be a number" })
+    .int("Daily Rate must be a whole number")
+    .nonnegative("Daily Rate must be non-negative")
+    .optional(),
+  branchId: z.string().uuid("Invalid Branch ID format").nullable().optional(),
+  role: z.array(z.nativeEnum(Role)).min(1, "At least one role required"),
+});
 
-// --- Create Account Action ---
+// --- NEW: Server Action to Fetch Accounts ---
+// Define the specific type we want to return to the client
+
+export async function getAccountsAction(): Promise<AccountForManagement[]> {
+  console.log("Server Action: getAccountsAction executing...");
+  try {
+    const accounts = await prisma.account.findMany({
+      select: {
+        id: true,
+        username: true,
+        name: true,
+        email: true,
+        role: true,
+        dailyRate: true, // *** Include dailyRate ***
+        branchId: true,
+        branch: {
+          // Include related branch data
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+      },
+      orderBy: {
+        name: "asc", // Example ordering
+      },
+    });
+    console.log(
+      `Server Action: Fetched ${accounts.length} accounts successfully.`,
+    );
+    // Prisma's return type with the select should match AccountForManagement
+    // but we cast for clarity/safety, ensure `select` is correct.
+    // Need to handle potential null dailyRate from DB if schema allows it,
+    // but the component type expects number. Let's ensure it's number or default.
+    return accounts.map((acc) => ({
+      ...acc,
+      // Ensure dailyRate is a number, falling back to 0 if somehow null/undefined in DB
+      // although your schema has a default, this is safer.
+      dailyRate: acc.dailyRate ?? 0,
+    })) as AccountForManagement[]; // Map to ensure type conformity before casting
+  } catch (error) {
+    console.error("Server Action Error [getAccountsAction]:", error);
+    // In a real app, you might want to throw a more specific error
+    // or return an object indicating failure, e.g., { success: false, error: 'message' }
+    // For simplicity here, we re-throw, which the client component needs to handle.
+    throw new Error("Failed to fetch accounts via server action.");
+  }
+}
+
+// --- NEW: Server Action to Fetch Branches for Select Dropdown ---
+
+export async function getBranchesForSelectAction(): Promise<BranchForSelect[]> {
+  console.log("Server Action: getBranchesForSelectAction executing...");
+  try {
+    const branches = await prisma.branch.findMany({
+      select: {
+        id: true,
+        title: true,
+      },
+      orderBy: {
+        title: "asc", // Good practice to order dropdowns
+      },
+    });
+    console.log(
+      `Server Action: Fetched ${branches.length} branches successfully.`,
+    );
+    return branches;
+  } catch (error) {
+    console.error("Server Action Error [getBranchesForSelectAction]:", error);
+    throw new Error("Failed to fetch branches via server action.");
+  }
+}
+
 export async function createAccountAction(formData: FormData) {
+  console.log("Raw FormData:", Object.fromEntries(formData.entries()));
+
   const roles = ALL_ROLES.filter(
     (role) => formData.get(`role-${role}`) === "on",
   );
+
+  let branchIdFromForm = formData.get("branchId") as string | null;
+  let branchIdForZod: string | null = null;
+  if (branchIdFromForm) {
+    const trimmedId = branchIdFromForm.trim();
+    if (
+      trimmedId.length > 0 &&
+      trimmedId.match(
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i,
+      )
+    ) {
+      branchIdForZod = trimmedId;
+    } else if (trimmedId.length > 0) {
+      console.warn(
+        `Branch ID from form "${trimmedId}" is not a valid UUID format, treating as null.`,
+      );
+    }
+  }
+  console.log(
+    `Branch ID from form: "${branchIdFromForm}", Processed for Zod: "${branchIdForZod}"`,
+  );
+  // --- End CORRECTED Branch ID Handling ---
+
   const rawData = {
     username: formData.get("username"),
     password: formData.get("password"),
     name: formData.get("name"),
     email: formData.get("email"),
-    salary: formData.get("salary"),
-    branchId: formData.get("branchId") || null, // Handle empty string from select
+    dailyRate: formData.get("dailyRate"), // Let Zod coerce this
+    branchId: branchIdForZod, // Use the correctly processed value
     role: roles,
   };
+  // 2. Log Raw Data for Zod
+  console.log("Raw Data for Zod:", rawData);
 
   const validationResult = createAccountSchema.safeParse(rawData);
 
+  // 3. Log Zod Validation Result
+  console.log(
+    "Zod Validation Result:",
+    JSON.stringify(validationResult, null, 2),
+  );
+
   if (!validationResult.success) {
-    console.log("Validation Errors:", validationResult.error.flatten());
+    console.error(
+      "Zod Validation Errors:",
+      validationResult.error.flatten().fieldErrors,
+    );
+    // Refine error message construction
+    const fieldErrors = validationResult.error.flatten().fieldErrors;
+    const messages = Object.entries(fieldErrors)
+      .map(([field, errors]) => `${field}: ${errors?.join(", ")}`)
+      .join("; ");
     return {
       success: false,
-      message: "Validation failed",
-      errors: validationResult.error.flatten().fieldErrors,
+      message: `Validation failed. ${messages}`, // Provide specific Zod errors
+      errors: fieldErrors,
     };
   }
 
-  const { password, email, branchId, ...restData } = validationResult.data;
+  // Destructure validated data
+  const { password, email, branchId, dailyRate, ...restData } =
+    validationResult.data;
+  // 4. Log Validated Data
+  console.log("Validated Data:", {
+    passwordExists: !!password,
+    email,
+    branchId, // This is now correctly validated (UUID string or null)
+    dailyRate, // This is now correctly coerced or undefined
+    restData,
+  });
 
   try {
-    // Check uniqueness
+    // Check uniqueness (keep this logic)
     const existingUsername = await prisma.account.findUnique({
       where: { username: restData.username },
     });
-    if (existingUsername) {
+    if (existingUsername)
       return {
         success: false,
         message: `Username "${restData.username}" is already taken.`,
+        errors: { username: ["Username already taken."] },
       };
-    }
     if (email) {
+      // Check only if email is provided and not null/empty
       const existingEmail = await prisma.account.findUnique({
         where: { email },
       });
-      if (existingEmail) {
+      if (existingEmail)
         return {
           success: false,
           message: `Email "${email}" is already registered.`,
+          errors: { email: ["Email already registered."] },
         };
-      }
     }
 
     // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10); // 10 = salt rounds
+    const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newAccount = await prisma.account.create({
-      data: {
-        ...restData,
-        password: hashedPassword,
-        email: email || null, // Store null if empty string
-        branchId: branchId || null, // Store null if empty string
-      },
-    });
+    // Construct the payload for Prisma
+    const createPayload: any = {
+      ...restData, // includes username, name, role
+      password: hashedPassword,
+      email: email || null, // Ensure empty string becomes null if it wasn't already
+      branchId: branchId, // Use validated branchId (UUID string or null)
+      salary: 0, // Initialize salary
+    };
 
-    revalidatePath("/customize");
-    // Exclude password from returned data
-    const { password: _, ...returnData } = newAccount;
+    // Only add dailyRate if it was provided and validated (not undefined)
+    if (dailyRate !== undefined && dailyRate !== null) {
+      createPayload.dailyRate = dailyRate; // Add the number
+    }
+    // If dailyRate is undefined/null here, Prisma will use the schema default (@default(350))
+
+    // 5. Log Prisma Create Payload
+    console.log("Data being sent to Prisma Create:", createPayload);
+
+    const newAccount = await prisma.account.create({ data: createPayload });
+
+    // 6. Log Prisma Success Result
+    console.log("Prisma Create Successful:", newAccount);
+
+    revalidatePath("/customize"); // Adjust path as needed
+    const { password: _, ...returnData } = newAccount; // Exclude password from response
     return {
       success: true,
       data: returnData,
       message: "Account created successfully.",
     };
   } catch (error: any) {
-    console.error("Create Account Action Error:", error);
+    // 7. Log Prisma Error
+    console.error("Prisma Create Error:", error);
+    // Log details ONLY if they exist to avoid crashing on access
+    if (error.code) console.error("Prisma Error Code:", error.code);
+    if (error.meta) console.error("Prisma Error Meta:", error.meta);
+
+    // Handle specific Prisma errors (keep this logic)
     if (
-      error.code === "P2003" &&
+      error.code === "P2003" && // Foreign Key constraint failed
       error.meta?.field_name?.includes("branchId")
     ) {
-      return { success: false, message: "Selected Branch does not exist." };
+      return {
+        success: false,
+        message: `Selected Branch (ID: ${branchId}) does not exist or is invalid. Please refresh and try again.`,
+        errors: { branchId: ["Selected Branch does not exist or is invalid."] },
+      };
     }
+    if (error.code === "P2002") {
+      // Unique constraint violation
+      const target = error.meta?.target as string[] | undefined;
+      if (target?.includes("username"))
+        return {
+          success: false,
+          message: "Username already taken.",
+          errors: { username: ["Username already taken."] },
+        };
+      if (target?.includes("email"))
+        return {
+          success: false,
+          message: "Email already registered.",
+          errors: { email: ["Email already registered."] },
+        };
+    }
+    // General fallback
     return {
       success: false,
-      message: "Database error: Failed to create account.",
+      message: `Database error: Failed to create account. ${error.message || "Unknown error"}`,
     };
   }
 }
 
-// --- Update Account Action ---
 export async function updateAccountAction(id: string, formData: FormData) {
+  // ... (keep your existing updateAccountAction implementation)
+  console.log(`--- Updating Account ${id} ---`);
+  // 1. Log Raw FormData
+  console.log("Raw FormData:", Object.fromEntries(formData.entries()));
+
   if (!id) return { success: false, message: "Account ID is required." };
 
   const roles = ALL_ROLES.filter(
     (role) => formData.get(`role-${role}`) === "on",
   );
+
+  // --- CORRECTED Branch ID Handling ---
+  let branchIdFromForm = formData.get("branchId") as string | null;
+  let branchIdForZod: string | null = null; // Default to null
+  if (branchIdFromForm) {
+    const trimmedId = branchIdFromForm.trim();
+    if (
+      trimmedId.length > 0 &&
+      trimmedId.match(
+        /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i,
+      )
+    ) {
+      // Basic UUID check
+      // Only use non-empty, valid-looking UUID strings
+      branchIdForZod = trimmedId;
+    } else if (trimmedId.length > 0) {
+      console.warn(
+        `Branch ID from form "${trimmedId}" is not a valid UUID format, treating as null.`,
+      );
+    }
+  }
+  console.log(
+    `Branch ID from form: "${branchIdFromForm}", Processed for Zod: "${branchIdForZod}"`,
+  );
+  // --- End CORRECTED Branch ID Handling ---
+
   const rawData = {
     username: formData.get("username"),
     name: formData.get("name"),
     email: formData.get("email"),
-    salary: formData.get("salary"),
-    branchId: formData.get("branchId") || null,
+    dailyRate: formData.get("dailyRate"), // Let Zod coerce
+    branchId: branchIdForZod, // Use the correctly processed value
     role: roles,
   };
+  // 2. Log Raw Data for Zod
+  console.log("Raw Data for Zod:", rawData);
 
+  // Use the update schema
   const validationResult = updateAccountSchema.safeParse(rawData);
+  // 3. Log Zod Validation Result
+  console.log(
+    "Zod Validation Result:",
+    JSON.stringify(validationResult, null, 2),
+  );
 
   if (!validationResult.success) {
-    console.log("Validation Errors:", validationResult.error.flatten());
+    console.error(
+      "Zod Validation Errors:",
+      validationResult.error.flatten().fieldErrors,
+    );
+    // Refine error message construction
+    const fieldErrors = validationResult.error.flatten().fieldErrors;
+    const messages = Object.entries(fieldErrors)
+      .map(([field, errors]) => `${field}: ${errors?.join(", ")}`)
+      .join("; ");
     return {
       success: false,
-      message: "Validation failed",
-      errors: validationResult.error.flatten().fieldErrors,
+      message: `Validation failed. ${messages}`, // Provide specific Zod errors
+      errors: fieldErrors,
     };
   }
+  // 4. Log Validated Data
+  console.log("Validated Data:", validationResult.data);
 
-  // Remove undefined values and handle optional fields correctly
-  const dataToUpdate: Record<string, any> = {};
-  for (const [key, value] of Object.entries(validationResult.data)) {
-    if (value !== undefined) {
-      if ((key === "email" || key === "branchId") && value === "") {
-        dataToUpdate[key] = null; // Set empty strings to null in DB
-      } else {
-        dataToUpdate[key] = value;
-      }
-    }
+  // Create dataToUpdate carefully from VALIDATED data
+  const dataToUpdate: { [key: string]: any } = {};
+  const { email, branchId, dailyRate, ...restValidatedData } =
+    validationResult.data;
+
+  // Assign validated non-nullable fields
+  Object.assign(dataToUpdate, restValidatedData);
+
+  // Handle nullable fields carefully based on validated data
+  if ("email" in validationResult.data) {
+    // Check if email was part of the validated data
+    dataToUpdate.email = email === "" ? null : email; // Convert "" to null
+  }
+  if ("branchId" in validationResult.data) {
+    // Check if branchId was part of the validated data
+    dataToUpdate.branchId = branchId; // Will be UUID string or null
+  }
+  // Only include dailyRate if it was provided and validated (is a number)
+  if (dailyRate !== undefined && dailyRate !== null) {
+    dataToUpdate.dailyRate = dailyRate;
+  } else if (
+    formData.has("dailyRate") &&
+    (formData.get("dailyRate") === null || formData.get("dailyRate") === "")
+  ) {
+    // Explicitly handle case where user clears the field, maybe set to default? Or allow Prisma default?
+    // If we want to force Prisma default if cleared, don't add dailyRate to dataToUpdate.
+    // If we want to set it to 0 if cleared, then:
+    // dataToUpdate.dailyRate = 0; // Or handle based on business logic
+    // Current logic: If optional and not provided/invalid, Zod makes it undefined, so we don't update it.
+    // If provided and valid number (incl 0), we update it.
   }
 
+  // 5. Log Prisma Update Payload
+  console.log("Data being sent to Prisma Update:", dataToUpdate);
+
   if (Object.keys(dataToUpdate).length === 0) {
-    return { success: false, message: "No valid data provided for update." };
+    console.warn("No changes detected after validation to update.");
+    // Find the existing account to return it
+    const existingAccount = await prisma.account.findUnique({ where: { id } });
+    if (!existingAccount)
+      return { success: false, message: "Account not found." };
+    const { password: _, ...returnData } = existingAccount;
+    return { success: true, message: "No changes detected.", data: returnData };
   }
 
   try {
@@ -1353,33 +1640,36 @@ export async function updateAccountAction(id: string, formData: FormData) {
       const existingUsername = await prisma.account.findFirst({
         where: { username: dataToUpdate.username, id: { not: id } },
       });
-      if (existingUsername) {
+      if (existingUsername)
         return {
           success: false,
           message: `Username "${dataToUpdate.username}" is already taken.`,
+          errors: { username: ["Username already taken."] },
         };
-      }
     }
+    // Check email uniqueness only if email is being set to a non-null value
     if (dataToUpdate.email) {
-      // Note: includes null if email was cleared
+      // Check if email is truthy (not null, not empty string)
       const existingEmail = await prisma.account.findFirst({
-        where: { email: dataToUpdate.email, id: { not: id } },
+        where: { id: { not: id }, email: dataToUpdate.email },
       });
-      if (existingEmail) {
+      if (existingEmail)
         return {
           success: false,
           message: `Email "${dataToUpdate.email}" is already registered.`,
+          errors: { email: ["Email already registered."] },
         };
-      }
     }
 
+    // Update the account
     const updatedAccount = await prisma.account.update({
       where: { id },
       data: dataToUpdate,
     });
+    // 6. Log Prisma Success Result
+    console.log("Prisma Update Successful:", updatedAccount);
 
     revalidatePath("/customize");
-    // Exclude password from returned data
     const { password: _, ...returnData } = updatedAccount;
     return {
       success: true,
@@ -1387,56 +1677,117 @@ export async function updateAccountAction(id: string, formData: FormData) {
       message: "Account updated successfully.",
     };
   } catch (error: any) {
-    console.error(`Update Account Action Error (ID: ${id}):`, error);
+    // 7. Log Prisma Error
+    console.error(`Prisma Update Error for ID ${id}:`, error);
+    if (error.code) console.error("Prisma Error Code:", error.code);
+    if (error.meta) console.error("Prisma Error Meta:", error.meta);
+
+    // Handle specific Prisma errors (keep this logic)
     if (error.code === "P2025") {
+      // Record to update not found
       return { success: false, message: "Account not found." };
     }
     if (
-      error.code === "P2003" &&
+      error.code === "P2003" && // Foreign key constraint failed
       error.meta?.field_name?.includes("branchId")
     ) {
-      return { success: false, message: "Selected Branch does not exist." };
+      return {
+        success: false,
+        message: `Selected Branch (ID: ${dataToUpdate.branchId}) does not exist or is invalid. Please refresh the branch list.`,
+        errors: { branchId: ["Selected Branch does not exist or is invalid."] },
+      };
     }
-    // Catch potential unique constraint violation if checks above somehow fail concurrently
     if (error.code === "P2002") {
+      // Unique constraint failed
       const target = error.meta?.target as string[] | undefined;
       if (target?.includes("username"))
-        return { success: false, message: "Username already taken." };
+        return {
+          success: false,
+          message: "Username already taken.",
+          errors: { username: ["Username already taken."] },
+        };
       if (target?.includes("email"))
-        return { success: false, message: "Email already registered." };
+        return {
+          success: false,
+          message: "Email already registered.",
+          errors: { email: ["Email already registered."] },
+        };
     }
+    // General fallback
     return {
       success: false,
-      message: "Database error: Failed to update account.",
+      message: `Database error: Failed to update account. ${error.message || "Unknown error"}`,
     };
   }
 }
 
-// --- Delete Account Action ---
-export async function deleteAccountAction(id: string) {
-  if (!id) return { success: false, message: "Account ID is required." };
-
+export async function deleteAccountAction(
+  accountId: string,
+): Promise<{ success: boolean; message: string }> {
+  // ... (keep your existing deleteAccountAction implementation)
+  console.log(`Attempting to delete account: ${accountId}`);
+  if (!accountId) return { success: false, message: "Account ID required." };
   try {
-    // Add dependency checks if needed (e.g., if account served/checked services)
-    // const servedCount = await prisma.availedService.count({ where: { servedById: id } });
-    // const checkedCount = await prisma.availedService.count({ where: { checkedById: id } });
-    // if (servedCount > 0 || checkedCount > 0) {
-    //     return { success: false, message: 'Cannot delete account. It is associated with past services.' };
-    // }
+    // Basic Check: Prevent deleting OWNER (example safeguard)
+    const accountToDelete = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { role: true }, // Only select necessary field
+    });
 
-    await prisma.account.delete({ where: { id } });
-
-    revalidatePath("/customize");
-    return { success: true, message: "Account deleted successfully." };
-  } catch (error: any) {
-    console.error(`Delete Account Action Error (ID: ${id}):`, error);
-    if (error.code === "P2025") {
+    if (!accountToDelete) {
       return { success: false, message: "Account not found." };
     }
-    return {
-      success: false,
-      message: "Database error: Failed to delete account.",
-    };
+
+    if (accountToDelete.role.includes(Role.OWNER)) {
+      return {
+        success: false,
+        message: "Cannot delete an account with the OWNER role.",
+      };
+    }
+
+    // Add more checks if needed (e.g., check related records)
+    // Example: Check dependent records before deletion
+    const relatedAttendance = await prisma.attendance.count({
+      where: { OR: [{ accountId: accountId }, { checkedById: accountId }] },
+    });
+    const relatedServicesServed = await prisma.availedService.count({
+      where: { servedById: accountId },
+    });
+    const relatedServicesChecked = await prisma.availedService.count({
+      where: { checkedById: accountId },
+    });
+
+    if (
+      relatedAttendance > 0 ||
+      relatedServicesServed > 0 ||
+      relatedServicesChecked > 0
+    ) {
+      return {
+        success: false,
+        message:
+          "Cannot delete account. It has related attendance or service records. Consider deactivating instead.",
+      };
+    }
+
+    await prisma.account.delete({ where: { id: accountId } });
+    console.log(`Account ${accountId} deleted successfully.`);
+    revalidatePath("/customize"); // Revalidate relevant pages
+    return { success: true, message: "Account deleted successfully." };
+  } catch (error: any) {
+    console.error(`Error deleting account ${accountId}:`, error);
+    if (error.code === "P2025") {
+      // Record to delete not found (already handled above, but keep as fallback)
+      return { success: false, message: "Account not found." };
+    }
+    // Handle foreign key constraints if checks above missed something (shouldn't happen with checks)
+    if (error.code === "P2003" || error.code === "P2014") {
+      return {
+        success: false,
+        message:
+          "Cannot delete account due to existing related records (Prisma constraint). Consider deactivating.",
+      };
+    }
+    return { success: false, message: "Database error deleting account." };
   }
 }
 
@@ -2175,6 +2526,231 @@ export async function deleteDiscountRuleAction(id: string) {
     return {
       success: false,
       message: "Database error deleting discount rule.",
+    };
+  }
+}
+
+export async function getEmployeesForAttendanceAction(): Promise<
+  // Optional: Pass checker's details if needed for authorization/scoping
+  // checkerId: string,
+  // checkerRoles: Role[],
+  // filterBranchId?: string | null
+  EmployeeForAttendance[]
+> {
+  console.log("Server Action: getEmployeesForAttendanceAction executing...");
+  try {
+    // Basic Implementation: Fetch all non-OWNER accounts for now.
+    // TODO: Refine filtering based on checker's role/branch if needed.
+    //       e.g., if checker has CASHIER/WORKER/ATTENDANCE_CHECKER role and a branchId,
+    //       only fetch accounts from that branch. OWNER sees all.
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today (important for Date comparison)
+    // For Prisma Date field, create a string in YYYY-MM-DD or use the Date obj directly if adapter supports
+    // Let's use the Date object directly assuming the driver adapter handles it.
+
+    const accounts = await prisma.account.findMany({
+      where: {
+        // Exclude owners from being marked? Or maybe exclude the checker themselves?
+        // role: { hasNone: [Role.OWNER] } // Example: Don't show OWNERs in attendance list
+        // id: { not: checkerId } // Example: Don't show the checker themselves
+        // branchId: filterBranchId ? filterBranchId : undefined // Example: Filter by branch
+      },
+      select: {
+        id: true,
+        name: true,
+        dailyRate: true,
+        branch: {
+          // Select branch title
+          select: { title: true },
+        },
+        // Fetch attendance specifically for TODAY for this account
+        attendances: {
+          where: {
+            date: today, // Filter attendance records for today's date
+          },
+          select: {
+            id: true,
+            isPresent: true,
+            notes: true,
+          },
+          take: 1, // Should only be one record per user per day due to unique constraint
+        },
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+
+    console.log(
+      `Server Action: Fetched ${accounts.length} accounts for attendance.`,
+    );
+
+    // Process the result to match the EmployeeForAttendance type
+    const employeesWithAttendance: EmployeeForAttendance[] = accounts.map(
+      (acc) => ({
+        id: acc.id,
+        name: acc.name,
+        dailyRate: acc.dailyRate ?? 0, // Use default if null
+        branchTitle: acc.branch?.title ?? null,
+        // Prisma returns an array for relations, get the first (or null)
+        todaysAttendance:
+          acc.attendances.length > 0 ? acc.attendances[0] : null,
+      }),
+    );
+
+    return employeesWithAttendance;
+  } catch (error) {
+    console.error(
+      "Server Action Error [getEmployeesForAttendanceAction]:",
+      error,
+    );
+    throw new Error("Failed to fetch employees for attendance.");
+  }
+}
+
+export async function markAttendanceAction(
+  accountId: string,
+  isPresent: boolean,
+  notes: string | null,
+  checkerIdInput: string | ParamValue, // Rename input param to avoid shadowing after check
+): Promise<{ success: boolean; message: string; updatedSalary?: number }> {
+  console.log(
+    `Server Action: markAttendanceAction called for Account ${accountId}, isPresent: ${isPresent}, Checker Input: ${checkerIdInput}`,
+  );
+
+  if (!accountId || !checkerIdInput) {
+    return {
+      success: false,
+      message: "Account ID and Checker ID are required.",
+    };
+  }
+
+  // --- FIX: Validate checkerIdInput is a string ---
+  if (typeof checkerIdInput !== "string") {
+    console.error(
+      `Invalid checkerId type: ${typeof checkerIdInput}. Expected string. Value: ${JSON.stringify(checkerIdInput)}`,
+    );
+    return {
+      success: false,
+      // Provide a user-friendly error message
+      message: "Invalid request: Checker ID must be a single identifier.",
+    };
+  }
+  // --- END FIX ---
+
+  // Now we know checkerIdInput is a string, assign it to a const with the correct type
+  const checkerId: string = checkerIdInput;
+  console.log(`Using validated Checker ID: ${checkerId}`);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0); // Start of today
+
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Get Account Details (incl. current salary and daily rate)
+      const account = await tx.account.findUnique({
+        where: { id: accountId },
+        select: { dailyRate: true, salary: true },
+      });
+
+      if (!account) {
+        throw new Error(`Account with ID ${accountId} not found.`);
+      }
+
+      const dailyRate = account.dailyRate ?? 0;
+      const currentSalary = account.salary ?? 0;
+
+      // 2. Find existing attendance record for today
+      const existingAttendance = await tx.attendance.findUnique({
+        where: {
+          date_accountId: { date: today, accountId: accountId },
+        },
+        select: { isPresent: true },
+      });
+
+      let salaryChange = 0;
+      const wasPreviouslyPresent = existingAttendance?.isPresent ?? false;
+
+      // 3. Determine Salary Change
+      if (isPresent && !wasPreviouslyPresent) {
+        salaryChange = dailyRate;
+        console.log(
+          `Account ${accountId}: Marking PRESENT. Adding ${dailyRate} to salary.`,
+        );
+      } else if (!isPresent && wasPreviouslyPresent) {
+        salaryChange = -dailyRate;
+        console.log(
+          `Account ${accountId}: Marking ABSENT (was present). Subtracting ${dailyRate} from salary.`,
+        );
+      } else {
+        console.log(
+          `Account ${accountId}: Attendance marked (${isPresent}), but no salary change needed.`,
+        );
+      }
+
+      const newSalary = currentSalary + salaryChange;
+
+      // --- Data for Upsert (Uses the validated 'checkerId' which is guaranteed string) ---
+      const attendanceCreateData = {
+        date: today,
+        accountId: accountId,
+        isPresent: isPresent,
+        notes: notes,
+        checkedById: checkerId, // Now guaranteed string
+        checkedAt: new Date(),
+      };
+
+      const attendanceUpdateData = {
+        // Only update fields that might change
+        isPresent: isPresent,
+        notes: notes,
+        checkedById: checkerId, // Now guaranteed string
+        checkedAt: new Date(),
+      };
+      // --- End Data for Upsert ---
+
+      // 4. Upsert Attendance Record
+      await tx.attendance.upsert({
+        where: {
+          date_accountId: { date: today, accountId: accountId },
+        },
+        create: attendanceCreateData, // Use the object with string checkerId
+        update: attendanceUpdateData, // Use the object with string checkerId
+      });
+      console.log(`Account ${accountId}: Upserted attendance record.`);
+
+      // 5. Update Account Salary (only if it changed)
+      if (salaryChange !== 0) {
+        await tx.account.update({
+          where: { id: accountId },
+          data: { salary: newSalary },
+        });
+        console.log(`Account ${accountId}: Updated salary to ${newSalary}.`);
+      }
+
+      return {
+        success: true,
+        message: `Attendance marked successfully for ${today.toISOString().split("T")[0]}.`,
+        updatedSalary: newSalary,
+      };
+    }); // End Transaction
+
+    // Revalidate path if needed
+    revalidatePath("/customize"); // Or a more specific path
+    revalidatePath("/attendance"); // Assuming the component is on this path
+
+    return result;
+  } catch (error: any) {
+    console.error("Server Action Error [markAttendanceAction]:", error);
+    // Check for specific Prisma errors if needed, e.g., P2002 for unique constraint violation
+    // although upsert should handle the unique constraint gracefully.
+    // Check if it's a known error type before accessing error.message
+    const errorMessage =
+      error instanceof Error ? error.message : "Unknown error";
+    return {
+      success: false,
+      message: `Failed to mark attendance: ${errorMessage}`,
     };
   }
 }

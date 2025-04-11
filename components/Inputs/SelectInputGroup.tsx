@@ -1,9 +1,8 @@
+// components/Inputs/SelectInputGroup.tsx
 "use client";
 
-import React, { memo } from "react"; // Import React explicitly and memo
+import React, { memo } from "react"; // Import memo
 
-// 1. Define Props Interface with Generic T
-// Added constraint: T must have string-indexable keys
 type SelectInputGroupProps<T extends { [key: string]: any }> = {
   label: string;
   options: T[];
@@ -11,112 +10,84 @@ type SelectInputGroupProps<T extends { [key: string]: any }> = {
   labelKey?: keyof T;
   name: string;
   id?: string;
-  value?: string; // Controlled select value (must be string)
-  onChange: (key: string, value: string) => void; // Ensure value is string
+  value?: string;
+  onChange: (key: string, value: string) => void;
   placeholder?: string;
   error?: string;
   required?: boolean;
 };
 
-// 2. Internal component function
 const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   label,
   options,
-  valueKey = "id" as keyof T, // Default keys
+  valueKey = "id" as keyof T,
   labelKey = "title" as keyof T,
   name,
   id,
   value,
   onChange,
-  placeholder = "Select an option...",
+  placeholder = "Select...",
   error,
   required = false,
 }: SelectInputGroupProps<T>) => {
   const hasError = !!error;
-
-  // --- Debugging Log ---
-  // console.log(`SelectInputGroup (${name}): Value=${value}, Options=`, options);
-  // --- End Debugging Log ---
+  const inputHeight = "h-[50px]"; // Consistent height
+  const labelStyle = "mb-1 block text-sm font-medium text-customBlack/80"; // Consistent Label
 
   return (
     <div className="relative flex w-full flex-col">
-      <label
-        htmlFor={id || name}
-        className="mb-1 text-sm font-medium text-gray-700"
-      >
-        {" "}
-        {/* Use theme color */}
+      <label htmlFor={id || name} className={labelStyle}>
         {label} {required && <span className="text-red-500">*</span>}
       </label>
       <select
         name={name}
         id={id || name}
         required={required}
-        value={value ?? ""} // Ensure controlled value is always string or ""
-        onChange={(e) => onChange(name, e.target.value)} // e.target.value is always string
-        className={`w-full rounded-md border-2 ${
-          hasError ? "border-red-500" : "border-customDarkPink" // Use theme color
-        } p-2 shadow-custom outline-none focus:ring-2 focus:ring-pink-500 lg:min-h-[50px] ${
-          // Use theme color focus ring
-          !value || value === "" ? "text-gray-500" : "text-customBlack" // Style placeholder vs selected text color
-        }`}
+        value={value ?? ""}
+        onChange={(e) => onChange(name, e.target.value)}
+        className={`${inputHeight} w-full appearance-none rounded-md border-2 ${hasError ? "border-red-500" : "border-customDarkPink/60"} bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${!value || value === "" ? "text-gray-500" : "text-customBlack"}`} // Added appearance-none, padding right for arrow
         aria-invalid={hasError}
         aria-describedby={hasError ? `${id || name}-error` : undefined}
       >
-        {/* Placeholder Option */}
         <option value="" disabled>
           {placeholder}
         </option>
-
-        {/* Map Options - with checks for key existence and null/undefined */}
-        {options && options.length > 0 ? ( // Check if options array exists and is not empty
+        {options && options.length > 0 ? (
           options.map((option, index) => {
-            // --- Robust Key/Label Access ---
-            const keyVal = option[valueKey]; // Get value using the specified key
-            const labelVal = option[labelKey]; // Get label using the specified key
-
-            // Ensure value attribute is a non-empty string
-            const optionValue =
-              keyVal !== null && keyVal !== undefined ? String(keyVal) : "";
-            // Ensure label content is a string
+            const keyVal = option[valueKey];
+            const labelVal = option[labelKey];
+            const optionValue = keyVal != null ? String(keyVal) : "";
             const optionLabel =
-              labelVal !== null && labelVal !== undefined
-                ? String(labelVal)
-                : `Option ${index + 1}`; // Fallback label
-
-            // --- Debugging Log per Option ---
-            // console.log(`  Option ${index}: keyVal=${keyVal}, labelVal=${labelVal}, optionValue=${optionValue}, optionLabel=${optionLabel}`);
-            // --- End Debugging Log ---
-
-            // Skip rendering if optionValue is empty (might happen if id/key is null/undefined)
-            if (optionValue === "") {
-              console.warn(
-                `SelectInputGroup (${name}): Skipping option at index ${index} due to empty valueKey ('${String(valueKey)}'). Option data:`,
-                option,
-              );
-              return null;
-            }
-
+              labelVal != null ? String(labelVal) : `Option ${index + 1}`;
+            if (optionValue === "") return null;
             return (
-              <option
-                key={optionValue + "-" + index} // More robust key using value and index
-                value={optionValue}
-              >
+              <option key={optionValue + "-" + index} value={optionValue}>
                 {optionLabel}
               </option>
             );
           })
         ) : (
-          // Optional: Render a disabled option if the options array is empty/null
           <option value="" disabled>
-            No options available
+            No options
           </option>
         )}
       </select>
+      {/* Arrow Icon */}
+      <div className="pointer-events-none absolute inset-y-0 right-0 top-[calc(0.625rem+1.5rem)] flex items-center px-2 text-gray-500">
+        {" "}
+        {/* Adjust top based on label height + margin */}
+        <svg
+          className="h-4 w-4 fill-current"
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 20 20"
+        >
+          <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+        </svg>
+      </div>
       {error && (
         <p
           id={`${id || name}-error`}
-          className="mt-1 pl-1 text-xs text-red-600" // Use theme error color if desired
+          className="mt-1 pl-1 text-xs text-red-600"
         >
           {error}
         </p>
@@ -125,10 +96,6 @@ const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   );
 };
 
-// 3. Apply React.memo
 const SelectInputGroup = memo(SelectInputGroupInternal);
-
-// 4. Set display name
 SelectInputGroup.displayName = "SelectInputGroup";
-
 export default SelectInputGroup;

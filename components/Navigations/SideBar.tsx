@@ -1,6 +1,7 @@
-// components/layout/SideBar.tsx (Adjust path if needed)
+// components/layout/SideBar.tsx
 "use client";
 
+import React from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useParams, usePathname } from "next/navigation";
@@ -11,151 +12,167 @@ import {
   Banknote,
   Settings2,
   type LucideIcon,
+  X,
 } from "lucide-react";
-import clsx from "clsx"; // Import clsx here too
+import clsx from "clsx";
 
-import Separator from "../ui/Separator"; // Assuming path is correct
-import SideBarButtons from "../Buttons/SideBarButtons"; // Assuming path is correct
+interface SidebarProps {
+  isSidebarOpen: boolean;
+  setIsSidebarOpen: React.Dispatch<React.SetStateAction<boolean>>;
+}
 
-// Define the structure for a navigation item
 interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
 }
 
-export default function SideBar() {
+export default function SideBar({
+  isSidebarOpen,
+  setIsSidebarOpen,
+}: SidebarProps) {
   const { accountID: rawAccountID } = useParams();
-  const pathname = usePathname(); // Get the current path
-
-  // Ensure accountID is a string or handle the case where it might not be
+  const pathname = usePathname();
   const accountID = Array.isArray(rawAccountID)
     ? rawAccountID[0]
     : rawAccountID;
+  const baseDashboardPath = accountID ? `/${accountID}` : "#";
 
-  // Define navigation items in an array
   const navItems: NavItem[] = accountID
     ? [
-        { href: `/${accountID}`, label: "Home", icon: House },
-        { href: `/${accountID}/cashier`, label: "Cashier", icon: Banknote },
-        { href: `/${accountID}/work`, label: "Work", icon: NotepadText },
+        { href: baseDashboardPath, label: "Home", icon: House },
         {
-          href: `/${accountID}/manage`,
+          href: `${baseDashboardPath}/cashier`,
+          label: "Cashier",
+          icon: Banknote,
+        },
+        { href: `${baseDashboardPath}/work`, label: "Work", icon: NotepadText },
+        {
+          href: `${baseDashboardPath}/manage`,
           label: "Manage",
           icon: Settings2,
         },
       ]
     : [];
 
-  const handleLogout = () => {
-    // Implement your logout logic here
-    console.log("Logout clicked");
-    // e.g., clear session, dispatch logout action, router.push('/login');
-  };
+  const handleLogout = () => console.log("Logout clicked");
 
-  // Helper function to check for active link
   const isActive = (href: string) => {
-    if (!pathname) return false;
-    // Exact match
-    if (pathname === href) return true;
-    // Check if it's a parent route (excluding the base '/' route condition)
-    if (href !== `/${accountID}` && pathname.startsWith(href + "/"))
-      return true;
-    return false;
+    if (!pathname || href === "#") return false;
+    if (href === baseDashboardPath) return pathname === href;
+    return pathname === href || pathname.startsWith(href + "/");
   };
 
-  // Loading/Error state if accountID is missing
   if (!accountID) {
-    // Render a loading state or null/error message
-    // This prevents errors if the component renders before accountID is available
-    return null; // Or optionally a loading indicator
+    return (
+      <div className="fixed left-0 top-0 z-30 flex h-screen w-[60px] flex-col items-center bg-customOffWhite shadow-lg md:w-[250px]">
+        {" "}
+        {/* Minimal placeholder */}{" "}
+      </div>
+    );
   }
 
   return (
-    // Single navigation structure handling responsiveness internally
-    // Ensure 'bg-white' or your desired sidebar background color is applied
-    // Added 'fixed' and 'z-20' for potential overlay scenarios, adjust as needed
-    <nav className="fixed left-0 top-0 z-20 flex h-screen w-[60px] flex-col items-center shadow-lg md:w-[25%] md:max-w-[300px]">
-      {/* Header */}
-      <header className="relative flex w-full flex-col items-center justify-center p-3 py-4 md:flex-row md:items-center md:justify-start md:p-6 md:py-8">
-        <Image
-          width={55}
-          height={55}
-          className="flex-shrink-0 md:mr-4" // Added flex-shrink-0
-          priority
-          alt="Beautyfeel Icon"
-          src={"/btfeel-icon.png"} // Ensure this path is correct in your public folder
-        />
-        <h1 className="hidden flex-grow font-bold uppercase text-gray-800 md:block lg:text-[20px] lg:tracking-widest">
-          beautyfeel
-        </h1>
-        {/* Separator */}
-        <div className="absolute bottom-0 left-1/2 h-[2px] w-[80%] -translate-x-1/2 transform bg-gray-800/50 md:w-[90%]"></div>
-      </header>
+    <>
+      {/* Overlay */}
+      <div
+        className={clsx(
+          "fixed inset-0 z-20 bg-black bg-opacity-40 transition-opacity duration-300 md:hidden",
+          isSidebarOpen
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0",
+        )}
+        onClick={() => setIsSidebarOpen(false)}
+        aria-hidden="true"
+      />
 
-      {/* Navigation Links */}
-      <div className="flex w-full flex-grow flex-col overflow-y-auto px-2 pt-4 md:px-4">
-        {navItems.map((item) => {
-          const active = isActive(item.href);
-          return (
-            // Pass active state to SideBarButtons
-            <SideBarButtons key={item.href} isActive={active}>
+      {/* Sidebar Navigation */}
+      <nav
+        className={clsx(
+          "fixed left-0 top-0 z-30 flex h-screen w-[250px] flex-col border-r border-customGray/30 bg-customOffWhite shadow-lg transition-transform duration-300 ease-in-out",
+          isSidebarOpen ? "translate-x-0" : "-translate-x-full",
+          "md:w-[250px] md:translate-x-0",
+        )}
+      >
+        {/* Header */}
+        <header className="relative flex w-full items-center justify-between border-b border-customGray/30 p-4 pt-5 md:justify-start md:px-5 md:py-6">
+          <Link href={baseDashboardPath} className="flex items-center gap-3">
+            <Image
+              width={45}
+              height={45}
+              className="flex-shrink-0"
+              priority
+              alt="Icon"
+              src={"/btfeel-icon.png"}
+            />
+            <h1 className="hidden text-lg font-bold uppercase tracking-wider text-customBlack md:block">
+              beautyfeel
+            </h1>
+          </Link>
+          <button
+            onClick={() => setIsSidebarOpen(false)}
+            className="p-1 text-customBlack/60 hover:text-customDarkPink md:hidden"
+            aria-label="Close sidebar"
+          >
+            {" "}
+            <X size={20} />{" "}
+          </button>
+        </header>
+
+        {/* Navigation Links */}
+        <div className="flex-grow space-y-1.5 overflow-y-auto px-3 py-4">
+          {" "}
+          {/* Slightly reduced space */}
+          {navItems.map((item) => {
+            const active = isActive(item.href);
+            return (
               <Link
+                key={item.label}
                 href={item.href}
-                className="flex w-full items-center justify-center p-2 md:justify-start md:p-0"
-                aria-label={item.label} // Accessibility for mobile
+                onClick={() => setIsSidebarOpen(false)}
+                className={clsx(
+                  "group flex items-center rounded-md px-3 py-2.5 text-sm font-medium transition-colors duration-150", // Added group for icon hover
+                  active
+                    ? "bg-customDarkPink/10 font-semibold text-customDarkPink" // Active state style
+                    : "text-customBlack/70 hover:bg-customGray/50 hover:text-customBlack", // Inactive state style
+                )}
+                aria-current={active ? "page" : undefined}
               >
                 <item.icon
-                  size={24}
+                  size={20}
+                  className={clsx(
+                    "mr-3 flex-shrink-0 transition-colors duration-150",
+                    active
+                      ? "text-customDarkPink"
+                      : "text-customBlack/60 group-hover:text-customBlack/80", // Icon colors match text state
+                  )}
                   aria-hidden="true"
-                  // Use clsx for conditional styling of icon color
-                  className={clsx(
-                    "flex-shrink-0 transition-colors duration-150 md:mr-3",
-                    active
-                      ? "text-gray-900" // Dark icon when active
-                      : "text-gray-600 group-hover:text-gray-800", // Default/hover icon color
-                  )}
                 />
-                {/* Label visible only on medium+ screens */}
-                <span
-                  className={clsx(
-                    "hidden whitespace-nowrap transition-colors duration-150 md:inline",
-                    active
-                      ? "font-semibold text-gray-900" // Dark, bold text when active
-                      : "text-gray-700 group-hover:text-gray-800", // Default/hover text color
-                  )}
-                >
-                  {item.label}
-                </span>
+                <span className="whitespace-nowrap">{item.label}</span>
               </Link>
-            </SideBarButtons>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
 
-      {/* Footer Section for Logout */}
-      <div className="relative w-full shrink-0 px-2 pb-4 pt-2 md:px-4">
-        {/* Separator */}
-        <div className="absolute left-1/2 top-0 h-[2px] w-[80%] -translate-x-1/2 transform bg-gray-800/50 md:w-[90%]"></div>
-        {/* Use SideBarButtons for consistent styling wrapper */}
-        <SideBarButtons>
+        {/* Footer Section for Logout */}
+        <div className="shrink-0 border-t border-customGray/30 px-3 py-3">
           <button
             onClick={handleLogout}
-            // Apply group styling directly to the button content
-            className="group flex w-full items-center justify-center p-2 md:justify-start md:p-0"
+            className={clsx(
+              "group flex w-full items-center rounded-md px-3 py-2.5 text-sm font-medium transition-colors duration-150",
+              "text-customBlack/70 hover:bg-red-100/50 hover:text-red-700",
+            )}
             aria-label="Logout"
           >
             <LogOut
-              size={24}
+              size={20}
+              className="mr-3 flex-shrink-0 text-customBlack/60 group-hover:text-red-700"
               aria-hidden="true"
-              className="flex-shrink-0 text-gray-600 transition-colors duration-150 group-hover:text-gray-800 md:mr-3"
             />
-            <span className="hidden whitespace-nowrap text-gray-700 transition-colors duration-150 group-hover:text-gray-800 md:inline">
-              Logout
-            </span>
+            <span className="whitespace-nowrap">Logout</span>
           </button>
-        </SideBarButtons>
-      </div>
-    </nav>
+        </div>
+      </nav>
+    </>
   );
 }

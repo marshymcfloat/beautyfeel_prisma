@@ -17,6 +17,7 @@ enum Role {
   OWNER
   CASHIER
   WORKER
+  ATTENDANCE_CHECKER
 }
 
 enum DiscountType {
@@ -68,18 +69,42 @@ model Branch {
 }
 
 model Account {
-  id       String  @id @default(uuid())
-  username String  @unique @db.VarChar(20) // Increased length if needed
-  password String
-  name     String
-  email    String? @unique @db.VarChar(255)
-  role     Role[]  @default([WORKER])
-  salary   Int     @default(0)
+  id        String  @id @default(uuid())
+  username  String  @unique @db.VarChar(20)
+  password  String
+  name      String
+  email     String? @unique @db.VarChar(255)
+  role      Role[]  @default([WORKER]) // Add ATTENDANCE_CHECKER where appropriate
+  salary    Int     @default(0) // Accumulates commission + daily rate payments
+  dailyRate Int     @default(350) // <<< NEW: Daily rate in smallest unit (e.g., centavos)
+
   branchId String?
   branch   Branch? @relation(fields: [branchId], references: [id])
 
   servicesServed  AvailedService[] @relation("ServedRelation")
   servicesChecked AvailedService[] @relation("CheckedRelation")
+
+  // Relation to Attendance records
+  attendances        Attendance[] @relation("EmployeeAttendance") // <<< NEW RELATION
+  attendancesChecked Attendance[] @relation("CheckerAttendance") // <<< NEW RELATION (Who marked the attendance)
+
+  @@index([branchId]) // Good to have index on branchId
+}
+
+model Attendance {
+  id          String   @id @default(uuid())
+  date        DateTime @db.Date // Store only the Date part
+  accountId   String // The employee whose attendance is recorded
+  account     Account  @relation("EmployeeAttendance", fields: [accountId], references: [id])
+  isPresent   Boolean  @default(false) // True if attended, False if absent (or null if not yet marked)
+  notes       String? // Optional notes (e.g., late, reason for absence)
+  checkedById String // Who marked this record
+  checkedBy   Account  @relation("CheckerAttendance", fields: [checkedById], references: [id])
+  checkedAt   DateTime @default(now()) // When this record was created/updated
+
+  // Unique constraint to prevent multiple records for the same employee on the same day
+  @@unique([date, accountId])
+  @@index([date]) // Index date for faster querying
 }
 
 model Service {

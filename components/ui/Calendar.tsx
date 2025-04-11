@@ -1,21 +1,31 @@
+// components/ui/Calendar.tsx
 "use client";
 
 import React from "react";
 
 export default function Calendar() {
   const today = new Date();
-  const day = today.getDate().toString().padStart(2, "0"); // Keep two digits
-  const month = today.toLocaleString("en-US", { month: "long" }); // Keep full month name
+  const day = today.getDate().toString().padStart(2, "0");
+  const month = today.toLocaleString("en-US", { month: "long" });
 
   return (
-    // Use custom colors, adjust sizing and padding for better proportion
-    <div className="flex size-40 flex-col items-center justify-center rounded-2xl border border-customGray/30 bg-customOffWhite p-4 shadow-custom lg:size-52">
-      {/* Month styling: Larger, colored, slightly less spacing */}
-      <p className="mb-1 text-xl font-medium uppercase tracking-wide text-customDarkPink lg:text-2xl">
+    // Apply card styling and theme colors
+    // - w-full: Takes full width on small screens
+    // - max-w-xs: Limits width on small screens and up (adjust xs, sm, md as needed)
+    // - mx-auto: Centers the component horizontally within its grid column when max-width applies
+    <div className="mx-auto flex aspect-square w-full max-w-xs flex-col items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 shadow-custom sm:max-w-sm">
+      {" "}
+      {/* Adjusted max-width */}
+      {/* Month styling: Use customDarkPink */}
+      {/* Reduced text sizes slightly for smaller max-width */}
+      <p className="mb-1 text-base font-medium uppercase tracking-wide text-customDarkPink sm:text-lg md:mb-1.5 md:text-xl lg:text-2xl">
         {month}
       </p>
-      {/* Day styling: Very large, primary text color */}
-      <p className="text-6xl font-bold text-customBlack lg:text-8xl">{day}</p>
+      {/* Day styling: Use customBlack */}
+      {/* Reduced text sizes slightly */}
+      <p className="text-4xl font-bold text-customBlack sm:text-5xl md:text-6xl lg:text-7xl">
+        {day}
+      </p>
     </div>
   );
 }

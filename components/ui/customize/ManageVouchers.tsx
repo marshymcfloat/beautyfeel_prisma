@@ -1,31 +1,25 @@
-// src/app/(app)/customize/_components/ManageVouchers.tsx
+// src/components/ui/customize/ManageVouchers.tsx
 "use client";
-import React, { useState, useEffect, useTransition, useRef } from "react"; // Import useRef
-
+import React, {
+  useState,
+  useEffect,
+  useTransition,
+  useRef,
+  useCallback,
+} from "react";
 import {
   createVoucherAction,
   updateVoucherAction,
   deleteVoucherAction,
+  getAllVouchers,
 } from "@/lib/ServerAction";
+import { Voucher as PrismaVoucher } from "@prisma/client";
+import Button from "@/components/Buttons/Button";
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+import { Plus, Edit3, Trash2, CheckCircle, XCircle } from "lucide-react";
 
-// TODO: Replace 'any' with actual Prisma types
-import type { Voucher as PrismaVoucher } from "@prisma/client";
 type Voucher = PrismaVoucher;
-
-// --- API Fetch Functions --- (Keep as is)
-const fetchVouchers = async (): Promise<Voucher[]> => {
-  console.log("Fetching /api/vouchers...");
-  const response = await fetch("/api/vouchers"); // GET request
-  if (!response.ok) {
-    const errorData = await response.text();
-    console.error("Fetch Vouchers Error Response:", errorData);
-    throw new Error(`Failed to fetch vouchers: ${response.statusText}`);
-  }
-  // Add explicit type casting if needed
-  const data = await response.json();
-  return data as Voucher[];
-};
-// --- End API Fetch ---
 
 export default function ManageVouchers() {
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
@@ -35,321 +29,265 @@ export default function ManageVouchers() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingVoucher, setEditingVoucher] = useState<Voucher | null>(null);
   const [isPending, startTransition] = useTransition();
-  const formRef = useRef<HTMLFormElement>(null); // Ref for the form
+  const formRef = useRef<HTMLFormElement>(null);
 
-  useEffect(() => {
-    const loadData = async () => {
-      setIsLoading(true);
-      setListError(null);
-      try {
-        const fetched = await fetchVouchers();
-        setVouchers(fetched);
-      } catch (err: any) {
-        setListError(err.message || "Failed to load vouchers.");
-        console.error(err);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    loadData();
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setListError(null);
+    try {
+      const fetched = await getAllVouchers();
+      setVouchers(fetched);
+    } catch (err: any) {
+      setListError(err.message || "Failed load.");
+    } finally {
+      setIsLoading(false);
+    }
   }, []);
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   const handleAdd = () => {
     setEditingVoucher(null);
     setFormError(null);
     setIsModalOpen(true);
+    formRef.current?.reset();
   };
-
   const handleEdit = (voucher: Voucher) => {
-    if (voucher.usedAt) {
-      alert("Cannot edit a voucher that has already been used.");
-      return;
-    }
+    if (voucher.usedAt) return alert("Cannot edit a used voucher."); // More user-friendly than just returning
     setEditingVoucher(voucher);
     setFormError(null);
     setIsModalOpen(true);
   };
-
-  const handleDelete = async (voucherId: string) => {
-    if (!window.confirm("Are you sure you want to delete this voucher?"))
-      return;
-
+  const handleDelete = (voucherId: string) => {
+    if (!window.confirm("Delete this voucher permanently?")) return;
     setListError(null);
     startTransition(async () => {
-      const result = await deleteVoucherAction(voucherId);
-      if (!result.success) {
-        setListError(result.message);
-        console.error("Delete failed:", result.message);
-      } else {
-        console.log("Delete successful");
-        // UI update via revalidatePath
-      }
+      const res = await deleteVoucherAction(voucherId);
+      if (!res.success) setListError(res.message);
+      else await loadData();
     });
   };
-
-  // Modified handleSave for onClick
-  const handleSave = async () => {
-    if (!formRef.current) {
-      setFormError("Form reference is not available.");
-      console.error("Form ref not found");
-      return;
-    }
-
+  const handleSave = () => {
+    if (!formRef.current) return setFormError("Form error.");
     setFormError(null);
-    const formData = new FormData(formRef.current); // Get form data using ref
-
-    // Optional: Client-side checks
-    const code = formData.get("code");
-    const value = formData.get("value");
-    // Code check only needed when *creating*, not editing (as it's disabled)
-    if (!editingVoucher && (!code || (code as string).trim() === "")) {
-      setFormError("Voucher Code is required for new vouchers.");
-      return;
-    }
-    if (!value) {
-      setFormError("Value is required.");
-      return;
-    }
-
+    const fd = new FormData(formRef.current);
+    if (!editingVoucher && !fd.get("code"))
+      return setFormError("Code is required for new vouchers.");
+    if (!fd.get("value") || Number(fd.get("value")) <= 0)
+      return setFormError("A positive value is required.");
     startTransition(async () => {
       try {
-        let result;
-        if (editingVoucher) {
-          // Ensure only 'value' is passed if 'code' shouldn't be updated
-          // The server action should handle ignoring the 'code' field if present during update
-          result = await updateVoucherAction(editingVoucher.id, formData);
-        } else {
-          result = await createVoucherAction(formData);
-        }
-
-        if (result.success) {
+        const action = editingVoucher
+          ? updateVoucherAction(editingVoucher.id, fd)
+          : createVoucherAction(fd);
+        const res = await action;
+        if (res.success) {
           setIsModalOpen(false);
           setEditingVoucher(null);
-          console.log("Save successful:", result.message);
-          // UI update via revalidatePath
+          await loadData();
         } else {
-          let errorMsg = result.message;
-          if (result.errors) {
-            const fieldErrors = Object.entries(result.errors)
-              .map(([field, errors]) => `${field}: ${errors?.join(", ")}`)
-              .join("; ");
-            errorMsg += ` (${fieldErrors})`;
-          }
-          setFormError(errorMsg);
-          console.error("Save failed:", result.message, result.errors);
+          let msg = res.message;
+          if (res.errors) msg += ` (${Object.values(res.errors).join(", ")})`;
+          setFormError(msg);
         }
       } catch (err) {
-        console.error("Unexpected error during save action:", err);
-        setFormError("An unexpected error occurred. Please try again.");
+        setFormError("An unexpected error occurred.");
       }
     });
   };
-
+  const closeModal = () => setIsModalOpen(false);
   const isSaving = isPending;
 
-  // Helper function to format date (optional)
-  const formatDate = (dateString: Date | string | null): string => {
-    if (!dateString) return "Active";
-    try {
-      // Handle both Date objects and string representations
-      const date =
-        typeof dateString === "string" ? new Date(dateString) : dateString;
-      if (isNaN(date.getTime())) {
-        // Check if the date is valid
-        return "Used (Invalid Date)";
-      }
-      return date.toLocaleDateString(); // Or use a more specific format
-    } catch (e) {
-      console.error("Error formatting date:", e);
-      return "Used (Error)";
-    }
-  };
+  // --- Styles & Helpers ---
+  const thStyleBase =
+    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
+  const inputStyle =
+    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
+  const labelStyle = "block text-sm font-medium text-customBlack/80";
+  const errorMsgStyle =
+    "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
+  const modalErrorStyle = "text-xs text-red-600 mb-3";
+  const statusBadgeBase =
+    "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium";
 
   return (
-    <div>
-      {/* Title and Add Button */}
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-gray-800">Manage Vouchers</h2>
-        <button
+    <div className="p-1">
+      {/* Header */}
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-semibold text-customBlack">
+          Manage Vouchers
+        </h2>
+        <Button
           onClick={handleAdd}
-          disabled={isPending}
-          className="rounded bg-pink-500 px-4 py-2 text-white hover:bg-pink-600 focus:outline-none focus:ring-2 focus:ring-pink-600 focus:ring-opacity-50 disabled:opacity-50"
+          disabled={isPending || isLoading}
+          size="sm"
+          className="w-full sm:w-auto"
         >
-          Add New Voucher
-        </button>
+          <Plus size={16} className="mr-1" /> Add New Voucher
+        </Button>
       </div>
 
-      {/* List Error Display */}
-      {listError && (
-        <p className="mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700">
-          {listError}
-        </p>
+      {listError && !isModalOpen && (
+        <p className={errorMsgStyle}>{listError}</p>
       )}
 
-      {/* Table Display */}
-      {isLoading && !vouchers.length ? (
-        <p className="py-4 text-center text-gray-500">Loading vouchers...</p>
-      ) : !isLoading && vouchers.length === 0 && !listError ? (
-        <p className="py-4 text-center text-gray-500">No vouchers found.</p>
-      ) : (
-        <div className="overflow-x-auto rounded bg-white bg-opacity-60 shadow">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50 bg-opacity-80">
+      {/* Table */}
+      <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
+        {isLoading ? (
+          <p className="py-10 text-center text-customBlack/70">Loading...</p>
+        ) : !listError && vouchers.length === 0 ? (
+          <p className="py-10 text-center text-customBlack/60">No vouchers.</p>
+        ) : (
+          <table className="min-w-full divide-y divide-customGray/30">
+            <thead className="bg-customGray/10">
               <tr>
-                {/* ... table headers ... */}
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Code
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Value
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                {/* Code: Always Visible */}
+                <th className={thStyleBase}>Code</th>
+                {/* Value: Always Visible */}
+                <th className={thStyleBase}>Value</th>
+                {/* Status: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Status
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Actions
-                </th>
+                {/* Actions: Always Visible */}
+                <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200">
-              {vouchers.map((voucher) => (
+            <tbody className="divide-y divide-customGray/30">
+              {vouchers.map((v) => (
                 <tr
-                  key={voucher.id}
-                  className={`transition-colors hover:bg-gray-50 hover:bg-opacity-50 ${voucher.usedAt ? "opacity-60" : ""}`}
+                  key={v.id}
+                  className={`hover:bg-customLightBlue/10 ${v.usedAt ? "opacity-60" : ""}`}
                 >
-                  {/* ... table cells ... */}
-                  <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-gray-900">
-                    {voucher.code}
+                  {/* Code: Always visible, no wrap, mono */}
+                  <td
+                    className={`${tdStyleBase} whitespace-nowrap font-mono uppercase`}
+                  >
+                    {v.code}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {voucher.value}
+                  {/* Value: Always visible, no wrap */}
+                  <td className={`${tdStyleBase} whitespace-nowrap`}>
+                    {v.value}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-sm text-gray-500">
-                    {voucher.usedAt ? (
-                      <span className="inline-flex items-center rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-800">
-                        Used on {formatDate(voucher.usedAt)}
+                  {/* Status: Hidden on xs */}
+                  <td className={`${tdStyleBase} hidden sm:table-cell`}>
+                    {v.usedAt ? (
+                      <span
+                        className={`${statusBadgeBase} bg-red-100 text-red-700`}
+                      >
+                        <XCircle size={12} /> Used (
+                        {new Date(v.usedAt).toLocaleDateString()})
                       </span>
                     ) : (
-                      <span className="inline-flex items-center rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
-                        Active
+                      <span
+                        className={`${statusBadgeBase} bg-green-100 text-green-700`}
+                      >
+                        <CheckCircle size={12} /> Active
                       </span>
                     )}
                   </td>
-                  <td className="whitespace-nowrap px-6 py-4 text-right text-sm font-medium">
+                  {/* Actions: Always visible, no wrap, right aligned */}
+                  <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
-                      onClick={() => handleEdit(voucher)}
-                      disabled={!!voucher.usedAt || isPending} // Disable if used OR pending
-                      className={`mr-3 text-indigo-600 transition-colors hover:text-indigo-900 disabled:opacity-50 ${voucher.usedAt ? "cursor-not-allowed" : ""}`}
+                      onClick={() => handleEdit(v)}
+                      disabled={!!v.usedAt || isPending}
+                      className={`mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50 ${v.usedAt ? "cursor-not-allowed" : ""}`}
+                      title={
+                        v.usedAt ? "Cannot edit used voucher" : "Edit Value"
+                      }
                     >
-                      {" "}
-                      Edit{" "}
+                      <Edit3 size={16} />
                     </button>
                     <button
-                      onClick={() => handleDelete(voucher.id)}
+                      onClick={() => handleDelete(v.id)}
                       disabled={isPending}
-                      className="text-red-600 transition-colors hover:text-red-900 disabled:opacity-50"
+                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      title="Delete"
                     >
-                      {" "}
-                      Delete{" "}
+                      <Trash2 size={16} />
                     </button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+        )}
+      </div>
 
-      {/* Add/Edit Modal */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 transition-opacity duration-300 ease-in-out">
-          <div className="w-full max-w-md scale-100 transform rounded-lg bg-white p-6 shadow-xl transition-all duration-300 ease-in-out">
-            <h3 className="mb-4 text-lg font-semibold leading-6 text-gray-900">
-              {editingVoucher ? "Edit Voucher" : "Add New Voucher"}
-            </h3>
-            {/* Form Error Display */}
-            {formError && (
-              <p className="mb-4 rounded border border-red-400 bg-red-100 p-2 text-xs text-red-700">
-                {formError}
-              </p>
-            )}
-            {/* Add ref and onSubmit prevent default */}
-            <form ref={formRef} onSubmit={(e) => e.preventDefault()}>
-              <div className="mb-4">
-                <label
-                  htmlFor="code"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Voucher Code <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  name="code"
-                  id="code"
-                  required={!editingVoucher} // Only required on create
-                  defaultValue={editingVoucher?.code ?? ""}
-                  disabled={!!editingVoucher} // Disable code editing after creation
-                  className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm disabled:cursor-not-allowed disabled:bg-gray-100 sm:text-sm"
-                  style={{ textTransform: "uppercase" }} // Visually suggest uppercase
-                />
-                {editingVoucher && (
-                  <p className="mt-1 text-xs text-gray-500">
-                    Code cannot be changed.
-                  </p>
-                )}
-                {!editingVoucher && (
-                  <p className="mt-1 text-xs text-gray-500">
-                    Will be stored in uppercase.
-                  </p>
-                )}
-              </div>
-              <div className="mb-4">
-                <label
-                  htmlFor="value"
-                  className="block text-sm font-medium text-gray-700"
-                >
-                  Value (Amount) <span className="text-red-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  name="value"
-                  id="value"
-                  required
-                  min="1"
-                  step="1" // Assuming integer value based on schema
-                  defaultValue={editingVoucher?.value ?? ""}
-                  className="mt-1 block w-full rounded border border-gray-300 p-2 shadow-sm sm:text-sm"
-                />
-              </div>
-
-              {/* Modal Buttons */}
-              <div className="mt-6 flex justify-end space-x-3">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  disabled={isSaving}
-                  className="rounded bg-gray-200 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-300 disabled:opacity-50"
-                >
-                  Cancel
-                </button>
-                {/* Change type to "button" and add onClick */}
-                <button
-                  type="button"
-                  onClick={handleSave}
-                  disabled={isSaving}
-                  className="rounded bg-pink-500 px-4 py-2 text-sm font-medium text-white hover:bg-pink-600 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isSaving
-                    ? "Saving..."
-                    : editingVoucher
-                      ? "Save Changes"
-                      : "Create Voucher"}
-                </button>
-              </div>
-            </form>
+      {/* Modal (No changes needed here for table responsiveness) */}
+      <Modal
+        isOpen={isModalOpen}
+        onClose={closeModal}
+        title={
+          <DialogTitle>
+            {editingVoucher ? "Edit Voucher Value" : "Add New Voucher"}
+          </DialogTitle>
+        }
+        containerClassName="relative m-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
+      >
+        {formError && <p className={modalErrorStyle}>{formError}</p>}
+        <form
+          ref={formRef}
+          onSubmit={(e) => e.preventDefault()}
+          className="space-y-4"
+        >
+          {/* Modal Form Fields... (keep existing) */}
+          <div>
+            <label htmlFor="code" className={labelStyle}>
+              Voucher Code{" "}
+              {!editingVoucher && <span className="text-red-500">*</span>}
+            </label>
+            <input
+              type="text"
+              name="code"
+              id="code"
+              required={!editingVoucher}
+              defaultValue={editingVoucher?.code ?? ""}
+              disabled={!!editingVoucher}
+              className={`${inputStyle} font-mono uppercase tracking-wider`}
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              {editingVoucher
+                ? "Code cannot be changed."
+                : "Unique code (auto uppercase)."}
+            </p>
           </div>
-        </div>
-      )}
+          <div>
+            <label htmlFor="value" className={labelStyle}>
+              Value (PHP Amount) <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="number"
+              name="value"
+              id="value"
+              required
+              min="1"
+              step="1"
+              defaultValue={editingVoucher?.value ?? ""}
+              className={inputStyle}
+            />
+          </div>
+          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+            <Button
+              type="button"
+              onClick={closeModal}
+              disabled={isSaving}
+              invert
+            >
+              Cancel
+            </Button>
+            <Button type="button" onClick={handleSave} disabled={isSaving}>
+              {isSaving
+                ? "Saving..."
+                : editingVoucher
+                  ? "Save Value"
+                  : "Create Voucher"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

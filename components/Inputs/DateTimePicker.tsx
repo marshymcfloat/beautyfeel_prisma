@@ -1,65 +1,72 @@
+// components/Inputs/DateTimePicker.tsx
 "use client";
 
-import { ChangeEvent } from "react";
+import React, { ChangeEvent } from "react"; // Import React
 import { useDispatch, useSelector } from "react-redux";
-import { RootState } from "@/lib/reduxStore";
+import { RootState, AppDispatch } from "@/lib/reduxStore";
 import { cashierActions } from "@/lib/Slices/CashierSlice";
 
-// Add error prop
 export default function DateTimePicker({ error }: { error?: string }) {
-  const dispatch = useDispatch();
-  // Select only necessary date/time strings, ensure they are strings
+  const dispatch = useDispatch<AppDispatch>();
   const date = useSelector((state: RootState) => state.cashier.date ?? "");
   const time = useSelector((state: RootState) => state.cashier.time ?? "");
 
-  const handleDateChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleDateChange = (e: ChangeEvent<HTMLInputElement>) =>
     dispatch(cashierActions.setDateTime({ date: e.target.value, time }));
-  };
-
-  const handleTimeChange = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleTimeChange = (e: ChangeEvent<HTMLInputElement>) =>
     dispatch(cashierActions.setDateTime({ date, time: e.target.value }));
-  };
 
-  const hasError = !!error; // Boolean check for error
+  const hasError = !!error;
+  const inputHeight = "h-[50px]"; // Consistent height
+  const labelStyle = "mb-1 block text-sm font-medium text-customBlack/80";
+  const inputBaseStyle = `w-full appearance-none rounded-md border-2 bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${inputHeight}`; // Added appearance-none, padding
+  const errorBorderStyle = hasError
+    ? "border-red-500"
+    : "border-customDarkPink/60";
 
   return (
-    <div className="mx-auto mt-8 w-[90%]">
-      <div className="flex justify-between gap-4">
-        {/* Date Input */}
-        <div className="flex w-1/2 flex-col">
-          <label htmlFor="date-picker" className="mb-1 text-sm font-medium">
-            Select Date
+    // Removed outer margin/width
+    <div className="w-full">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        {" "}
+        {/* Use grid */}
+        <div>
+          {" "}
+          {/* Date */}
+          <label htmlFor="date-picker" className={labelStyle}>
+            Select Date *
           </label>
-          <input
-            id="date-picker"
-            type="date"
-            value={date}
-            onChange={handleDateChange}
-            // Apply error styling conditionally
-            className={`w-full rounded-lg border-2 ${
-              hasError ? "border-red-500" : "border-customDarkPink"
-            } p-2 shadow-custom focus:outline-none focus:ring-2 focus:ring-blue-300 lg:min-h-[50px]`}
-          />
+          {/* Add relative positioning for potential icon */}
+          <div className="relative">
+            <input
+              id="date-picker"
+              type="date"
+              value={date}
+              onChange={handleDateChange}
+              className={`${inputBaseStyle} ${errorBorderStyle}`}
+            />
+            {/* Optional: Add calendar icon absolutely positioned */}
+          </div>
         </div>
-
-        {/* Time Input */}
-        <div className="flex w-1/2 flex-col">
-          <label htmlFor="time-picker" className="mb-1 text-sm font-medium">
-            Select Time
+        <div>
+          {" "}
+          {/* Time */}
+          <label htmlFor="time-picker" className={labelStyle}>
+            Select Time *
           </label>
-          <input
-            id="time-picker"
-            type="time"
-            value={time}
-            onChange={handleTimeChange}
-            // Apply error styling conditionally
-            className={`w-full rounded-lg border-2 ${
-              hasError ? "border-red-500" : "border-customDarkPink"
-            } p-2 shadow-custom focus:outline-none focus:ring-2 focus:ring-blue-300 lg:min-h-[50px]`}
-          />
+          {/* Add relative positioning for potential icon */}
+          <div className="relative">
+            <input
+              id="time-picker"
+              type="time"
+              value={time}
+              onChange={handleTimeChange}
+              className={`${inputBaseStyle} ${errorBorderStyle}`}
+            />
+            {/* Optional: Add clock icon absolutely positioned */}
+          </div>
         </div>
       </div>
-      {/* Display error message below the inputs */}
       {error && <p className="mt-1 pl-1 text-xs text-red-600">{error}</p>}
     </div>
   );

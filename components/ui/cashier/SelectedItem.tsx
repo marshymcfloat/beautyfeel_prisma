@@ -1,23 +1,21 @@
-// components/ui/cashier/SelectedItem.tsx (Renamed file)
+// components/ui/cashier/SelectedItem.tsx
 "use client";
 
+import React from "react"; // Added React import
 import { Minus, Plus, X } from "lucide-react";
 import { useDispatch } from "react-redux";
 import { cashierActions } from "@/lib/Slices/CashierSlice";
 import type { AppDispatch } from "@/lib/reduxStore";
 
-// Updated props to match AvailedItem structure from Redux
 type SelectedItemProps = {
   id: string;
   name: string;
   quantity: number;
-  originalPrice: number; // Use originalPrice
-  discountApplied: number; // Amount of discount applied
-  type: "service" | "set"; // Distinguish type
-  // Removed onQuantityChange prop, dispatch directly
+  originalPrice: number;
+  discountApplied: number;
+  type: "service" | "set";
 };
 
-// Renamed component
 export default function SelectedItem({
   id,
   name,
@@ -29,7 +27,6 @@ export default function SelectedItem({
   const dispatch = useDispatch<AppDispatch>();
 
   const handleRemove = () => {
-    // Dispatch action to remove the item (toggle behavior)
     dispatch(
       cashierActions.selectItem({
         id,
@@ -41,9 +38,7 @@ export default function SelectedItem({
   };
 
   const handleQuantityChange = (changeType: "inc" | "dec") => {
-    // Dispatch the correct action for quantity change
     if (type === "service") {
-      // Only allow for services
       dispatch(
         cashierActions.handleItemQuantity({ id, identifier: changeType }),
       );
@@ -55,81 +50,94 @@ export default function SelectedItem({
   const finalTotalPrice = finalPricePerUnit * quantity;
 
   return (
-    // Use custom theme colors
-    <div className="mb-2 flex items-center justify-between rounded-md border border-customGray/50 bg-customWhiteBlue p-2 shadow-sm">
-      {/* Item Details */}
-      <div className="flex-grow pr-2">
-        <p className="text-sm font-medium text-customBlack">
-          {name}{" "}
-          {type === "set" ? (
-            <span className="text-xs font-normal text-customDarkPink">
-              (Set)
+    // Main container: Use padding, theme background/border
+    <div className="mb-2 flex flex-col gap-2 rounded-md border border-customGray/40 bg-customWhiteBlue p-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      {/* Left Side: Item Details (Allow wrapping) */}
+      <div className="mb-2 flex-grow sm:mb-0 sm:pr-4">
+        {/* Title and Type */}
+        <p className="text-sm font-medium leading-tight text-customBlack">
+          {name}
+          {type === "set" && (
+            <span className="ml-1 rounded-full bg-customDarkPink px-1.5 py-0.5 align-middle text-[10px] font-normal text-white">
+              SET
             </span>
-          ) : (
-            ""
           )}
         </p>
-        <p className="text-xs text-gray-600">
-          {/* Show original price and discount if applied */}
+        {/* Price per Item (with discount shown) */}
+        <p className="mt-0.5 text-xs text-gray-600">
           {discountApplied > 0 ? (
             <>
               <span className="line-through">
                 ₱{originalPrice.toLocaleString()}
               </span>{" "}
               <span className="text-green-700">
-                ₱{finalPricePerUnit.toLocaleString()}
+                ₱
+                {finalPricePerUnit.toLocaleString(undefined, {
+                  minimumFractionDigits: 2,
+                })}
               </span>
-              {/* Optional: Show discount per item -> <span className="text-xs text-red-600"> (-₱{(discountApplied / quantity).toLocaleString()})</span> */}
             </>
           ) : (
-            `₱${originalPrice.toLocaleString()}` // Show original if no discount
-          )}{" "}
-          / each
+            `₱${originalPrice.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+          )}
+          <span className="text-gray-500"> / each</span>
         </p>
       </div>
 
-      {/* Quantity Controls (Only for Services) */}
-      <div className="flex flex-shrink-0 items-center space-x-1">
-        {type === "service" ? (
-          <>
-            <button
-              onClick={() => handleQuantityChange("dec")}
-              className="rounded border border-customDarkPink p-0.5 text-customDarkPink transition hover:bg-customDarkPink hover:text-white disabled:cursor-not-allowed disabled:border-customGray disabled:text-customGray"
-              title="Decrease quantity"
-              disabled={quantity <= 1} // Disable if quantity is 1
-            >
-              <Minus size={14} />
-            </button>
-            <span className="w-6 text-center text-sm font-medium">
-              {quantity}
+      {/* Right Side: Controls, Total, Remove Button */}
+      <div className="flex flex-shrink-0 items-center justify-end gap-3 sm:gap-4">
+        {" "}
+        {/* Increased gap */}
+        {/* Quantity Controls (Only for Services) */}
+        <div className="flex items-center space-x-1.5">
+          {" "}
+          {/* Increased space */}
+          {type === "service" ? (
+            <>
+              <button
+                onClick={() => handleQuantityChange("dec")}
+                // Slightly larger button, better padding
+                className="flex h-6 w-6 items-center justify-center rounded border border-customDarkPink/50 text-customDarkPink transition hover:bg-customDarkPink hover:text-white disabled:cursor-not-allowed disabled:border-customGray disabled:text-customGray"
+                title="Decrease quantity"
+                disabled={quantity <= 1}
+              >
+                <Minus size={14} strokeWidth={2.5} />
+              </button>
+              {/* Wider span for quantity */}
+              <span className="w-7 text-center text-sm font-semibold text-customBlack">
+                {quantity}
+              </span>
+              <button
+                onClick={() => handleQuantityChange("inc")}
+                className="flex h-6 w-6 items-center justify-center rounded border border-customDarkPink/50 text-customDarkPink transition hover:bg-customDarkPink hover:text-white"
+                title="Increase quantity"
+              >
+                <Plus size={14} strokeWidth={2.5} />
+              </button>
+            </>
+          ) : (
+            // Display quantity for sets, maybe slightly smaller
+            <span className="w-7 text-center text-sm font-medium text-customBlack/80">
+              {quantity}x
             </span>
-            <button
-              onClick={() => handleQuantityChange("inc")}
-              className="rounded border border-customDarkPink p-0.5 text-customDarkPink transition hover:bg-customDarkPink hover:text-white"
-              title="Increase quantity"
-            >
-              <Plus size={14} />
-            </button>
-          </>
-        ) : (
-          // Display quantity for sets, but no controls
-          <span className="w-6 text-center text-sm font-medium">
-            {quantity}x
-          </span>
-        )}
-      </div>
-
-      {/* Total Price & Remove Button */}
-      <div className="flex w-[25%] flex-shrink-0 items-center justify-end space-x-2 pl-2 md:w-[20%]">
-        <span className="text-right text-sm font-medium text-customBlack">
-          ₱{finalTotalPrice.toLocaleString()}
+          )}
+        </div>
+        {/* Total Price */}
+        {/* Made text slightly larger and bolder */}
+        <span className="w-20 flex-shrink-0 text-right text-sm font-semibold text-customBlack sm:w-24">
+          {" "}
+          {/* Give it some minimum width */}₱
+          {finalTotalPrice.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+          })}
         </span>
+        {/* Remove Button */}
         <button
           onClick={handleRemove}
-          className="rounded p-1 text-red-500 transition hover:bg-red-100"
+          className="flex-shrink-0 rounded p-1 text-red-500 transition hover:bg-red-100"
           title="Remove item"
         >
-          <X size={16} />
+          <X size={18} /> {/* Slightly larger icon */}
         </button>
       </div>
     </div>
