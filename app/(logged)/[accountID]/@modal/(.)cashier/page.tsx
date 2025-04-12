@@ -202,17 +202,12 @@ export default function CashierInterceptedModal() {
       title={<DialogTitle>Beautyfeel Transaction</DialogTitle>}
       containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col" // Maybe max-w-xl for more space
     >
-      {/* Scrollable Content Area */}
       <div className="flex-grow space-y-5 overflow-y-auto p-4 sm:p-6">
-        {" "}
-        {/* Use space-y-5 */}
         {formErrors.general && (
           <p className={generalErrorClass}>{formErrors.general}</p>
         )}
-        {/* Customer Input */}
         <div className="w-full">
           <CustomerInput error={formErrors.name} />
-          {/* Error is displayed inside CustomerInput now */}
         </div>
         <div className="w-full">
           <div className="relative w-full">
@@ -230,18 +225,15 @@ export default function CashierInterceptedModal() {
             />
             <label
               htmlFor="email-input"
-              // Base centered state + transitions
               className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 px-1 text-base font-medium transition-all duration-150 ${formErrors.email ? "text-red-600" : "text-gray-500"} peer-focus:top-[-10px] peer-focus:z-10 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-[-10px] peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:bg-customOffWhite peer-[:not(:placeholder-shown)]:text-xs peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} peer-[:not(:placeholder-shown)]:${formErrors.email ? "text-red-600" : ""} `}
             >
               E-mail (Optional)
             </label>
           </div>
           {formErrors.email && (
-            // Assuming inputErrorClass handles styling like text-xs text-red-600 pt-1 etc.
             <p className={`${inputErrorClass} px-1`}>{formErrors.email}</p>
           )}
         </div>
-        {/* Service Type & Time Selectors - Grid */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <SelectInputGroup
             label="Service Type"

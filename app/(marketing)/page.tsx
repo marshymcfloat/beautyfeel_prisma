@@ -15,7 +15,7 @@ export default function DashboardPage() {
           Your Beauty, Our Passion
         </p>
         <div className="mt-2 border-t-4 border-black">
-          <h1 className="break-words text-4xl font-medium uppercase leading-tight tracking-[12px] lg:text-8xl lg:tracking-[60px]">
+          <h1 className="text-nowrap break-words text-4xl font-medium uppercase leading-tight tracking-[12px] lg:text-8xl lg:tracking-[60px]">
             beautyfeel
           </h1>
         </div>
