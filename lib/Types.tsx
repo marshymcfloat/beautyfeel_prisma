@@ -6,42 +6,43 @@ import type {
   Branch,
   Attendance,
   DiscountRule,
-} from "@prisma/client"; // Import Prisma enum if possible
-import { Socket } from "socket.io-client"; // Import Socket type
-// Represents the essential data for the logged-in account
+  Status,
+  PayslipStatus,
+} from "@prisma/client";
+import { MultiValue, ActionMeta } from "react-select";
 
-import Select, { MultiValue, ActionMeta } from "react-select"; // Import react-select
-
-export type AccountData = {
+export interface AccountData {
   id: string;
   name: string;
-  role: Role[]; // Use the Prisma enum array type
+  role: Role[];
   salary: number;
-} | null;
+  dailyRate: number;
+}
 
-// Represents a single item contributing to the salary breakdown
 export type SalaryBreakdownItem = {
   id: string;
   serviceTitle: string;
   customerName: string;
-  // Renaming for clarity, maps to transaction.createdAt
-  transactionDate: Date; // Changed from completedAt
+  transactionDate: Date;
   servicePrice: number;
   commissionEarned: number;
 };
 
-// Configuration (Keep as is)
-export const SALARY_COMMISSION_RATE = 0.1; // 10%
+export const SALARY_COMMISSION_RATE = 0.1;
 
 export type CustomerProp = {
-  email: string | null;
+  email?: string | null;
   id: string;
   name: string;
 };
 
+export type PayslipStatusOption = PayslipStatus | "NOT_FOUND" | null;
+
 export type ServiceProps = {
   title: string;
   id: string;
+  price: number;
+  quantity: number;
 };
 
 export type AccountInfo = {
@@ -49,80 +50,130 @@ export type AccountInfo = {
   name: string;
 } | null;
 
-export type AvailedServicesProps = {
+export type ServiceInfo = {
   id: string;
-  price: number;
-  quantity: number;
-  serviceId: string;
+  title: string;
+} | null;
+export interface AvailedServicesProps {
+  id: string;
   transactionId: string;
-  service: ServiceProps;
+  serviceId: string | null;
+  service: ServiceInfo;
+  quantity: number;
+  price: number;
+  commissionValue: number;
+  originatingSetId?: string | null;
+  originatingSetTitle?: string | null;
   checkedById: string | null;
   checkedBy: AccountInfo;
-  servedById: string | null; // Keep for display/styling info if needed
-  servedBy: AccountInfo; // Keep for display/styling info if needed
-};
+  servedById: string | null;
+  servedBy: AccountInfo;
+  status: Status;
+  completedAt?: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
-export type MonthlySalesWithPaymentBreakdown = {
-  month: string; // e.g., "Jan '24"
-  yearMonth: string; // e.g., "2024-01" for sorting
-  totalSales: number; // Total for the month
-  cash: number;
-  ewallet: number;
-  bank: number;
-  unknown: number;
+/* export type AvailedServicesProps = {
+  id: string; // AvailedService ID
+  price: number; // Price snapshot
+  quantity: number;
+  serviceId: string; // Foreign key
+  transactionId: string; // Foreign key
+  service: ServiceProps; // Nested basic service info
+  checkedById: string | null;
+  checkedBy: AccountInfo; // Nested basic account info (or null)
+  servedById: string | null;
+  servedBy: AccountInfo; // Nested basic account info (or null)
 };
-
-// Keep the overall totals separate for the summary view
-export type PaymentMethodTotals = {
-  cash: number;
-  ewallet: number;
-  bank: number;
-  unknown: number;
-};
-export type TransactionSuccessResponse = {
-  success: true;
-  transactionId: string; // ID of the created transaction
-  // You can add other success data here if your action returns more
-};
-
-export type TransactionErrorResponse = {
-  success: false;
-  message: string; // General error message (make sure action always provides this on error)
-  errors?: Record<string, string[]>; // Optional field-specific errors from validation
-};
-
-// Union type representing either success or error
-export type TransactionSubmissionResponse =
-  | TransactionSuccessResponse
-  | TransactionErrorResponse;
-
-// Updated main data structure
-export type SalesDataDetailed = {
-  // Use the new monthly type
-  monthlySales: MonthlySalesWithPaymentBreakdown[];
-  // Keep overall totals
-  paymentMethodTotals: PaymentMethodTotals;
-  grandTotal: number;
-};
-
-// Keep the simpler MonthlySales type for the preview chart if desired
-export type MonthlySales = {
-  month: string;
-  yearMonth: string;
-  totalSales: number;
-};
+ */
 export type TransactionProps = {
   id: string;
   createdAt: Date;
   bookedFor: Date;
   customer: CustomerProp;
   customerId: string;
-  voucherId: string | null;
+  voucherId?: string | null;
   discount: number;
-  paymentMethod: string | null;
+  paymentMethod?: PaymentMethod | null;
   availedServices: AvailedServicesProps[];
   grandTotal: number;
-  status: "PENDING" | "DONE" | "CANCELLED";
+  status: Status;
+};
+
+export interface AttendanceRecord {
+  date: Date;
+  isPresent: boolean;
+  notes?: string | null;
+}
+
+export type MonthlySalesWithPaymentBreakdown = {
+  month: string;
+  yearMonth: string;
+  totalSales: number;
+  cash: number;
+  ewallet: number;
+  bank: number;
+  unknown: number;
+};
+
+export type PaymentMethodTotals = {
+  cash: number;
+  ewallet: number;
+  bank: number;
+  unknown: number;
+};
+
+export type SalesDataDetailed = {
+  monthlySales: MonthlySalesWithPaymentBreakdown[];
+  paymentMethodTotals: PaymentMethodTotals;
+  grandTotal: number;
+};
+
+export type MonthlySales = {
+  month: string;
+  yearMonth: string;
+  totalSales: number;
+};
+
+export type RequestPayslipHandler = (
+  accountId: string,
+  periodStartDate: Date,
+  periodEndDate: Date,
+) => Promise<{
+  success: boolean;
+  message: string;
+  payslipId?: string;
+  status?: PayslipStatus;
+}>;
+
+export type PayslipData = {
+  id: string;
+  employeeId: string;
+  employeeName: string;
+  periodStartDate: Date;
+  periodEndDate: Date;
+  baseSalary: number;
+  totalCommissions: number;
+  totalDeductions?: number;
+  totalBonuses?: number;
+  netPay: number;
+  status: PayslipStatus;
+  releasedDate?: Date | null;
+  breakdownItems?: SalaryBreakdownItem[];
+};
+
+export type ReleaseSalaryHandler = (payslipId: string) => Promise<void>;
+
+export type TransactionSuccessResponse = {
+  success: true;
+  transactionId: string;
+};
+
+export type TransactionErrorResponse = {
+  success: false;
+  message: string;
+  errors?: Record<string, string[]>;
 };
 
 export type CheckGCResult =
@@ -137,19 +188,8 @@ export type CheckGCResult =
   | { status: "not_found"; code: string }
   | { status: "error"; message: string };
 
-export type GiftCertificateValidationResult =
-  | {
-      status: "valid";
-      id: string;
-      services: Pick<Service, "id" | "title">[];
-      expiresAt: Date | null;
-    }
-  | { status: "used"; code: string; usedAt: Date }
-  | { status: "expired"; code: string; expiresAt: Date }
-  | { status: "not_found"; code: string }
-  | { status: "error"; message: string };
+export type GiftCertificateValidationResult = CheckGCResult;
 
-// You might also want a simpler type for just the 'valid' case if used often
 export type ValidGiftCertificateResult = Extract<
   GiftCertificateValidationResult,
   { status: "valid" }
@@ -159,25 +199,31 @@ export type FetchedItem = {
   id: string;
   title: string;
   price: number;
-  type: "service" | "set"; // Ensure this is NOT optional 'type?'
-  // Add other fields returned by your fetch action if needed
+  type: "service" | "set";
 };
+
+export enum DisplayAttendanceStatus {
+  PRESENT = "PRESENT",
+  ABSENT = "ABSENT",
+  NO_RECORD = "NO_RECORD",
+  OUTSIDE_PERIOD = "OUTSIDE_PERIOD",
+}
 
 export type UIDiscountRuleWithServices = Omit<
   DiscountRule,
   "startDate" | "endDate" | "createdAt" | "updatedAt"
 > & {
-  startDate: string; // MUST be string
-  endDate: string; // MUST be string
-  createdAt: string; // MUST be string
-  updatedAt: string; // MUST be string
-  applyToAll: boolean; // Ensure this is included
+  startDate: string;
+  endDate: string;
+  createdAt: string;
+  updatedAt: string;
+  applyToAll: boolean;
   services?: Pick<Service, "id" | "title">[];
 };
 export type ServiceOption = Pick<Service, "id" | "title">;
 
 export type AccountForManagement = Omit<Account, "password" | "salary"> & {
-  dailyRate: number; // Ensure this is number
+  dailyRate: number;
   branch?: Pick<Branch, "id" | "title"> | null;
 };
 
@@ -190,8 +236,8 @@ export type EmployeeForAttendance = Pick<
   Account,
   "id" | "name" | "dailyRate"
 > & {
-  branchTitle: string | null; // Include branch title for display/filtering
-  todaysAttendance: Pick<Attendance, "id" | "isPresent" | "notes"> | null; // Include today's status
+  branchTitle: string | null;
+  todaysAttendance: Pick<Attendance, "id" | "isPresent" | "notes"> | null;
 };
 
 export interface MultiSelectProps {
@@ -205,4 +251,37 @@ export interface MultiSelectProps {
     actionMeta: ActionMeta<{ value: string; label: string }>,
   ) => void;
   required?: boolean;
+}
+
+export type AvailedItem = {
+  id: string; // Can be Service ID or ServiceSet ID
+  name: string; // Title of the service or set
+  price: number; // The price used for display/calculation in the cart (current price, might be discounted)
+  quantity: number; // How many of this item (usually 1 for sets)
+  type: "service" | "set"; // <<< REQUIRED: Discriminator
+  originalPrice: number; // <<< REQUIRED: Price before discounts
+  discountApplied?: number; // Optional: Discount on this specific item
+};
+
+export type TransactionSubmissionResponse = {
+  success: boolean;
+  transactionId?: string; // Included on success
+  message?: string; // Included on error (and sometimes success)
+  errors?: Record<string, string[]>; // Field-specific errors on validation/submission failure
+};
+
+export type ActiveTab =
+  | "services"
+  | "serviceSets"
+  | "accounts"
+  | "payslips"
+  | "vouchers"
+  | "giftCertificate"
+  | "discounts"
+  | "branches";
+
+export interface TabConfig {
+  id: ActiveTab;
+  label: string;
+  icon: React.ElementType;
 }

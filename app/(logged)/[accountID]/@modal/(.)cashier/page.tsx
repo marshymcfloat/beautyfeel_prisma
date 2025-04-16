@@ -25,6 +25,7 @@ import { RootState, AppDispatch } from "@/lib/reduxStore";
 import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice";
 import { fetchServices, fetchServiceSets } from "@/lib/Slices/DataSlice";
 
+import { PaymentMethod } from "@prisma/client";
 // --- Types ---
 import {
   FetchedItem,
@@ -97,19 +98,29 @@ export default function CashierInterceptedModal() {
   // --- Callbacks ---
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
+      // Type predicate for Service Type (already correct as CashierState['serviceType'] is not nullable)
       const isST = (v: string): v is CashierState["serviceType"] =>
         v === "single" || v === "set";
+
+      // Type predicate for Serve Time (already correct as CashierState['serveTime'] is not nullable)
       const isServeT = (v: string): v is CashierState["serveTime"] =>
         v === "now" || v === "later";
-      const isPM = (v: string): v is CashierState["paymentMethod"] =>
-        v === "cash" || v === "ewallet" || v === "bank";
-      if (key === "serviceType" && isST(value))
+
+      const isPM = (v: string): v is PaymentMethod =>
+        v === PaymentMethod.cash ||
+        v === PaymentMethod.ewallet ||
+        v === PaymentMethod.bank;
+
+      if (key === "serviceType" && isST(value)) {
         dispatch(cashierActions.setServiceType(value));
-      else if (key === "serveTime" && isServeT(value))
+      } else if (key === "serveTime" && isServeT(value)) {
         dispatch(cashierActions.setServeTime(value));
-      else if (key === "paymentMethod" && isPM(value))
+      } else if (key === "paymentMethod" && isPM(value)) {
+        // Now 'value' is correctly narrowed to PrismaPaymentMethod type
         dispatch(cashierActions.setPaymentMethod(value));
-      else console.warn(`Unhandled select: "${key}"`);
+      } else {
+        console.warn(`Unhandled select: "${key}" with value: "${value}"`);
+      }
     },
     [dispatch],
   );
@@ -149,7 +160,9 @@ export default function CashierInterceptedModal() {
         }
         setFormErrors(clientErrors);
       } else {
-        setFormErrors({ general: response.message });
+        setFormErrors({
+          general: response.message ?? "An unknown error occurred.",
+        });
       }
       console.error("Submit failed:", response.message, response.errors);
     }
@@ -274,9 +287,7 @@ export default function CashierInterceptedModal() {
             data={itemsToDisplay}
             error={formErrors.servicesAvailed || itemsError || undefined}
           />
-          {/* Error shown inside ServicesSelect */}
         </div>
-        {/* Voucher and Payment Method - Grid */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <VoucherInput />
           <SelectInputGroup
@@ -292,7 +303,6 @@ export default function CashierInterceptedModal() {
             required
           />
         </div>
-        {/* Display voucher/payment errors below grid if needed */}
         {formErrors.voucherCode && (
           <p className={`${inputErrorClass} px-1`}>{formErrors.voucherCode}</p>
         )}

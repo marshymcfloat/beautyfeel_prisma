@@ -1,18 +1,62 @@
 // components/Modal.tsx
 "use client";
 
-import React, { useEffect, useState, useRef } from "react"; // Added useRef
+import React, { useEffect, useState, useRef } from "react";
 import ReactDOM from "react-dom";
 import { X } from "lucide-react";
+
+// Define standard size options
+type ModalSize =
+  | "sm"
+  | "md"
+  | "lg"
+  | "xl"
+  | "2xl"
+  | "3xl"
+  | "4xl"
+  | "5xl"
+  | "full";
 
 interface ModalProps {
   children: React.ReactNode;
   isOpen: boolean;
   onClose: () => void;
-  title?: string | React.ReactNode;
+  title?: string | React.ReactNode; // Can be a string or a custom component
   backgroundClassName?: string;
   containerClassName?: string;
+  size?: ModalSize;
+  // --- NEW PROPS ---
+  hideDefaultHeader?: boolean; // Completely hide the default header section
+  hideDefaultCloseButton?: boolean; // Hide only the default 'X' button (useful if title is string but want custom close)
+  titleClassName?: string; // Style the container div for the title (default or custom)
+  contentClassName?: string; // Style the container div for the children (e.g., remove padding)
 }
+
+// Helper to map size prop to Tailwind class (no changes needed)
+const getSizeClass = (size?: ModalSize): string => {
+  switch (size) {
+    case "sm":
+      return "max-w-sm";
+    case "md":
+      return "max-w-md";
+    case "lg":
+      return "max-w-lg";
+    case "xl":
+      return "max-w-xl";
+    case "2xl":
+      return "max-w-2xl";
+    case "3xl":
+      return "max-w-3xl";
+    case "4xl":
+      return "max-w-4xl";
+    case "5xl":
+      return "max-w-5xl";
+    case "full":
+      return "max-w-full h-full";
+    default:
+      return "max-w-lg"; // Default size
+  }
+};
 
 export default function Modal({
   children,
@@ -20,134 +64,135 @@ export default function Modal({
   onClose,
   title,
   backgroundClassName = "fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 backdrop-blur-sm",
-  // Make sure default container doesn't force overflow itself unless intended by the specific modal's class override
-  containerClassName = "relative m-auto max-h-[90vh] w-full max-w-lg bg-customOffWhite rounded-lg shadow-xl flex flex-col", // Use flex-col, REMOVED overflow-y-auto here
+  containerClassName = "relative m-auto max-h-[90vh] w-full bg-customOffWhite rounded-lg shadow-xl flex flex-col", // Base container classes
+  size,
+  // --- Destructure new props ---
+  hideDefaultHeader = false,
+  hideDefaultCloseButton = false,
+  titleClassName = "flex-shrink-0 border-b border-customGray/30 p-4", // Default title container style
+  contentClassName = "flex-grow overflow-y-auto p-4 sm:p-6", // Default content container style
 }: ModalProps) {
   const [portalNode, setPortalNode] = useState<Element | null>(null);
-  // useRef to store original styles persistently across re-renders
   const originalBodyOverflowRef = useRef<string | null>(null);
   const originalHtmlOverflowRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Find portal root on client mount
-    const node = document.getElementById("modal-root");
-    setPortalNode(node || null); // Ensure it's null if not found
+    // Ensure modal-root exists in your public/index.html or layout file
+    let node = document.getElementById("modal-root");
+    if (!node) {
+      node = document.createElement("div");
+      node.setAttribute("id", "modal-root");
+      document.body.appendChild(node);
+    }
+    setPortalNode(node);
+
+    // Cleanup function to remove the node if it was created by this instance
+    return () => {
+      if (node && node.parentNode && node.getAttribute("created-by-modal")) {
+        // node.parentNode.removeChild(node); // Optional: remove if created dynamically
+      }
+    };
   }, []);
 
-  // --- UPDATED Body Scroll Lock Effect ---
+  // --- Body Scroll Lock Effect (no changes needed) ---
   useEffect(() => {
     const body = document.body;
     const html = document.documentElement;
-
     if (isOpen) {
-      // Store original styles ONLY if they haven't been stored yet
-      if (originalBodyOverflowRef.current === null) {
+      if (originalBodyOverflowRef.current === null)
         originalBodyOverflowRef.current = body.style.overflow;
-      }
-      if (originalHtmlOverflowRef.current === null) {
+      if (originalHtmlOverflowRef.current === null)
         originalHtmlOverflowRef.current = html.style.overflow;
-      }
-
-      // Apply lock only if not already locked (by potentially another modal)
-      // Or force it if this component should take precedence
       body.style.overflow = "hidden";
       html.style.overflow = "hidden";
-      // console.log(`Modal ${title || 'untitled'}: Locking scroll`);
     } else {
-      // Restore original styles IF this modal instance had stored them
-      if (originalBodyOverflowRef.current !== null) {
+      if (originalBodyOverflowRef.current !== null)
         body.style.overflow = originalBodyOverflowRef.current;
-        originalBodyOverflowRef.current = null; // Reset ref after restoring
-      }
-      if (originalHtmlOverflowRef.current !== null) {
+      if (originalHtmlOverflowRef.current !== null)
         html.style.overflow = originalHtmlOverflowRef.current;
-        originalHtmlOverflowRef.current = null; // Reset ref after restoring
-      }
-      // console.log(`Modal ${title || 'untitled'}: Unlocking scroll`);
+      originalBodyOverflowRef.current = null;
+      originalHtmlOverflowRef.current = null;
     }
-
-    // Cleanup function on unmount
+    // Cleanup on unmount
     return () => {
-      // console.log(`Modal ${title || 'untitled'}: Cleanup effect`);
-      // Restore based on stored refs if component unmounts while open
-      if (originalBodyOverflowRef.current !== null) {
+      if (originalBodyOverflowRef.current !== null)
         body.style.overflow = originalBodyOverflowRef.current;
-        originalBodyOverflowRef.current = null;
-        // console.log(`Modal ${title || 'untitled'}: Restored body scroll on unmount`);
-      }
-      if (originalHtmlOverflowRef.current !== null) {
+      if (originalHtmlOverflowRef.current !== null)
         html.style.overflow = originalHtmlOverflowRef.current;
-        originalHtmlOverflowRef.current = null;
-        // console.log(`Modal ${title || 'untitled'}: Restored html scroll on unmount`);
-      }
+      originalBodyOverflowRef.current = null;
+      originalHtmlOverflowRef.current = null;
     };
-  }, [isOpen]); // Re-run only when isOpen changes
-  // --- END UPDATED Effect ---
+  }, [isOpen]);
 
+  // --- Event Handlers (no changes needed) ---
   const handleBackgroundClick = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget) {
-      onClose();
-    }
+    if (event.target === event.currentTarget) onClose();
   };
-
   const handleDialogClick = (event: React.MouseEvent<HTMLDivElement>) => {
     event.stopPropagation();
   };
 
-  // Modal Content JSX
+  // Calculate final container class including size
+  const finalContainerClassName = `${containerClassName} ${getSizeClass(size)}`;
+
+  // --- MODAL CONTENT RENDERING ---
   const modalContent = (
     <div
       className={backgroundClassName}
       onClick={handleBackgroundClick}
-      role="presentation"
+      role="presentation" // Background click handler
     >
-      {/* The main modal container passed via props */}
       <div
         role="dialog"
         aria-modal="true"
+        // Use title if string for aria-labelledby, otherwise fallback
         aria-labelledby={
           typeof title === "string" ? "dialog-title-id" : undefined
         }
-        className={containerClassName}
-        onClick={handleDialogClick}
+        className={finalContainerClassName} // Apply size and base styles
+        onClick={handleDialogClick} // Prevent background click when clicking dialog
       >
-        {/* Header Area (Optional - Render Title and Close Button) */}
-        {/* Added flex-shrink-0 to prevent header/footer shrinking */}
-        <div className="flex flex-shrink-0 items-start justify-between border-b border-customGray/30 p-4">
-          {title &&
-            (typeof title === "string" ? (
-              <h2
-                id="dialog-title-id"
-                className="text-lg font-semibold text-customBlack"
-              >
-                {title}
-              </h2>
-            ) : (
-              title /* Render component title */
-            ))}
-          <button
-            type="button"
-            onClick={onClose}
-            className="-m-1.5 rounded-full p-1.5 text-customBlack/60 transition-colors hover:bg-customGray/50 hover:text-customBlack"
-            aria-label="Close dialog"
-          >
-            <X size={20} />
-          </button>
-        </div>
+        {/* --- Conditional Header Rendering --- */}
+        {!hideDefaultHeader &&
+          title && ( // Render header area only if not hidden AND title exists
+            <div
+              className={`flex items-start justify-between ${titleClassName}`}
+            >
+              {" "}
+              {/* Apply title container style */}
+              {/* Render title: either default h2 or custom ReactNode */}
+              {typeof title === "string" ? (
+                <h2
+                  id="dialog-title-id"
+                  className="text-lg font-semibold text-customBlack"
+                >
+                  {title}
+                </h2>
+              ) : (
+                // Render the custom title component directly
+                title
+              )}
+              {/* Render default close button only if not hidden */}
+              {!hideDefaultCloseButton && (
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="-m-1.5 ml-4 flex-shrink-0 rounded-full p-1.5 text-customBlack/60 transition-colors hover:bg-customGray/50 hover:text-customBlack"
+                  aria-label="Close dialog"
+                >
+                  <X size={20} />
+                </button>
+              )}
+            </div>
+          )}
 
-        {/* Children Content Area - THIS SHOULD SCROLL */}
-        {/* Added flex-grow, overflow-y-auto, and padding */}
-        <div className="flex-grow overflow-y-auto p-4 sm:p-6">{children}</div>
-
-        {/* Optional Footer Area - Example */}
-        {/* You might pass footer content as a prop if needed */}
-        {/* <div className="flex-shrink-0 border-t border-customGray/30 p-4 flex justify-end space-x-3">
-            <button onClick={onClose}>Close</button>
-           </div> */}
-      </div>
-    </div>
+        {/* Children Content Area - Apply custom or default styling */}
+        <div className={contentClassName}>{children}</div>
+      </div>{" "}
+      {/* End Dialog */}
+    </div> // End Background
   );
 
-  if (!isOpen || !portalNode) return null;
-  return ReactDOM.createPortal(modalContent, portalNode);
+  if (!isOpen || !portalNode) return null; // Don't render if not open or portal not ready
+  return ReactDOM.createPortal(modalContent, portalNode); // Render into the portal node
 }

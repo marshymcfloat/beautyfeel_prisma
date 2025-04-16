@@ -40,7 +40,7 @@ export default function SelectedItem({
   const handleQuantityChange = (changeType: "inc" | "dec") => {
     if (type === "service") {
       dispatch(
-        cashierActions.handleItemQuantity({ id, identifier: changeType }),
+        cashierActions.handleItemQuantity({ id, identifier: changeType, type }),
       );
     }
   };

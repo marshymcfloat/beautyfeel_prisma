@@ -1,20 +1,20 @@
-import Footer from "@/components/Navigations/Footer"; // Assuming path is correct
+import Footer from "@/components/Navigations/Footer";
 import "../globals.css";
 
-import { Lora, Montserrat } from "next/font/google"; // Import font functions
+import { Lora, Montserrat } from "next/font/google";
 
 // Configure fonts
 const lora = Lora({
   subsets: ["latin"],
-  display: "swap", // Use swap for better performance
-  variable: "--font-lora", // Assign CSS variable for Serif
+  display: "swap",
+  variable: "--font-lora",
 });
 
 const montserrat = Montserrat({
   subsets: ["latin"],
   display: "swap",
-  variable: "--font-montserrat", // Assign CSS variable for Sans-Serif
-  weight: ["300", "400", "500", "700"], // Include weights you might use
+  variable: "--font-montserrat",
+  weight: ["300", "400", "500", "700"],
 });
 
 export default function RootLayout({

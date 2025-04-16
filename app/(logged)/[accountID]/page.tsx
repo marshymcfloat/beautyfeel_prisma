@@ -1,392 +1,450 @@
-// src/app/dashboard/[accountID]/page.tsx (or your home dashboard file)
+// src/app/dashboard/[accountID]/page.tsx
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react"; // Keep useEffect for data fetching, socket etc.
+import React, { useState, useEffect, useMemo, useCallback } from "react"; // Removed unused useTransition here
 import { io, Socket } from "socket.io-client";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { startOfMonth, endOfMonth, format, isValid } from "date-fns";
+import { Status, Role } from "@prisma/client"; // Assuming Status enum is needed
+import { AlertCircle, ListChecks, X, ChevronLeft } from "lucide-react";
 
-// --- Server Actions ---
+// --- Server Action Imports ---
 import {
   getActiveTransactions,
-  getCurrentAccountData, // Make sure this is imported if used
+  getCurrentAccountData,
   getSalaryBreakdown,
   getSalesDataLast6Months,
+  getAttendanceForPeriod,
+  getPayslipStatusForPeriod,
+  requestPayslipGeneration,
 } from "@/lib/ServerAction"; // Adjust path
 
-// --- Component Imports ---
-import Calendar from "@/components/ui/Calendar"; // Adjust path
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
-import Button from "@/components/Buttons/Button"; // Adjust path
+// --- UI Component Imports ---
+import CalendarUI from "@/components/ui/Calendar";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
-import ExpandedListedServices from "@/components/ui/ExpandedListedServices"; // Adjust path
-import PreviewListedServices from "@/components/ui/PreviewListedServices"; // Adjust path
-import PreviewUserSalary from "@/components/ui/PreviewUserSalary"; // Adjust path
-import ExpandedUserSalary from "@/components/ui/ExpandedUserSalary"; // Adjust path
-import PreviewSales from "@/components/ui/PreviewSales"; // Adjust path
-import ExpandedSales from "@/components/ui/ExpandedSales"; // Adjust path
-import ManageAttendance from "@/components/ui/customize/ManageAttendance"; // Adjust path
+import ExpandedListedServices from "@/components/ui/ExpandedListedServices";
+import PreviewListedServices from "@/components/ui/PreviewListedServices";
+import PreviewUserSalary from "@/components/ui/PreviewUserSalary";
+// Ensure this is the correct path and component name
+import ExpandedUserSalary from "@/components/ui/ExpandedUserSalary";
+import PreviewSales from "@/components/ui/PreviewSales";
+import ExpandedSales from "@/components/ui/ExpandedSales";
+import ManageAttendance from "@/components/ui/customize/ManageAttendance";
+import LoadingWidget from "@/components/ui/LoadingWidget"; // Adjust path
 
-// --- Types ---
-import { Role } from "@prisma/client";
+// --- Type Imports ---
 import {
-  TransactionProps,
-  AccountData, // Make sure this is imported if used
+  AccountData,
   SalaryBreakdownItem,
-  AvailedServicesProps,
   SalesDataDetailed,
+  AttendanceRecord,
+  AvailedServicesProps,
+  TransactionProps,
+  PayslipStatusOption,
 } from "@/lib/Types"; // Adjust path
 
-// --- Main Component ---
+// --- Main Dashboard Component ---
 export default function Home() {
-  const { accountID } = useParams();
-  const accountId = typeof accountID === "string" ? accountID : undefined;
+  const params = useParams();
+  const router = useRouter();
+  const accountId =
+    typeof params.accountID === "string" ? params.accountID : undefined;
 
   // --- State Definitions ---
   const [socket, setSocket] = useState<Socket | null>(null);
   const [allPendingTransactions, setAllPendingTransactions] = useState<
     TransactionProps[]
   >([]);
-  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
-  const [processingActions, setProcessingActions] = useState<Set<string>>(
-    new Set(),
-  );
-  // --- MODAL STATES ---
+  const [processingServeActions, setProcessingServeActions] = useState<
+    Set<string>
+  >(new Set());
   const [isMyServicesModalOpen, setIsMyServicesModalOpen] = useState(false);
   const [isSalaryDetailsModalOpen, setIsSalaryDetailsModalOpen] =
     useState(false);
   const [isSalesDetailsModalOpen, setIsSalesDetailsModalOpen] = useState(false);
-  // --- END MODAL STATES ---
-  const [accountData, setAccountData] = useState<AccountData | null>(null); // Use AccountData type
+  const [accountData, setAccountData] = useState<AccountData | null>(null);
   const [salaryBreakdown, setSalaryBreakdown] = useState<SalaryBreakdownItem[]>(
     [],
   );
+  const [attendanceRecords, setAttendanceRecords] = useState<
+    AttendanceRecord[]
+  >([]);
+  const [salesData, setSalesData] = useState<SalesDataDetailed | null>(null);
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
   const [isLoadingAccount, setIsLoadingAccount] = useState(true);
   const [isLoadingBreakdown, setIsLoadingBreakdown] = useState(false);
-  const [salesData, setSalesData] = useState<SalesDataDetailed | null>(null);
+  const [isLoadingAttendance, setIsLoadingAttendance] = useState(false);
   const [isLoadingSales, setIsLoadingSales] = useState(true);
+  const [socketError, setSocketError] = useState<string | null>(null);
+  const [attendanceError, setAttendanceError] = useState<string | null>(null);
+  const [currentPeriod, setCurrentPeriod] = useState(() => {
+    const today = new Date();
+    return { start: startOfMonth(today), end: endOfMonth(today) };
+  });
+  // State for Payslip status check
+  const [payslipStatus, setPayslipStatus] = useState<PayslipStatusOption>(null);
+  const [isPayslipStatusLoading, setIsPayslipStatusLoading] = useState(false);
 
-  const isPageLoading =
-    isLoadingTransactions || isLoadingAccount || isLoadingSales;
-
-  // --- Hooks (Socket, Data Fetching, etc.) ---
-  // --- Socket Connection ---
+  // --- Socket Connection Effect (Stable) ---
   useEffect(() => {
-    // Don't connect if accountId isn't available yet
-    if (!accountId) {
-      console.log("Home: Skipping socket connection, no accountId.");
-      return;
-    }
+    if (!accountId) return;
     const backendUrl =
-      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
+      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
     if (!backendUrl) {
-      console.error("Home: FATAL ERROR: NEXT_PUBLIC_BACKEND_URL not set.");
+      console.error("Socket URL missing.");
+      setSocketError("Config Error.");
       return;
     }
-    console.log(`Home: Connecting socket to ${backendUrl}`);
     const newSocket = io(backendUrl, {
+      query: { accountId },
       reconnectionAttempts: 5,
       timeout: 10000,
     });
     setSocket(newSocket);
-    newSocket.on("connect", () =>
-      console.log("Home: Socket connected:", newSocket.id),
-    );
-    newSocket.on("disconnect", (reason) =>
-      console.log("Home: Socket disconnected:", reason),
-    );
-    newSocket.on("connect_error", (err) =>
-      console.error("Home: Socket connection error:", err.message),
-    );
-
+    setSocketError(null);
+    const handleConnect = () => console.log("Socket connected:", newSocket.id);
+    const handleDisconnect = (reason: Socket.DisconnectReason) =>
+      console.log("Socket disconnected:", reason);
+    const handleConnectError = (err: Error) => {
+      console.error("Socket connection error:", err);
+      setSocketError("Connection Failed.");
+    };
+    newSocket.on("connect", handleConnect);
+    newSocket.on("disconnect", handleDisconnect);
+    newSocket.on("connect_error", handleConnectError);
     return () => {
-      console.log("Home: Disconnecting socket.");
+      newSocket.off("connect", handleConnect);
+      newSocket.off("disconnect", handleDisconnect);
+      newSocket.off("connect_error", handleConnectError);
       newSocket.disconnect();
       setSocket(null);
     };
-  }, [accountId]); // Dependency: Only reconnect if accountId changes
+  }, [accountId]);
 
-  // --- Fetch Initial Data ---
-  useEffect(() => {
-    async function fetchInitialData() {
-      if (!accountId) {
-        console.warn("Home: Skipping initial data fetch, no accountId.");
-        setIsLoadingTransactions(false);
-        setIsLoadingAccount(false);
-        setIsLoadingSales(false);
-        return;
-      }
-      console.log("Home: Fetching initial data...");
-      setIsLoadingTransactions(true);
-      setIsLoadingAccount(true);
-      setIsLoadingSales(true);
-      try {
-        const results = await Promise.allSettled([
-          getActiveTransactions(),
-          getCurrentAccountData(accountId), // Ensure this action exists and is imported
+  // --- Data Fetching Logic (Stable) ---
+  const fetchAllData = useCallback(async () => {
+    if (!accountId) {
+      setIsLoadingTransactions(false);
+      setIsLoadingAccount(false);
+      setIsLoadingSales(false);
+      return;
+    }
+    setIsLoadingAccount(true);
+    setIsLoadingSales(true);
+    setIsLoadingTransactions(true);
+    try {
+      const [accountResult, salesResult, transactionsResult] =
+        await Promise.allSettled([
+          getCurrentAccountData(accountId),
           getSalesDataLast6Months(),
+          getActiveTransactions(),
         ]);
-        // Process Transactions
-        if (results[0].status === "fulfilled") {
-          const transactionsData = results[0].value;
-          setAllPendingTransactions(
-            transactionsData.map((tx) => ({
-              ...tx,
-              createdAt: new Date(tx.createdAt),
-              bookedFor: new Date(tx.bookedFor),
-              availedServices: tx.availedServices.map((as) => ({
-                ...as,
-                customerName: tx.customer?.name ?? "Unknown",
-                service: {
-                  id: as.service?.id ?? "?",
-                  title: as.service?.title ?? "?",
-                },
-              })),
-            })),
-          );
-        } else {
-          console.error(
-            "Home: Error fetching transactions:",
-            results[0].reason,
-          );
-          setAllPendingTransactions([]);
-        }
-        // Process Account Data
-        if (results[1].status === "fulfilled") {
-          setAccountData(results[1].value as AccountData); // Cast to AccountData
-        } else {
-          console.error(
-            "Home: Error fetching account data:",
-            results[1].reason,
-          );
-          setAccountData(null);
-        }
-        // Process Sales Data
-        if (results[2].status === "fulfilled") {
-          setSalesData(results[2].value);
-        } else {
-          console.error("Home: Error fetching sales data:", results[2].reason);
-          setSalesData(null);
-        }
-      } catch (error) {
+      if (accountResult.status === "fulfilled" && accountResult.value)
+        setAccountData(accountResult.value);
+      else {
         console.error(
-          "Home: Unexpected error during initial data fetch:",
-          error,
+          "Failed fetch account:",
+          accountResult.status === "rejected"
+            ? accountResult.reason
+            : "No data",
+        );
+        setAccountData(null);
+      }
+      if (salesResult.status === "fulfilled" && salesResult.value)
+        setSalesData(salesResult.value);
+      else {
+        console.error(
+          "Failed fetch sales:",
+          salesResult.status === "rejected" ? salesResult.reason : "No data",
+        );
+        setSalesData(null);
+      }
+      if (
+        transactionsResult.status === "fulfilled" &&
+        Array.isArray(transactionsResult.value)
+      ) {
+        // Assume transaction processing logic is correct
+        setAllPendingTransactions(transactionsResult.value);
+      } else {
+        console.error(
+          "Failed fetch transactions:",
+          transactionsResult.status === "rejected"
+            ? transactionsResult.reason
+            : "Invalid format",
         );
         setAllPendingTransactions([]);
-        setAccountData(null);
-        setSalesData(null);
-      } finally {
-        setIsLoadingTransactions(false);
-        setIsLoadingAccount(false);
-        setIsLoadingSales(false);
-        console.log("Home: Initial data fetch attempt finished.");
       }
-    }
-    fetchInitialData();
-  }, [accountId]); // Re-fetch if accountId changes
-
-  // --- Fetch Salary Breakdown ---
-  const fetchBreakdown = useCallback(async () => {
-    if (!accountId || isLoadingBreakdown) return;
-    setIsLoadingBreakdown(true);
-    try {
-      const data = await getSalaryBreakdown(accountId);
-      setSalaryBreakdown(data);
     } catch (error) {
-      // Ensure action exists
-      console.error("Home: Error fetching salary breakdown:", error);
+      console.error("Unexpected fetch error:", error);
+      setAccountData(null);
+      setSalesData(null);
+      setAllPendingTransactions([]);
+    } finally {
+      setIsLoadingAccount(false);
+      setIsLoadingSales(false);
+      setIsLoadingTransactions(false);
+    }
+  }, [accountId]);
+
+  // --- Initial Data Fetch (Stable) ---
+  useEffect(() => {
+    if (accountId) fetchAllData();
+  }, [accountId, fetchAllData]);
+
+  // --- Socket Event Handling Effect (Stable) ---
+  useEffect(() => {
+    if (!socket) return;
+    // Define handlers using useCallback or ensure dependencies are listed if needed
+    const handleAvailedServiceUpdate = (
+      updatedServiceData: AvailedServicesProps,
+    ) => {
+      if (!updatedServiceData?.id) return;
+      setProcessingServeActions((prev) => {
+        if (!prev.has(updatedServiceData.id)) return prev;
+        const next = new Set(prev);
+        next.delete(updatedServiceData.id);
+        return next;
+      });
+      setAllPendingTransactions((prevTransactions) =>
+        prevTransactions.map((tx) => {
+          if (tx.id !== updatedServiceData.transactionId) return tx;
+          const updatedServices = (tx.availedServices ?? []).map((s) =>
+            s.id === updatedServiceData.id
+              ? { ...s, ...updatedServiceData }
+              : s,
+          );
+          return { ...tx, availedServices: updatedServices };
+        }),
+      );
+    };
+    const handleTransactionComplete = (data: { id: string }) => {
+      if (!data?.id) return;
+      setAllPendingTransactions((prev) => prev.filter((t) => t.id !== data.id));
+    };
+    const handleActionError = (
+      error: { availedServiceId?: string; message?: string },
+      eventName: string,
+    ) => {
+      console.error(`Socket Error [${eventName}]:`, error);
+      if (error?.availedServiceId) {
+        setProcessingServeActions((prev) => {
+          if (!prev.has(error.availedServiceId!)) return prev;
+          const next = new Set(prev);
+          next.delete(error.availedServiceId!);
+          return next;
+        });
+      } /* Add toast error */
+    };
+    // Attach/Detach Listeners
+    socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
+    socket.on("transactionCompleted", handleTransactionComplete);
+    socket.on("serviceMarkServedError", (err) =>
+      handleActionError(err, "serviceMarkServedError"),
+    );
+    socket.on("serviceUnmarkServedError", (err) =>
+      handleActionError(err, "serviceUnmarkServedError"),
+    );
+    socket.on("serviceCheckError", (err) =>
+      handleActionError(err, "serviceCheckError"),
+    );
+    socket.on("serviceUncheckError", (err) =>
+      handleActionError(err, "serviceUncheckError"),
+    );
+    return () => {
+      socket.off("availedServiceUpdated", handleAvailedServiceUpdate);
+      socket.off("transactionCompleted", handleTransactionComplete);
+      socket.off("serviceMarkServedError");
+      socket.off("serviceUnmarkServedError");
+      socket.off("serviceCheckError");
+      socket.off("serviceUncheckError");
+    };
+  }, [socket]); // Only depends on socket instance
+
+  // --- Modal Data Fetching Callbacks (Stable) ---
+  const fetchBreakdown = useCallback(async () => {
+    if (
+      !accountId ||
+      !currentPeriod.start ||
+      !currentPeriod.end ||
+      isLoadingBreakdown
+    )
+      return;
+    setIsLoadingBreakdown(true);
+    setSalaryBreakdown([]);
+    try {
+      const data = await getSalaryBreakdown(
+        accountId,
+        currentPeriod.start,
+        currentPeriod.end,
+      );
+      setSalaryBreakdown(data || []);
+    } catch (error) {
+      console.error("fetchBreakdown Error:", error);
       setSalaryBreakdown([]);
     } finally {
       setIsLoadingBreakdown(false);
     }
-  }, [accountId, isLoadingBreakdown]);
+  }, [accountId, currentPeriod.start, currentPeriod.end, isLoadingBreakdown]);
 
-  // --- Socket Handlers ---
-  const handleSocketUpdates = useCallback((data: any, eventType: string) => {
-    console.log(`Home: Socket event [${eventType}] ID: ${data.id}`);
-    if (eventType === "transactionCompleted") {
-      setAllPendingTransactions((prev) => prev.filter((t) => t.id !== data.id));
-    } else if (eventType === "availedServiceUpdated") {
-      setProcessingActions((prev) => {
-        const next = new Set(prev);
-        next.delete(data.id);
-        return next;
-      });
-      setAllPendingTransactions((prev) =>
-        prev.map((tx) =>
-          tx.id === data.transactionId
-            ? {
-                ...tx,
-                availedServices: tx.availedServices.map((s) =>
-                  s.id === data.id
-                    ? {
-                        ...data,
-                        customerName: tx.customer?.name ?? "?",
-                        service: {
-                          id: data.service?.id ?? "?",
-                          title: data.service?.title ?? "?",
-                        },
-                      }
-                    : s,
-                ),
-              }
-            : tx,
-        ),
+  const fetchAttendance = useCallback(async () => {
+    if (
+      !accountId ||
+      !currentPeriod.start ||
+      !currentPeriod.end ||
+      isLoadingAttendance
+    )
+      return;
+    setIsLoadingAttendance(true);
+    setAttendanceError(null);
+    setAttendanceRecords([]);
+    try {
+      const data = await getAttendanceForPeriod(
+        accountId,
+        currentPeriod.start,
+        currentPeriod.end,
       );
+      setAttendanceRecords(data || []);
+    } catch (error: any) {
+      console.error("fetchAttendance Error:", error);
+      setAttendanceRecords([]);
+      setAttendanceError(error.message || "Err");
+    } finally {
+      setIsLoadingAttendance(false);
     }
-  }, []); // Dependencies usually empty if using functional updates
+  }, [accountId, currentPeriod.start, currentPeriod.end, isLoadingAttendance]);
 
-  const handleSocketError = useCallback((error: any) => {
-    console.error(`Home: Socket Error:`, error.message, error);
-    if (error.availedServiceId) {
-      setProcessingActions((prev) => {
-        const next = new Set(prev);
-        next.delete(error.availedServiceId);
-        return next;
-      });
+  const fetchPayslipStatus = useCallback(async () => {
+    if (
+      !accountId ||
+      !currentPeriod.start ||
+      !currentPeriod.end ||
+      !isValid(currentPeriod.start) ||
+      !isValid(currentPeriod.end)
+    )
+      return;
+    setIsPayslipStatusLoading(true);
+    setPayslipStatus(null);
+    try {
+      const status = await getPayslipStatusForPeriod(
+        accountId,
+        currentPeriod.start,
+        currentPeriod.end,
+      );
+      setPayslipStatus(status);
+    } catch (error) {
+      console.error("Failed fetch payslip status:", error);
+      setPayslipStatus(null);
+    } finally {
+      setIsPayslipStatusLoading(false);
     }
-    // Optionally show user feedback via state/toast
-  }, []);
+  }, [accountId, currentPeriod.start, currentPeriod.end]);
 
-  useEffect(() => {
-    if (!socket) return;
-    console.log("Home: Attaching socket listeners.");
-    // Define handlers locally to ensure correct references in cleanup
-    const serviceUpdateHandler = (d: any) =>
-      handleSocketUpdates(d, "availedServiceUpdated");
-    const transactionCompleteHandler = (d: any) =>
-      handleSocketUpdates(d, "transactionCompleted");
-
-    socket.on("availedServiceUpdated", serviceUpdateHandler);
-    socket.on("transactionCompleted", transactionCompleteHandler);
-    socket.on("serviceCheckError", handleSocketError);
-    socket.on("serviceUncheckError", handleSocketError);
-    socket.on("serviceMarkServedError", handleSocketError);
-    socket.on("serviceUnmarkServedError", handleSocketError);
-
-    return () => {
-      console.log("Home: Removing socket listeners.");
-      socket.off("availedServiceUpdated", serviceUpdateHandler);
-      socket.off("transactionCompleted", transactionCompleteHandler);
-      socket.off("serviceCheckError", handleSocketError);
-      socket.off("serviceUncheckError", handleSocketError);
-      socket.off("serviceMarkServedError", handleSocketError);
-      socket.off("serviceUnmarkServedError", handleSocketError);
-    };
-  }, [socket, handleSocketUpdates, handleSocketError]); // Re-attach if socket or handlers change
-
-  // --- Filtered Data ---
+  // --- Memoized Derived State (Stable) ---
   const servicesCheckedByMe = useMemo(() => {
     if (!accountId || !allPendingTransactions) return [];
+    // Ensure Status enum is correctly imported/used if needed here
     return allPendingTransactions
-      .flatMap((tx) => tx.availedServices)
+      .filter((tx) => tx.status === Status.PENDING)
+      .flatMap((tx) => tx.availedServices ?? [])
       .filter((s) => s.checkedById === accountId);
   }, [allPendingTransactions, accountId]);
 
-  // --- Modal Control Functions ---
+  // --- Modal Control Functions (Stable) ---
   const openMyServicesModal = () => setIsMyServicesModalOpen(true);
   const closeMyServicesModal = () => setIsMyServicesModalOpen(false);
-  const openSalaryDetailsModal = () => {
-    setIsSalaryDetailsModalOpen(true);
-    fetchBreakdown();
-  };
+  const openSalaryDetailsModal = useCallback(() => {
+    if (accountData) {
+      setIsSalaryDetailsModalOpen(true);
+      fetchBreakdown();
+      fetchAttendance();
+      fetchPayslipStatus();
+    } else {
+      console.warn("Cannot open salary modal: Account data missing.");
+    }
+  }, [accountData, fetchBreakdown, fetchAttendance, fetchPayslipStatus]);
   const closeSalaryDetailsModal = () => setIsSalaryDetailsModalOpen(false);
   const openSalesDetailsModal = () => setIsSalesDetailsModalOpen(true);
   const closeSalesDetailsModal = () => setIsSalesDetailsModalOpen(false);
 
-  // --- Body Scroll Lock Effect Removed, handled by Modal component ---
-
-  // --- Reusable Loading Widget ---
-  const LoadingWidget = ({
-    text = "Loading...",
-    height = "h-[150px]",
-  }: {
-    text?: string;
-    height?: string;
-  }) => (
-    <div
-      className={`flex ${height} w-full items-center justify-center rounded-lg border border-customGray/20 bg-customOffWhite/80 p-4 text-sm text-customBlack/70 shadow-sm backdrop-blur-sm`}
-    >
-      <svg
-        className="-ml-1 mr-3 h-5 w-5 animate-spin text-customDarkPink"
-        xmlns="http://www.w3.org/2000/svg"
-        fill="none"
-        viewBox="0 0 24 24"
-      >
-        <circle
-          className="opacity-25"
-          cx="12"
-          cy="12"
-          r="10"
-          stroke="currentColor"
-          strokeWidth="4"
-        ></circle>
-        <path
-          className="opacity-75"
-          fill="currentColor"
-          d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-        ></path>
-      </svg>
-      {text}
-    </div>
-  );
-
-  // --- Invalid State Render ---
-  if (!accountId && !isLoadingAccount) {
+  if (isLoadingAccount && !accountData)
     return (
-      <div className="flex h-full items-center justify-center p-6">
-        {" "}
-        {/* Ensure h-full if parent expects it */}
-        <div className="text-center text-red-600">
-          <h2 className="mb-2 text-xl font-semibold">Error</h2>
-          <p>Invalid or missing Account ID. Cannot load dashboard.</p>
+      <div className="flex h-screen items-center justify-center">
+        <LoadingWidget text="Loading Dashboard..." height="h-auto" />
+      </div>
+    );
+  if (!isLoadingAccount && !accountId) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-gray-100 p-4">
+        <div className="w-full max-w-md rounded-lg border border-red-300 bg-white p-6 text-center shadow-md sm:p-8">
+          <AlertCircle className="mx-auto mb-4 h-12 w-12 text-red-500" />
+          <h2 className="mb-2 text-xl font-semibold text-red-700">
+            Access Denied
+          </h2>
+          <p className="mb-6 text-sm text-gray-600">
+            We couldn't identify your account, or you do not have permission to
+            view this page. Please try logging in again.
+          </p>
+          <Link href="/login" passHref>
+            {" "}
+            {/* Make sure '/login' is your actual login route */}
+            <Button
+              // Use your Button component's styling
+              className="w-full bg-red-600 text-white hover:bg-red-700 focus:ring-red-500"
+              // Add appropriate props like size or invert if needed
+              // size="md"
+            >
+              Go to Login
+            </Button>
+          </Link>
         </div>
       </div>
     );
   }
 
-  // --- Main Render ---
+  const isLoadingTxWidget = isLoadingTransactions;
+
   return (
-    // Fragment because layout provides the main structure
     <>
-      {/* --- Dashboard Header --- */}
+      {/* Header */}
       <div className="mb-6 flex flex-shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="truncate text-xl font-semibold text-customBlack sm:text-2xl md:text-3xl">
-          {isPageLoading
-            ? "Loading Dashboard..."
-            : `Welcome, ${accountData?.name ?? "User"}!`}
+          Welcome, {accountData?.name ?? "User"}!
         </h1>
+        {socketError && (
+          <div className="text-xs text-red-600">{socketError}</div>
+        )}
         <Link
           href={accountId ? `/dashboard/${accountId}/work-queue` : "#"}
           passHref
-          className={!accountId ? "pointer-events-none" : ""}
+          className={!accountId ? "pointer-events-none opacity-50" : ""}
+          aria-disabled={!accountId}
         >
           <Button
             size="sm"
-            disabled={isPageLoading || !accountId}
-            className="w-full bg-customDarkPink text-white hover:bg-customDarkPink/90 sm:w-auto"
+            disabled={isLoadingTxWidget || !accountId}
+            className="w-full shrink-0 bg-customDarkPink text-white hover:bg-customDarkPink/90 sm:w-auto"
           >
-            Work Queue ({isPageLoading ? "..." : allPendingTransactions.length})
+            Work Queue (
+            {isLoadingTxWidget ? "..." : allPendingTransactions.length})
           </Button>
         </Link>
       </div>
 
-      {/* --- Main Content Grid --- */}
+      {/* Main Grid */}
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-3 xl:gap-8">
-        {/* --- Primary Column --- */}
+        {/* Left Col */}
         <div className="space-y-6 xl:col-span-2">
-          {/* Attendance Widget Wrapper */}
           <div className="min-h-[300px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-            {" "}
-            {/* Added min-h */}
+            <h3 className="mb-3 text-base font-semibold">Daily Attendance</h3>
             {accountId ? (
               <ManageAttendance currentUserId={accountId} />
             ) : (
-              <LoadingWidget text="Loading Attendance..." height="h-full" />
+              <LoadingWidget text="Loading..." />
             )}
           </div>
-          {/* Sales Preview Chart Wrapper */}
           <div className="w-full">
             <PreviewSales
               monthlyData={salesData?.monthlySales ?? []}
@@ -395,36 +453,26 @@ export default function Home() {
             />
           </div>
         </div>
-
-        {/* --- Secondary Column --- */}
+        {/* Right Col */}
         <div className="flex flex-col space-y-6 xl:col-span-1">
-          {/* Calendar Widget Wrapper */}
           <div className="w-full">
-            {" "}
-            <Calendar />{" "}
+            <CalendarUI />
           </div>
-          {/* Claimed Services Preview Wrapper */}
           <div className="min-h-[150px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-            {" "}
-            {/* Added min-h */}
-            <h3 className="mb-3 text-base font-semibold text-customBlack">
+            <h3 className="mb-3 text-base font-semibold">
               Your Claimed Services
             </h3>
-            {isLoadingTransactions ? (
-              <LoadingWidget text="Loading services..." height="h-[150px]" />
-            ) : (
-              <PreviewListedServices
-                checkedServices={servicesCheckedByMe}
-                onOpenModal={openMyServicesModal}
-              />
-            )}
+            <PreviewListedServices
+              checkedServices={servicesCheckedByMe}
+              onOpenModal={openMyServicesModal}
+              isLoading={isLoadingTxWidget}
+            />
           </div>
-          {/* Salary Preview Wrapper */}
           {isLoadingAccount ? (
-            <LoadingWidget text="Loading salary info..." height="h-[170px]" />
+            <LoadingWidget height="h-[170px]" />
           ) : accountData?.role.includes(Role.OWNER) ? (
-            <div className="rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 text-center text-sm text-customBlack/70 shadow-custom backdrop-blur-sm">
-              Salary view not applicable.
+            <div className="flex min-h-[170px] items-center justify-center rounded-lg border p-4 text-sm text-gray-500">
+              Owner view.
             </div>
           ) : accountData ? (
             <PreviewUserSalary
@@ -433,59 +481,97 @@ export default function Home() {
               isLoading={false}
             />
           ) : (
-            <div className="rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 text-center text-sm text-red-500 shadow-custom backdrop-blur-sm">
-              Could not load salary info.
+            <div className="flex min-h-[170px] items-center justify-center rounded-lg border border-red-300 p-4 text-sm text-red-600">
+              Salary info error.
             </div>
           )}
         </div>
       </div>
 
-      {/* --- Use the NEW Modal Component --- */}
+      {/* --- Modals --- */}
+      {/* My Services Modal */}
       <Modal
         isOpen={isMyServicesModalOpen}
         onClose={closeMyServicesModal}
-        title={<DialogTitle>Claimed Services</DialogTitle>}
+        title={<DialogTitle>Manage Claimed Services</DialogTitle>}
+        size="lg"
       >
-        {accountId && (
+        {accountId && socket ? (
           <ExpandedListedServices
             services={servicesCheckedByMe}
             accountId={accountId}
             socket={socket}
             onClose={closeMyServicesModal}
-            processingServeActions={processingActions}
-            setProcessingServeActions={setProcessingActions}
+            processingServeActions={processingServeActions}
+            setProcessingServeActions={setProcessingServeActions}
           />
+        ) : (
+          <LoadingWidget />
         )}
       </Modal>
 
+      {/* Salary Details Modal */}
       <Modal
         isOpen={isSalaryDetailsModalOpen}
         onClose={closeSalaryDetailsModal}
-        title={<DialogTitle>Salary Details</DialogTitle>}
+        title={
+          <DialogTitle>
+            Salary & Attendance (
+            {isValid(currentPeriod.start)
+              ? format(currentPeriod.start, "MMMM yyyy")
+              : "..."}
+            )
+          </DialogTitle>
+        }
+        size="xl"
       >
-        {accountData && (
+        {accountData ? (
           <ExpandedUserSalary
             breakdownItems={salaryBreakdown}
+            attendanceRecords={attendanceRecords}
+            accountData={accountData}
             onClose={closeSalaryDetailsModal}
-            isLoading={isLoadingBreakdown}
-            currentTotalSalary={accountData.salary}
+            isLoading={isLoadingBreakdown || isLoadingAttendance} // Main loading
+            periodStartDate={currentPeriod.start}
+            periodEndDate={currentPeriod.end}
+            attendanceError={attendanceError}
+            // Payslip Props
+            onRequestPayslip={requestPayslipGeneration}
+            initialPayslipStatus={payslipStatus}
+            isPayslipStatusLoading={isPayslipStatusLoading} // Status loading
           />
+        ) : (
+          <div className="p-6 text-center">
+            {isLoadingAccount ? (
+              <LoadingWidget text="Loading..." />
+            ) : (
+              <div className="text-red-600">Account details unavailable.</div>
+            )}
+          </div>
         )}
       </Modal>
 
+      {/* Sales Details Modal */}
       <Modal
         isOpen={isSalesDetailsModalOpen}
         onClose={closeSalesDetailsModal}
-        title={<DialogTitle>Sales Details</DialogTitle>}
+        title={<DialogTitle>Sales Details (Last 6 Months)</DialogTitle>}
+        size="xl"
       >
-        {salesData && (
+        {isLoadingSales ? (
+          <LoadingWidget />
+        ) : salesData ? (
           <ExpandedSales
             monthlyData={salesData.monthlySales}
             paymentTotals={salesData.paymentMethodTotals}
             grandTotal={salesData.grandTotal}
-            isLoading={isLoadingSales}
+            isLoading={false}
             onClose={closeSalesDetailsModal}
           />
+        ) : (
+          <div className="p-6 text-center text-red-500">
+            Failed to load sales data.
+          </div>
         )}
       </Modal>
     </>

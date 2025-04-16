@@ -1,34 +1,26 @@
-// components/cashier/CashierInterceptedModal.tsx (or your path)
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useParams, useRouter } from "next/navigation";
 
-// --- Component Imports ---
 import DialogBackground from "@/components/Dialog/DialogBackground";
 import DialogForm from "@/components/Dialog/DialogForm";
 import DateTimePicker from "@/components/Inputs/DateTimePicker";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
 import ServicesSelect from "@/components/Inputs/ServicesSelect";
-import SelectedItem from "@/components/ui/cashier/SelectedItem"; // Corrected component name
+import SelectedItem from "@/components/ui/cashier/SelectedItem";
 import CustomerInput from "@/components/Inputs/CustomerInput";
 import Button from "@/components/Buttons/Button";
-import VoucherInput from "@/components/Inputs/VoucherInput"; // Keep if using vouchers
-
-// --- Actions and State ---
-import { transactionSubmission } from "@/lib/ServerAction"; // Removed unused imports
+import VoucherInput from "@/components/Inputs/VoucherInput";
+import { PaymentMethod } from "@prisma/client";
+import { transactionSubmission } from "@/lib/ServerAction";
 import { RootState, AppDispatch } from "@/lib/reduxStore";
-import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice"; // Import slice
-// Import NEW data slice actions
-// Assuming fetchServices and fetchServiceSets are defined in DataSlice
+import { cashierActions } from "@/lib/Slices/CashierSlice";
 import { fetchServices, fetchServiceSets } from "@/lib/Slices/DataSlice";
-
-// --- Types ---
-// Import FetchedItem from CENTRAL location
+import { CashierState } from "@/lib/Slices/CashierSlice";
 
 import { FetchedItem } from "@/lib/Types";
-// --- Options --- Define these constants ---
 const serviceTypeOptions = [
   { id: "single", title: "Single Service" },
   { id: "set", title: "Service Set" },
@@ -44,29 +36,19 @@ const paymentMethodOptions = [
   { id: "ewallet", title: "E-wallet" },
   { id: "bank", title: "Bank" },
 ];
-// --- End Options ---
 
 export default function CashierInterceptedModal() {
-  // const { accountID: rawAccountID } = useParams(); // Keep if needed for other logic, else remove
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
-  // const accountID = Array.isArray(rawAccountID) ? rawAccountID[0] : rawAccountID; // Keep if needed
 
-  // --- State ---
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  // --- Redux State ---
-  // Destructure using ACTUAL names from DataSlice state
-  const {
-    services, // Assuming DataSlice has 'services' state for single services
-    serviceSets, // Assuming DataSlice has 'serviceSets' state
-    itemsLoading, // Assuming DataSlice has 'itemsLoading' state
-    itemsError, // Assuming DataSlice has 'itemsError' state
-  } = useSelector((state: RootState) => state.data); // Ensure 'data' matches slice name key
+  const { services, serviceSets, itemsLoading, itemsError } = useSelector(
+    (state: RootState) => state.data,
+  );
 
   const cashierForm = useSelector((state: RootState) => state.cashier);
-  // Destructure state from CashierSlice (ensure serviceType exists)
   const {
     name,
     email,
@@ -74,23 +56,17 @@ export default function CashierInterceptedModal() {
     grandTotal,
     totalDiscount,
     subTotal,
-    serviceType, // Make sure CashierSlice includes this
+    serviceType,
     serveTime,
     paymentMethod,
-    voucherCode,
   } = cashierForm;
 
-  // --- Effects ---
-  // Fetch BOTH services and sets on initial mount
   useEffect(() => {
     console.log("Dispatching fetchServices and fetchServiceSets");
-    dispatch(fetchServices()); // Dispatch action defined in DataSlice
-    dispatch(fetchServiceSets()); // Dispatch action defined in DataSlice
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dispatch]); // dispatch should be stable
+    dispatch(fetchServices());
+    dispatch(fetchServiceSets());
+  }, [dispatch]);
 
-  // --- Callbacks ---
-  // Handle select changes for Service Type, Serve Time, Payment Method
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
       function isValidServiceType(v: string): v is CashierState["serviceType"] {
@@ -99,17 +75,16 @@ export default function CashierInterceptedModal() {
       function isValidServeTime(v: string): v is CashierState["serveTime"] {
         return v === "now" || v === "later";
       }
-      function isValidPaymentMethod(
-        v: string,
-      ): v is CashierState["paymentMethod"] {
-        return v === "cash" || v === "ewallet" || v === "bank";
-      }
+      const isPM = (v: string): v is PaymentMethod =>
+        v === PaymentMethod.cash ||
+        v === PaymentMethod.ewallet ||
+        v === PaymentMethod.bank;
 
       if (key === "serviceType" && isValidServiceType(value)) {
         dispatch(cashierActions.setServiceType(value));
       } else if (key === "serveTime" && isValidServeTime(value)) {
         dispatch(cashierActions.setServeTime(value));
-      } else if (key === "paymentMethod" && isValidPaymentMethod(value)) {
+      } else if (key === "paymentMethod" && isPM(value)) {
         dispatch(cashierActions.setPaymentMethod(value));
       } else {
         console.warn(`Unhandled select change: "${key}":"${value}"`);
@@ -118,12 +93,10 @@ export default function CashierInterceptedModal() {
     [dispatch],
   );
 
-  // Handle form submission click
   async function handleConfirmClick() {
     setIsSubmitting(true);
     setFormErrors({});
 
-    // Basic Frontend Checks
     let errors: Record<string, string> = {};
     if (!name?.trim()) errors.name = "Customer name is required.";
     if (!servicesAvailed || servicesAvailed.length === 0)
@@ -161,39 +134,35 @@ export default function CashierInterceptedModal() {
     }
   }
 
-  // Handle cancel
   const handleCancel = () => {
     dispatch(cashierActions.reset());
     router.back();
   };
 
-  // --- Create itemsToDisplay based on serviceType ---
   const itemsToDisplay = useMemo((): FetchedItem[] => {
     console.log(`Filtering based on serviceType: ${serviceType}`);
-    // Ensure the source arrays (services, serviceSets) exist before mapping
     if (serviceType === "single") {
       return (
         services?.map((s) => ({
           id: s.id,
           title: s.title,
           price: s.price,
-          type: "service" as "service" | "set", // Assert type
+          type: "service" as "service" | "set",
         })) ?? []
-      ); // Return empty array if services is null/undefined
+      );
     } else if (serviceType === "set") {
       return (
         serviceSets?.map((set) => ({
           id: set.id,
           title: set.title,
           price: set.price,
-          type: "set" as "service" | "set", // Assert type
+          type: "set" as "service" | "set",
         })) ?? []
-      ); // Return empty array if serviceSets is null/undefined
+      );
     }
     return [];
-  }, [services, serviceSets, serviceType]); // Correct dependencies
+  }, [services, serviceSets, serviceType]);
 
-  // --- Standard Classes ---
   const inputErrorClass = "mt-1 text-xs text-red-500";
   const generalErrorClass =
     "mx-auto my-2 w-[90%] rounded border border-red-300 bg-red-100 p-2 text-center text-sm font-medium text-red-600";
@@ -205,7 +174,6 @@ export default function CashierInterceptedModal() {
   const grandTotalClass = "mt-1 text-base font-semibold";
   const actionButtonsClass = "mx-auto mt-8 flex w-[90%] justify-around";
 
-  // --- Render ---
   return (
     <DialogBackground>
       <DialogForm onClose={handleCancel}>

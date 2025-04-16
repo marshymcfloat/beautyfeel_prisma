@@ -12,8 +12,11 @@ import {
   Role,
   DiscountRule,
   ServiceSet,
+  AvailedItemType,
+  Customer,
   Voucher,
   DiscountType,
+  PayslipStatus,
 } from "@prisma/client";
 import { withAccelerate } from "@prisma/extension-accelerate";
 import {
@@ -24,15 +27,22 @@ import {
   UIDiscountRuleWithServices,
   AccountForManagement,
   TransactionSubmissionResponse,
-} from "./Types";
-import {
+  AttendanceRecord,
+  CustomerProp,
+  AvailedServicesProps,
+  AccountInfo,
+  TransactionProps,
   AccountData,
   SalaryBreakdownItem,
   SALARY_COMMISSION_RATE,
   BranchForSelect,
+  PayslipData,
   EmployeeForAttendance,
+  PayslipStatusOption,
+  AvailedItem,
+  ServiceInfo,
 } from "./Types";
-
+import { CashierState } from "./Slices/CashierSlice";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { ParamValue } from "next/dist/server/request/params";
@@ -100,7 +110,7 @@ type ServiceAvailed = {
   price: number;
 };
 
-// Define CashierState interface based on your form structure
+/* // Define CashierState interface based on your form structure
 interface CashierState {
   name: string;
   date?: string; // Optional for 'serve now'
@@ -119,7 +129,7 @@ interface CashierState {
   totalDiscount: number;
   // Add branchId if it comes from the form or context
   // branchId?: string;
-}
+} */
 
 export async function getCustomer(name: string) {
   try {
@@ -284,13 +294,11 @@ const DiscountRuleSchema = z
       path: ["serviceIds"],
     },
   );
-
 export async function transactionSubmission(
   transactionForm: CashierState,
 ): Promise<TransactionSubmissionResponse> {
-  // Explicitly type the return Promise
   try {
-    console.log("Received Transaction Form:", transactionForm);
+    console.log("Received Transaction Form for Submission:", transactionForm);
 
     const {
       name,
@@ -303,63 +311,40 @@ export async function transactionSubmission(
       paymentMethod,
       grandTotal,
       totalDiscount,
-      // branchId, // Get branchId if needed
     } = transactionForm;
 
-    // --- Validation Logic ---
-    const errors: Record<string, string> = {}; // Keep internal errors as string for simplicity here
-
-    // MANDATORY: Customer Name
-    if (!name || !name.trim()) {
-      errors.name = "Customer name is required.";
-    }
-
-    // OPTIONAL Email: Validate format ONLY IF provided
-    const trimmedEmail = email ? email.trim() : "";
+    // --- Validation Logic (remains mostly the same) ---
+    const errors: Record<string, string> = {};
+    // ... (customer name, email, services array non-empty, payment method, serve time validation)
+    if (!name || !name.trim()) errors.name = "Customer name is required.";
+    const trimmedEmail = email?.trim();
     if (
       trimmedEmail &&
       !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(trimmedEmail)
-    ) {
+    )
       errors.email = "Please enter a valid email format or leave it blank.";
-    }
-
-    // MANDATORY: Services Availed
     if (!servicesAvailed || servicesAvailed.length === 0) {
-      errors.servicesAvailed = "At least one service must be selected.";
-      // Add a general message for easier display
+      errors.servicesAvailed = "At least one service or set must be selected.";
       if (!errors.general)
-        errors.general = "Please select at least one service.";
+        errors.general = "Please select at least one service or set.";
     } else {
-      // Additional validation for services array content
-      for (const service of servicesAvailed) {
-        if (!service.id || typeof service.id !== "string") {
-          errors.servicesAvailed =
-            "Invalid service data (missing or invalid ID).";
-          break; // Stop checking once an error is found
-        }
-        if (
-          typeof service.quantity !== "number" ||
-          service.quantity < 1 ||
-          !Number.isInteger(service.quantity)
-        ) {
-          errors.servicesAvailed = `Invalid quantity for service ${
-            service.name || service.id
-          }. Quantity must be a positive whole number.`;
+      /* Basic item validation */ for (const item of servicesAvailed) {
+        if (!item.id || typeof item.id !== "string") {
+          errors.servicesAvailed = "Invalid item data (missing ID).";
           break;
         }
-        // Allow price 0 (e.g., free gift), but not negative
-        if (typeof service.price !== "number" || service.price < 0) {
-          errors.servicesAvailed = `Invalid price for service ${
-            service.name || service.id
-          }. Price must be a non-negative number.`;
+        if (typeof item.originalPrice !== "number" || item.originalPrice < 0) {
+          errors.servicesAvailed = `Invalid price for item ${item.name || item.id}.`;
+          break;
+        }
+        if (item.type !== "service" && item.type !== "set") {
+          errors.servicesAvailed = `Invalid item type ('${item.type}') for ${item.name || item.id}.`;
           break;
         }
       }
       if (errors.servicesAvailed && !errors.general)
-        errors.general = "Invalid service data provided.";
+        errors.general = "Invalid item data provided.";
     }
-
-    // Payment Method validation
     if (
       !paymentMethod ||
       !["cash", "ewallet", "bank"].includes(paymentMethod)
@@ -367,233 +352,248 @@ export async function transactionSubmission(
       errors.paymentMethod = "Invalid payment method selected.";
       if (!errors.general) errors.general = "Please select a payment method.";
     }
-
-    // Serve Time validation
     if (serveTime === "later" && (!date || !time)) {
       errors.serveTime = "Date and time are required for later service.";
       if (!errors.general)
         errors.general = "Please select date and time for later service.";
     }
 
-    // --- Return errors if any ---
     if (Object.keys(errors).length > 0) {
-      console.log("Validation Errors:", errors);
-      // FIX: Add message and convert errors
+      console.log("Client-side Validation Errors found:", errors);
       return {
         success: false,
-        message: errors.general || "Validation failed. Please check the form.",
+        message: errors.general || "Validation failed.",
         errors: convertErrorsToStringArrays(errors),
       };
     }
 
     // --- Process Valid Data ---
     const newlyFormattedName = formatName(name.trim());
-    const customerEmailData = trimmedEmail.length > 0 ? trimmedEmail : null;
+    const customerEmailData = trimmedEmail || null;
 
-    // Parse bookedFor DateTime
-    let bookedFor = new Date(); // Default to now
+    // Parse bookedFor DateTime (remains the same)
+    let bookedFor = new Date();
+    // ... (bookedFor parsing logic)
     if (serveTime === "later" && date && time) {
       try {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time))
+          throw new Error("Date/Time format invalid");
         bookedFor = new Date(`${date}T${time}:00`);
-        if (isNaN(bookedFor.getTime())) {
-          throw new Error("Invalid date/time format resulting in NaN");
-        }
-      } catch (dateError) {
-        console.error("Error parsing date/time:", dateError);
-        const errorMsg = "Invalid date or time format provided.";
-        // FIX: Add message and format errors correctly
+        if (isNaN(bookedFor.getTime())) throw new Error("Invalid Date object");
+      } catch (dateError: any) {
+        const errorMsg = `Invalid date or time format: ${dateError.message}`;
         return {
           success: false,
           message: errorMsg,
-          errors: { serveTime: [errorMsg] }, // Ensure array format
+          errors: { serveTime: [errorMsg] },
         };
       }
     }
 
-    // Use a transaction for atomicity
+    // --- Database Operations within a Transaction ---
     const result = await prisma.$transaction(async (tx) => {
-      // Find or Create Customer
-      let customer = await tx.customer.findFirst({
+      // 1. Find or Create Customer (remains the same)
+      let customer: Customer;
+      // ... (customer find/create/update logic)
+      const existingCustomer = await tx.customer.findFirst({
         where: { name: newlyFormattedName },
       });
-
-      if (!customer) {
-        console.log(
-          `Customer "${newlyFormattedName}" not found, creating new one.`,
-        );
-        try {
-          customer = await tx.customer.create({
-            data: {
-              name: newlyFormattedName,
-              email: customerEmailData,
-            },
-          });
-          console.log("New customer created:", customer);
-        } catch (createError: any) {
-          let userMessage = "Failed to create customer record."; // Default message
-          if (
-            createError.code === "P2002" &&
-            createError.meta?.target?.includes("email")
-          ) {
-            console.error(
-              "Unique constraint failed for email:",
-              customerEmailData,
-            );
-            const existingCustomerWithEmail = await tx.customer.findUnique({
-              where: { email: customerEmailData! },
-            });
-            if (existingCustomerWithEmail) {
-              userMessage = `The email "${customerEmailData}" is already associated with customer "${existingCustomerWithEmail.name}". Please use a different email or find the existing customer.`;
-            } else {
-              userMessage = `The email "${customerEmailData}" is already in use.`;
-            }
-          }
-          // Throw error to be caught by the outer catch block of transactionSubmission
-          throw new Error(userMessage);
-        }
-      } else {
-        console.log("Found existing customer:", customer);
+      if (existingCustomer) {
+        customer = existingCustomer;
         if (customerEmailData && customer.email !== customerEmailData) {
-          console.log(
-            `Updating email for customer ${customer.id} to ${customerEmailData}`,
-          );
           try {
             await tx.customer.update({
               where: { id: customer.id },
               data: { email: customerEmailData },
             });
           } catch (updateError: any) {
-            let userMessage = "Failed to update customer email.";
-            if (
-              updateError.code === "P2002" &&
-              updateError.meta?.target?.includes("email")
-            ) {
-              userMessage = `The email "${customerEmailData}" is already associated with another customer.`;
-            }
-            // Throw error to be caught by the outer catch block
-            throw new Error(userMessage);
+            if (updateError.code === "P2002")
+              throw new Error(
+                `The email "${customerEmailData}" is already associated with another customer.`,
+              );
+            throw new Error("Failed to update customer email.");
           }
         }
-      }
-
-      // Handle Voucher
-      let voucher = null;
-      let actualDiscount = totalDiscount;
-
-      if (voucherCode) {
-        voucher = await tx.voucher.findUnique({
-          where: { code: voucherCode },
-        });
-
-        if (voucher) {
-          if (voucher.usedAt) {
-            // Throw error to be caught by the outer catch block
-            throw new Error(`Voucher "${voucherCode}" has already been used.`);
-          }
-          // Optional: Add more voucher validation logic here
-          await tx.voucher.update({
-            where: { id: voucher.id },
-            data: { usedAt: new Date() },
+      } else {
+        try {
+          customer = await tx.customer.create({
+            data: { name: newlyFormattedName, email: customerEmailData },
           });
-          console.log(`Voucher "${voucherCode}" marked as used.`);
-        } else {
-          // Throw error to be caught by the outer catch block
-          throw new Error(`Invalid voucher code "${voucherCode}".`);
+        } catch (createError: any) {
+          if (createError.code === "P2002")
+            throw new Error(
+              `The email "${customerEmailData}" is already in use.`,
+            );
+          throw new Error("Failed to create customer record.");
         }
       }
 
-      // Create the main Transaction record
+      // 2. Handle Voucher (remains the same)
+      let voucher: Voucher | null = null;
+      // ... (voucher find/update logic)
+      if (voucherCode) {
+        voucher = await tx.voucher.findUnique({ where: { code: voucherCode } });
+        if (!voucher)
+          throw new Error(`Invalid voucher code: "${voucherCode}".`);
+        if (voucher.usedAt)
+          throw new Error(`Voucher "${voucherCode}" already used.`);
+        await tx.voucher.update({
+          where: { id: voucher.id },
+          data: { usedAt: new Date() },
+        });
+      }
+
+      // 3. Create the Main Transaction Record (remains the same)
       const transaction = await tx.transaction.create({
         data: {
           customerId: customer.id,
-          paymentMethod: paymentMethod as PaymentMethod, // Cast if using Prisma enum type
-          grandTotal,
-          discount: actualDiscount,
+          paymentMethod: paymentMethod as PaymentMethod,
+          grandTotal: grandTotal,
+          discount: totalDiscount, // Use total discount calculated in frontend
           status: Status.PENDING,
-          bookedFor,
+          bookedFor: bookedFor,
           voucherId: voucher ? voucher.id : null,
-          // branchId: determinedBranchId, // Add if needed
         },
       });
       console.log("Transaction record created:", transaction.id);
 
-      // Create individual AvailedService records
+      // 4. *** EXPANDED: Create AvailedService Records ***
       const availedServiceCreatePromises = [];
-      let totalCreated = 0;
-      for (const inputService of servicesAvailed) {
-        for (let i = 0; i < inputService.quantity; i++) {
+
+      for (const item of servicesAvailed) {
+        // Iterate through items from the form
+        if (item.type === "service") {
+          // --- Handle Single Service ---
+          // Fetch the original service price for commission calculation
+          const originalService = await tx.service.findUnique({
+            where: { id: item.id },
+            select: { price: true },
+          });
+          const commission = originalService
+            ? Math.floor(originalService.price * SALARY_COMMISSION_RATE)
+            : 0;
+
           availedServiceCreatePromises.push(
             tx.availedService.create({
               data: {
                 transactionId: transaction.id,
-                serviceId: inputService.id,
-                quantity: 1,
-                price: inputService.price,
+                serviceId: item.id,
+                quantity: item.quantity, // Use quantity from cart item
+                price: item.originalPrice, // Price snapshot for this service item
+                commissionValue: commission, // Store calculated commission
+                // originatingSetId/Title are null for single services
                 checkedById: null,
                 servedById: null,
               },
             }),
           );
-          totalCreated++;
+        } else if (item.type === "set") {
+          // --- Handle Service Set: Expand into individual items ---
+          const serviceSet = await tx.serviceSet.findUnique({
+            where: { id: item.id },
+            include: { services: { select: { id: true, price: true } } }, // Include IDs and ORIGINAL prices of constituent services
+          });
+
+          if (!serviceSet || !serviceSet.services) {
+            console.warn(
+              `ServiceSet ID ${item.id} not found or has no services. Skipping.`,
+            );
+            continue; // Skip this set if not found or empty
+          }
+
+          // Create an AvailedService record for EACH service WITHIN the set
+          for (const serviceInSet of serviceSet.services) {
+            // Calculate commission based on the *individual service's original price* within the set
+            const commission = Math.floor(
+              serviceInSet.price * SALARY_COMMISSION_RATE,
+            );
+
+            availedServiceCreatePromises.push(
+              tx.availedService.create({
+                data: {
+                  transactionId: transaction.id,
+                  serviceId: serviceInSet.id, // Link to the individual service ID
+                  quantity: 1, // Quantity is always 1 for an expanded service from a set
+                  price: 0, // <<< Price for this specific line item is 0, as the set price is captured elsewhere (Transaction.grandTotal reflects the paid amount)
+                  commissionValue: commission, // Store calculated commission
+                  originatingSetId: serviceSet.id, // Link back to the set
+                  originatingSetTitle: item.name, // Store the set's name (denormalized)
+                  checkedById: null,
+                  servedById: null,
+                },
+              }),
+            );
+          }
         }
-      }
+      } // End loop through servicesAvailed
+
+      // Execute all create operations
       await Promise.all(availedServiceCreatePromises);
       console.log(
-        `${totalCreated} individual AvailedService records created and linked.`,
+        `${availedServiceCreatePromises.length} individual AvailedService records created and linked.`,
       );
 
-      return transaction;
-    }); // End of prisma.$transaction
+      // 5. Update Customer totalPaid (remains the same)
+      await tx.customer.update({
+        where: { id: customer.id },
+        data: { totalPaid: { increment: grandTotal } },
+      });
 
-    console.log("Transaction successfully created! ID:", result.id);
+      return transaction; // Return the main transaction object
+    }); // --- End of prisma.$transaction ---
+
+    console.log(
+      "Transaction successfully committed! Transaction ID:",
+      result.id,
+    );
     // Revalidate paths if necessary
     // revalidatePath("/admin/transactions");
-    // revalidatePath("/reports/sales");
 
-    // FIX: Return correct success shape
     return { success: true, transactionId: result.id };
   } catch (error: unknown) {
-    console.error("Error submitting transaction:", error);
-
-    const responseErrors: Record<string, string[]> = {}; // Use string[] for final errors
-    let responseMessage = "An unexpected error occurred during submission."; // Default message
-
+    // Error Handling (remains the same)
+    console.error("--- Transaction Submission Failed ---", error);
+    const responseErrors: Record<string, string[]> = {};
+    let responseMessage = "An unexpected error occurred.";
     if (error instanceof Error) {
-      responseMessage = error.message; // Use the caught error message by default
-
-      // Handle specific known errors and map to fields if possible
-      if (error.message.includes("already been used")) {
+      responseMessage = error.message;
+      if (
+        error.message.includes("voucher") &&
+        error.message.includes("already used")
+      ) {
         responseErrors.voucherCode = [error.message];
       } else if (error.message.includes("Invalid voucher code")) {
         responseErrors.voucherCode = [error.message];
-      } else if (error.message.includes("already associated with")) {
+      } else if (
+        error.message.includes("email") &&
+        error.message.includes("already associated")
+      ) {
         responseErrors.email = [error.message];
-      } else if (error.message.includes("already in use")) {
+      } else if (
+        error.message.includes("email") &&
+        error.message.includes("already in use")
+      ) {
         responseErrors.email = [error.message];
-      } else if (error.message.includes("Invalid date or time")) {
+      } else if (error.message.includes("Invalid date or time format")) {
         responseErrors.serveTime = [error.message];
-      }
-      // Add more specific mappings if needed
-
-      // If no specific field error was mapped, but we have a message, use general
-      if (Object.keys(responseErrors).length === 0 && responseMessage) {
-        responseErrors.general = [responseMessage];
+      } else if (error.message.includes("Failed to update customer email")) {
+        responseErrors.email = [error.message];
+      } else if (
+        error.message.includes("Failed to create new customer record")
+      ) {
+        responseErrors.name = [error.message];
       }
     }
-    // Ensure there's always a general message if no specific errors were mapped
-    if (!responseErrors.general && Object.keys(responseErrors).length === 0) {
+    if (Object.keys(responseErrors).length === 0 && responseMessage)
       responseErrors.general = [responseMessage];
-    }
-
-    // FIX: Return correct error shape
-    return {
-      success: false,
-      message: responseMessage, // Provide the main error message
-      errors: responseErrors, // Provide the field-specific errors (can be empty)
-    };
+    else if (
+      !responseErrors.general &&
+      Object.keys(responseErrors).length === 0
+    )
+      responseErrors.general = ["Unknown submission error."];
+    return { success: false, message: responseMessage, errors: responseErrors };
   }
 }
-
 export async function createGiftCertificateAction(formData: FormData) {
   const rawData = {
     code: formData.get("code"),
@@ -706,8 +706,209 @@ export async function checkGiftCertificateAction(
     };
   }
 }
+export async function getActiveTransactions(): Promise<TransactionProps[]> {
+  console.log("Server Action: Fetching active transactions (simplified)...");
+  try {
+    const transactions = await prisma.transaction.findMany({
+      where: {
+        status: Status.PENDING,
+      },
+      include: {
+        customer: {
+          select: { id: true, name: true, email: true },
+        },
+        availedServices: {
+          // Now always contains individual service items
+          include: {
+            service: {
+              // Always include the linked service
+              select: { id: true, title: true },
+            },
+            // Still include checkedBy/servedBy
+            checkedBy: {
+              select: { id: true, name: true },
+            },
+            servedBy: {
+              select: { id: true, name: true },
+            },
+          },
+          orderBy: { service: { title: "asc" } }, // Optional: Order services alphabetically
+        },
+      },
+      orderBy: {
+        bookedFor: "asc",
+      },
+    });
+    console.log(
+      `Server Action: Found ${transactions.length} active transactions.`,
+    );
 
-export async function getActiveTransactions() {
+    // Map Prisma result to your TransactionProps[] type
+    const mappedTransactions: TransactionProps[] = transactions.map((tx) => {
+      const customerProp: CustomerProp = {
+        id: tx.customerId,
+        name: tx.customer?.name ?? "Unknown Customer",
+        email: tx.customer?.email ?? null,
+      };
+
+      return {
+        id: tx.id,
+        createdAt: tx.createdAt,
+        bookedFor: tx.bookedFor,
+        customerId: tx.customerId,
+        voucherId: tx.voucherId,
+        discount: tx.discount,
+        paymentMethod: tx.paymentMethod,
+        grandTotal: tx.grandTotal,
+        status: tx.status,
+        customer: customerProp,
+        // Map AvailedService[] to AvailedServicesProps[]
+        availedServices: tx.availedServices.map((as): AvailedServicesProps => {
+          const checkedByInfo: AccountInfo | null = as.checkedBy
+            ? { id: as.checkedBy.id, name: as.checkedBy.name }
+            : null;
+          const servedByInfo: AccountInfo | null = as.servedBy
+            ? { id: as.servedBy.id, name: as.servedBy.name }
+            : null;
+
+          // Use ServiceInfo as determined in Fix 1
+          const serviceDetails: ServiceInfo = as.service
+            ? { id: as.service.id, title: as.service.title }
+            : null; // Use null if service relation might be missing
+
+          // Construct the final AvailedServicesProps object
+          return {
+            id: as.id,
+            transactionId: as.transactionId, // Added transactionId
+            serviceId: as.serviceId,
+            service: serviceDetails, // Use the ServiceInfo object
+            quantity: as.quantity,
+            price: as.price, // Price snapshot for this item
+            // --- ADD MISSING FIELDS ---
+            commissionValue: as.commissionValue, // Include commission value
+            status: as.status, // Include status
+            completedAt: as.completedAt, // Include completedAt (make sure it's selected if needed)
+            createdAt: as.createdAt, // Include createdAt
+            updatedAt: as.updatedAt, // Include updatedAt
+            // --- END ADDED FIELDS ---
+            originatingSetId: as.originatingSetId,
+            originatingSetTitle: as.originatingSetTitle,
+            checkedById: as.checkedById,
+            checkedBy: checkedByInfo,
+            servedById: as.servedById,
+            servedBy: servedByInfo,
+          };
+        }),
+      };
+    });
+    return mappedTransactions;
+  } catch (error) {
+    console.error(
+      "Server Action Error: Failed to fetch active transactions:",
+      error,
+    );
+    throw new Error("Could not retrieve active transactions.");
+  }
+}
+
+/* export async function getActiveTransactions(): Promise<TransactionProps[]> {
+  console.log("Server Action: Fetching active transactions...");
+  try {
+    const transactions = await prisma.transaction.findMany({
+      where: {
+        status: Status.PENDING, // Fetch only pending transactions
+      },
+      include: {
+        customer: {
+          // Include customer fields
+          select: { id: true, name: true, email: true },
+        },
+        availedServices: {
+          include: {
+            service: {
+              // Include service fields
+              select: { id: true, title: true },
+            },
+            // Include related account fields for checkedBy/servedBy
+            checkedBy: {
+              select: { id: true, name: true },
+            },
+            servedBy: {
+              select: { id: true, name: true },
+            },
+          },
+        },
+      },
+      orderBy: {
+        bookedFor: "asc", // Order by booking time
+      },
+    });
+    console.log(
+      `Server Action: Found ${transactions.length} active transactions.`,
+    );
+
+    const mappedTransactions: TransactionProps[] = transactions.map((tx) => {
+      // Construct CustomerProp safely
+      const customerProp: CustomerProp = {
+        id: tx.customerId, // Assuming customerId is always present
+        name: tx.customer?.name ?? "Unknown Customer", // Fallback name
+        email: tx.customer?.email ?? null, // Fallback email
+      };
+
+      return {
+        // Spread basic transaction fields
+        id: tx.id,
+        createdAt: new Date(tx.createdAt),
+        bookedFor: new Date(tx.bookedFor),
+        customerId: tx.customerId,
+        voucherId: tx.voucherId,
+        discount: tx.discount,
+        paymentMethod: tx.paymentMethod,
+        grandTotal: tx.grandTotal,
+        status: tx.status,
+        // Assign the constructed customer object
+        customer: customerProp,
+        // Map to AvailedServicesProps[]
+        availedServices: tx.availedServices.map((as): AvailedServicesProps => {
+          // Map AccountInfo safely, allowing null
+          const checkedByInfo: AccountInfo = as.checkedBy
+            ? { id: as.checkedBy.id, name: as.checkedBy.name }
+            : null;
+          const servedByInfo: AccountInfo = as.servedBy
+            ? { id: as.servedBy.id, name: as.servedBy.name }
+            : null;
+          // Map ServiceProps
+          const serviceInfo = {
+            id: as.service.id, // Assuming service is always included via Prisma relation
+            title: as.service.title,
+          };
+
+          return {
+            id: as.id,
+            price: as.price,
+            quantity: as.quantity,
+            serviceId: as.serviceId, // Foreign key directly from Prisma model
+            transactionId: as.transactionId, // Foreign key directly from Prisma model
+            service: serviceInfo, // Assign the mapped service object
+            checkedById: as.checkedById,
+            checkedBy: checkedByInfo, // Assign the mapped account object (or null)
+            servedById: as.servedById,
+            servedBy: servedByInfo, // Assign the mapped account object (or null)
+          };
+        }),
+      };
+    });
+    return mappedTransactions;
+  } catch (error) {
+    console.error(
+      "Server Action Error: Failed to fetch active transactions:",
+      error,
+    );
+    throw new Error("Could not retrieve active transactions."); // Re-throw
+  }
+} */
+
+/* export async function getActiveTransactions() {
   try {
     const activeTransactions = await prisma.transaction.findMany({
       // --- Add cacheStrategy here ---
@@ -769,7 +970,7 @@ export async function getActiveTransactions() {
       "Failed to fetch active transactions. Please try again later.",
     );
   }
-}
+} */
 
 export async function loggingIn(formData: FormData) {
   try {
@@ -814,27 +1015,51 @@ export async function loggingIn(formData: FormData) {
 }
 export async function getSalaryBreakdown(
   accountId: string,
+  periodStartDate: Date,
+  periodEndDate: Date,
 ): Promise<SalaryBreakdownItem[]> {
-  if (!accountId) {
-    throw new Error("Account ID is required.");
+  if (!accountId || !periodStartDate || !periodEndDate) {
+    console.error("getSalaryBreakdown: Missing required parameters.");
+    return [];
   }
+
+  const queryStartDate = new Date(periodStartDate);
+  queryStartDate.setHours(0, 0, 0, 0);
+  const queryEndDate = new Date(periodEndDate);
+  queryEndDate.setHours(23, 59, 59, 999);
+
+  console.log(
+    `Server Action: Fetching salary breakdown for Account ${accountId}`,
+    `\nPeriod Dates (Input): Start=${periodStartDate.toISOString()}, End=${periodEndDate.toISOString()}`,
+    `\nQuery Dates (Adjusted): Start=${queryStartDate.toISOString()}, End=${queryEndDate.toISOString()}`,
+  );
 
   try {
     const completedServices = await prisma.availedService.findMany({
       where: {
-        servedById: accountId,
+        servedById: accountId, // Must be served by this account
+        commissionValue: { gt: 0 }, // Must have earned commission
+        status: Status.DONE, // <<< Filter by status directly on AvailedService
+        completedAt: {
+          // <<< Filter by completedAt directly on AvailedService
+          gte: queryStartDate,
+          lte: queryEndDate,
+          not: null, // Ensure completedAt is not null
+        },
+        // You might still want to ensure the overall transaction isn't cancelled,
+        // though usually if an AvailedService is DONE, the Transaction is too.
         transaction: {
-          status: Status.DONE,
+          status: { not: Status.CANCELLED }, // Example: Optional check on parent transaction
         },
       },
       include: {
         service: {
-          select: { title: true },
+          select: { title: true, price: true },
         },
         transaction: {
+          // Still include transaction to get customer name
           select: {
-            // Select createdAt instead of updatedAt
-            createdAt: true,
+            // We no longer need the date from here
             customer: {
               select: { name: true },
             },
@@ -842,59 +1067,81 @@ export async function getSalaryBreakdown(
         },
       },
       orderBy: {
-        // Order by transaction creation date
-        transaction: {
-          createdAt: "desc",
-        },
+        completedAt: "desc", // <<< Order by AvailedService completion date
       },
-      // take: 50, // Consider pagination
     });
 
-    const breakdownItems: SalaryBreakdownItem[] = completedServices.map(
-      (as) => {
-        const commission = Math.floor(as.price * SALARY_COMMISSION_RATE);
-        return {
-          id: as.id,
-          serviceTitle: as.service.title,
-          customerName: as.transaction?.customer?.name ?? "Unknown",
-          // Use transaction.createdAt
-          transactionDate: new Date(as.transaction.createdAt), // Ensure it's a Date object
-          servicePrice: as.price,
-          commissionEarned: commission,
-        };
-      },
+    console.log(
+      `Server Action: Found ${completedServices.length} relevant completed services.`,
     );
 
+    const breakdownItems: SalaryBreakdownItem[] = completedServices
+      // completedAt check in where clause makes this safer, but filter remains good practice
+      .filter(
+        (as) =>
+          as.transaction &&
+          as.service &&
+          as.commissionValue != null &&
+          as.completedAt != null,
+      )
+      .map((as) => {
+        const commission = as.commissionValue!;
+        const originalServicePrice = as.service!.price;
+        const completionDate = as.completedAt!; // <<< Use completedAt from AvailedService
+
+        return {
+          id: as.id,
+          serviceTitle: as.service!.title,
+          customerName: as.transaction?.customer?.name ?? "N/A",
+          transactionDate: new Date(completionDate), // <<< Use date from AvailedService
+          servicePrice: originalServicePrice,
+          commissionEarned: commission,
+        };
+      });
+
+    console.log(
+      `Server Action: Mapped ${breakdownItems.length} items for salary breakdown.`,
+    );
     return breakdownItems;
   } catch (error) {
     console.error(
-      `Error fetching salary breakdown for account ${accountId}:`,
+      `Server Action Error: Failed to fetch salary breakdown for Account ${accountId}:`,
       error,
     );
-    throw new Error("Failed to fetch salary breakdown.");
+    return [];
   }
 }
-
 export async function getCurrentAccountData(
   accountId: string,
-): Promise<AccountData> {
+): Promise<AccountData | null> {
+  // Return null if not found or error
   if (!accountId) return null;
+  console.log(`Server Action: Fetching account data for ${accountId}`);
   try {
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       select: {
         id: true,
         name: true,
-        role: true, // Select the role array
+        role: true,
         salary: true,
+        dailyRate: true, // <<< Ensure dailyRate is selected
       },
     });
-    if (!account) return null;
-    // Ensure role is treated as Role[] if needed, Prisma client usually handles this
-    return account as AccountData; // Cast might be needed depending on exact setup
+    if (!account) {
+      console.warn(`Server Action: Account not found: ${accountId}`);
+      return null;
+    }
+    console.log(`Server Action: Account data found for ${account.name}`);
+    // Prisma should return correct types, casting might not be strictly needed
+    // but ensures alignment with AccountData interface
+    return account as AccountData;
   } catch (error) {
-    console.error(`Error fetching account data for ${accountId}:`, error);
-    return null;
+    console.error(
+      `Server Action Error: Error fetching account data for ${accountId}:`,
+      error,
+    );
+    return null; // Return null on error
   }
 }
 
@@ -1511,6 +1758,61 @@ export async function createAccountAction(formData: FormData) {
       success: false,
       message: `Database error: Failed to create account. ${error.message || "Unknown error"}`,
     };
+  }
+}
+
+export async function getAttendanceForPeriod(
+  accountId: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<AttendanceRecord[]> {
+  if (!accountId) {
+    throw new Error("Account ID is required for attendance fetching.");
+  }
+  if (!startDate || !endDate) {
+    throw new Error(
+      "Start and End dates are required for attendance fetching.",
+    );
+  }
+
+  console.log(
+    `Server Action: Fetching attendance for ${accountId} from ${startDate.toISOString().split("T")[0]} to ${endDate.toISOString().split("T")[0]}`,
+  );
+
+  try {
+    const attendanceData = await prisma.attendance.findMany({
+      where: {
+        accountId: accountId,
+        date: {
+          gte: startDate, // Greater than or equal to the start of the start day
+          lte: endDate, // Less than or equal to the end of the end day
+        },
+      },
+      select: {
+        date: true,
+        isPresent: true,
+        notes: true,
+      },
+      orderBy: {
+        date: "asc",
+      },
+    });
+
+    console.log(
+      `Server Action: Found ${attendanceData.length} attendance records.`,
+    );
+
+    // Ensure date is a Date object before returning (Prisma usually handles this)
+    return attendanceData.map((att) => ({
+      ...att,
+      date: new Date(att.date),
+    }));
+  } catch (error) {
+    console.error(
+      `Server Action Error: Error fetching attendance for account ${accountId}:`,
+      error,
+    );
+    throw new Error("Failed to fetch attendance data.");
   }
 }
 
@@ -2752,5 +3054,292 @@ export async function markAttendanceAction(
       success: false,
       message: `Failed to mark attendance: ${errorMessage}`,
     };
+  }
+}
+
+export async function requestPayslipGeneration(
+  accountId: string,
+  periodStartDate: Date,
+  periodEndDate: Date,
+): Promise<{
+  success: boolean;
+  message: string;
+  payslipId?: string;
+  status?: PayslipStatus;
+}> {
+  if (!accountId || !periodStartDate || !periodEndDate) {
+    return {
+      success: false,
+      message: "Missing required account ID or period dates.",
+    };
+  }
+  // Basic date validation
+  if (
+    !(periodStartDate instanceof Date) ||
+    isNaN(periodStartDate.getTime()) ||
+    !(periodEndDate instanceof Date) ||
+    isNaN(periodEndDate.getTime())
+  ) {
+    return { success: false, message: "Invalid date format provided." };
+  }
+
+  console.log(
+    `SERVER ACTION: Payslip request for ${accountId} from ${periodStartDate.toISOString().split("T")[0]} to ${periodEndDate.toISOString().split("T")[0]}`,
+  );
+
+  try {
+    // 1. Check if a payslip already exists
+    const existingPayslip = await prisma.payslip.findUnique({
+      where: {
+        accountId_periodStartDate_periodEndDate: {
+          accountId,
+          periodStartDate,
+          periodEndDate,
+        },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (existingPayslip) {
+      console.log(
+        `Payslip already exists (ID: ${existingPayslip.id}, Status: ${existingPayslip.status})`,
+      );
+      // Use existing status to provide accurate feedback
+      const statusMessage =
+        existingPayslip.status === PayslipStatus.PENDING
+          ? "requested and pending processing"
+          : "already generated/released";
+      return {
+        success: true, // Technically not an error, just informing
+        message: `Payslip for this period has already been ${statusMessage}.`,
+        payslipId: existingPayslip.id,
+        status: existingPayslip.status,
+      };
+    }
+
+    // 2. Calculate Salary Components (REPLACE PLACEHOLDERS)
+    // --- Base Salary Calculation ---
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { dailyRate: true },
+    });
+    if (!account) throw new Error("Employee account not found.");
+
+    const attendanceRecords = await prisma.attendance.findMany({
+      where: {
+        accountId: accountId,
+        date: { gte: periodStartDate, lte: periodEndDate },
+        isPresent: true,
+      },
+      select: { date: true }, // Only need dates to count
+    });
+    // Simple count for this example, refine if needed (e.g., based on work schedule)
+    const presentDaysCount = attendanceRecords.length;
+    const baseSalary = (account.dailyRate || 0) * presentDaysCount; // Assumes dailyRate is in smallest unit
+
+    // --- Commission Calculation ---
+    const availedServices = await prisma.availedService.findMany({
+      where: {
+        servedById: accountId, // Commission for services SERVED by this account
+        status: "DONE", // Only count completed services
+        completedAt: {
+          // Ensure completion date is within the period
+          gte: periodStartDate,
+          lte: periodEndDate, // Check end date inclusively if needed
+        },
+        // Add transaction date filter if commission is based on transaction date instead of completion date
+        // transaction: {
+        //    createdAt: { gte: periodStartDate, lte: periodEndDate }
+        // }
+      },
+      select: { commissionValue: true }, // Select pre-calculated commission
+    });
+    const totalCommissions = availedServices.reduce(
+      (sum, service) => sum + (service.commissionValue || 0),
+      0,
+    );
+
+    // TODO: Implement fetching/calculation for deductions and bonuses if applicable
+    const totalDeductions = 0; // Placeholder
+    const totalBonuses = 0; // Placeholder
+
+    // Calculate Net Pay
+    const netPay =
+      baseSalary + totalCommissions + totalBonuses - totalDeductions;
+
+    // 3. Create the new Payslip record
+    const newPayslip = await prisma.payslip.create({
+      data: {
+        accountId,
+        periodStartDate,
+        periodEndDate,
+        baseSalary, // Use calculated value
+        totalCommissions, // Use calculated value
+        totalDeductions, // Use calculated value
+        totalBonuses, // Use calculated value
+        netPay, // Use calculated value
+        status: PayslipStatus.PENDING, // Initial status
+      },
+    });
+
+    console.log(
+      `SERVER ACTION: Created new PENDING payslip (ID: ${newPayslip.id})`,
+    );
+
+    // Optional: Revalidate paths where admins view pending payslips
+    // revalidatePath('/admin/payroll'); // Example
+
+    return {
+      success: true,
+      message: "Payslip requested successfully! It's now pending processing.",
+      payslipId: newPayslip.id,
+      status: newPayslip.status, // Return the PENDING status
+    };
+  } catch (error: any) {
+    console.error("Error requesting payslip generation:", error);
+    // Return a generic error or a more specific one if possible
+    return {
+      success: false,
+      message: `Failed to request payslip: ${error.message || "An unexpected error occurred."}`,
+    };
+  }
+}
+
+export async function getPayslips(
+  filterStatus: string | null,
+): Promise<PayslipData[]> {
+  console.log("SERVER ACTION: Fetching payslips with filter:", filterStatus);
+  try {
+    const whereClause: any = {};
+    if (filterStatus && filterStatus !== "ALL") {
+      // Ensure filterStatus matches your enum values (PENDING, RELEASED)
+      if (
+        Object.values(PayslipStatus).includes(filterStatus as PayslipStatus)
+      ) {
+        whereClause.status = filterStatus as PayslipStatus;
+      } else {
+        console.warn(
+          `Invalid filter status received: ${filterStatus}. Fetching all.`,
+        );
+      }
+    }
+
+    const payslips = await prisma.payslip.findMany({
+      where: whereClause,
+      include: {
+        account: {
+          // Include employee name
+          select: { name: true },
+        },
+        // Add include for breakdown items if you store them related to Payslip
+        // OR fetch/calculate breakdown separately if needed inside the modal
+      },
+      orderBy: [
+        { periodEndDate: "desc" }, // Example ordering
+        { account: { name: "asc" } },
+      ],
+    });
+
+    // Map Prisma result to your PayslipData type
+    const payslipDataList: PayslipData[] = payslips.map((p) => ({
+      id: p.id,
+      employeeId: p.accountId,
+      employeeName: p.account.name, // Get name from related account
+      periodStartDate: p.periodStartDate,
+      periodEndDate: p.periodEndDate,
+      baseSalary: p.baseSalary,
+      totalCommissions: p.totalCommissions,
+      totalDeductions: p.totalDeductions,
+      totalBonuses: p.totalBonuses,
+      netPay: p.netPay,
+      status: p.status,
+      releasedDate: p.releasedDate,
+      // breakdownItems: [], // Populate this if needed/fetched
+    }));
+
+    return payslipDataList;
+  } catch (error) {
+    console.error("Error fetching payslips:", error);
+    throw new Error("Failed to fetch payslips."); // Throw error for client handling
+  }
+}
+
+export async function getPayslipStatusForPeriod(
+  accountId: string,
+  periodStartDate: Date,
+  periodEndDate: Date,
+): Promise<PayslipStatusOption> {
+  // Use the specific type defined in lib/Types.ts
+  if (
+    !accountId ||
+    !periodStartDate ||
+    !periodEndDate ||
+    !(periodStartDate instanceof Date) ||
+    isNaN(periodStartDate.getTime()) ||
+    !(periodEndDate instanceof Date) ||
+    isNaN(periodEndDate.getTime())
+  ) {
+    console.warn("getPayslipStatusForPeriod: Invalid input provided.");
+    return null; // Indicate error or invalid input
+  }
+
+  try {
+    const payslip = await prisma.payslip.findUnique({
+      where: {
+        accountId_periodStartDate_periodEndDate: {
+          accountId,
+          periodStartDate,
+          periodEndDate,
+        },
+      },
+      select: { status: true },
+    });
+    // If payslip exists, return its status, otherwise return 'NOT_FOUND'
+    return payslip?.status ?? "NOT_FOUND";
+  } catch (error: any) {
+    console.error("Error fetching payslip status:", error);
+    return null; // Indicate error fetching status
+  }
+}
+
+// --- Release Salary Action ---
+export async function releaseSalary(payslipId: string): Promise<void> {
+  // Return void or boolean/updated record
+  console.log(`SERVER ACTION: Releasing salary for payslip ID: ${payslipId}`);
+  if (!payslipId) {
+    throw new Error("Payslip ID is required.");
+  }
+  try {
+    const updatedPayslip = await prisma.payslip.update({
+      where: { id: payslipId, status: PayslipStatus.PENDING }, // Only update if PENDING
+      data: {
+        status: PayslipStatus.RELEASED,
+        releasedDate: new Date(),
+        // Optionally add releasedById if you track who released it
+      },
+    });
+
+    if (!updatedPayslip) {
+      // This could happen if the payslip wasn't found or wasn't PENDING
+      throw new Error("Payslip not found or already released.");
+    }
+
+    console.log(
+      `SERVER ACTION: Successfully released payslip ID: ${payslipId}`,
+    );
+    // Revalidate the path where the payslip list is displayed to update cache
+    revalidatePath("/dashboard/ M A N A G E / P A G E / PATH"); // <-- ADJUST YOUR PATH HERE
+
+    // return updatedPayslip; // Optionally return updated data
+  } catch (error: any) {
+    console.error(`Error releasing salary for ${payslipId}:`, error);
+    // Throw specific errors if possible
+    if (error.code === "P2025" || error.message.includes("not found")) {
+      // Example Prisma error code for record not found
+      throw new Error("Payslip not found or already released.");
+    }
+    throw new Error(
+      `Failed to release salary: ${error.message || "Database error"}`,
+    );
   }
 }

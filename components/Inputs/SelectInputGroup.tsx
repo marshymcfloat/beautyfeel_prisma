@@ -10,13 +10,15 @@ type SelectInputGroupProps<T extends { [key: string]: any }> = {
   labelKey?: keyof T;
   name: string;
   id?: string;
-  value?: string;
+  // Change this line: Allow string, null, or undefined
+  value?: string | null | undefined;
   onChange: (key: string, value: string) => void;
   placeholder?: string;
   error?: string;
   required?: boolean;
 };
 
+// No changes needed within the component function itself
 const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   label,
   options,
@@ -24,7 +26,7 @@ const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   labelKey = "title" as keyof T,
   name,
   id,
-  value,
+  value, // This 'value' can now be string | null | undefined
   onChange,
   placeholder = "Select...",
   error,
@@ -43,6 +45,7 @@ const SelectInputGroupInternal = <T extends { [key: string]: any }>({
         name={name}
         id={id || name}
         required={required}
+        // value ?? "" correctly handles string, null, or undefined
         value={value ?? ""}
         onChange={(e) => onChange(name, e.target.value)}
         className={`${inputHeight} w-full appearance-none rounded-md border-2 ${hasError ? "border-red-500" : "border-customDarkPink/60"} bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${!value || value === "" ? "text-gray-500" : "text-customBlack"}`} // Added appearance-none, padding right for arrow

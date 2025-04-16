@@ -57,7 +57,7 @@ export default function VoucherInput() {
       if (reduxVoucherCode) {
         console.log("VoucherInput: Input cleared, dispatching reset.");
         dispatch(
-          cashierActions.setDiscount({ status: false, value: 0, code: "" }),
+          cashierActions.setVoucher({ isValid: false, value: 0, code: "" }),
         );
       }
       return; // Exit early, no need for debounce timer
@@ -119,8 +119,8 @@ export default function VoucherInput() {
           // Dispatch success to Redux
           console.log(`VoucherInput: Dispatching success for ${data.code}`);
           dispatch(
-            cashierActions.setDiscount({
-              status: true,
+            cashierActions.setVoucher({
+              isValid: true,
               value: data.value,
               code: data.code, // Use code from server response (might have different casing)
             }),
@@ -144,7 +144,7 @@ export default function VoucherInput() {
               `VoucherInput: Fetch failed/invalid for ${debouncedValue}, dispatching reset as it matches Redux.`,
             );
             dispatch(
-              cashierActions.setDiscount({ status: false, value: 0, code: "" }),
+              cashierActions.setVoucher({ isValid: false, value: 0, code: "" }),
             );
           } else {
             console.log(

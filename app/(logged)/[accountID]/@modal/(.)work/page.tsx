@@ -1,26 +1,30 @@
-// src/components/cashier/WorkInterceptedModal.tsx (or your path)
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { io, Socket } from "socket.io-client";
-import { ChevronLeft, Check, X as IconX, AlertCircle } from "lucide-react"; // Renamed X to IconX to avoid conflict
-
-// --- Component Imports ---
+import {
+  ChevronLeft,
+  Check,
+  AlertCircle,
+  Loader2,
+  Circle,
+  CheckCircle,
+  UserCheck,
+  Clock,
+  ListChecks,
+  X,
+} from "lucide-react";
 import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle"; // For title prop
-// import Button from "@/components/Buttons/Button"; // Only if needed for extra buttons
-
-// --- Server Actions & Types ---
+import DialogTitle from "@/components/Dialog/DialogTitle";
 import { getActiveTransactions } from "@/lib/ServerAction"; // Adjust path
-// Import types (ensure these are correct and match ServerAction returns)
 import {
   TransactionProps,
   AvailedServicesProps,
   AccountInfo,
 } from "@/lib/Types"; // Adjust path
+// import { toast } from 'react-hot-toast';
 
-// --- Main Component ---
 export default function WorkInterceptedModal() {
   const { accountID: accountIdParam } = useParams();
   const router = useRouter();
@@ -34,121 +38,113 @@ export default function WorkInterceptedModal() {
   >(null);
   const [selectedTransaction, setSelectedTransaction] =
     useState<TransactionProps | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(true); // Loading state for initial fetch
   const [socket, setSocket] = useState<Socket | null>(null);
   const [processingCheckActions, setProcessingCheckActions] = useState<
     Set<string>
-  >(new Set());
-  const [error, setError] = useState<string | null>(null);
+  >(new Set()); // IDs of services being checked/unchecked
+  const [error, setError] = useState<string | null>(null); // General error display
 
   // --- Socket Connection ---
   useEffect(() => {
     if (typeof accountId !== "string" || !accountId) {
-      console.warn(
-        "WorkInterceptedModal: Account ID missing, skipping socket connection.",
-      );
-      return; // Don't try to connect without ID
-    }
-    const backendUrl =
-      process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
-    if (!backendUrl) {
-      console.error("WorkInterceptedModal: NEXT_PUBLIC_BACKEND_URL not set.");
-      setError("Server connection failed (URL missing).");
+      setError("Invalid User ID.");
+      setLoading(false);
       return;
     }
-
-    console.log(`WorkInterceptedModal: Connecting socket to ${backendUrl}`);
+    const backendUrl =
+      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
+    if (!backendUrl) {
+      setError("Server Connection Error.");
+      setLoading(false);
+      return;
+    }
     const newSocket = io(backendUrl, {
       reconnectionAttempts: 5,
       timeout: 10000,
+      query: { accountId },
     });
     setSocket(newSocket);
-
-    newSocket.on("connect", () =>
-      console.log("WorkInterceptedModal: Socket connected:", newSocket.id),
-    );
-    newSocket.on("disconnect", (reason) => {
-      console.log("WorkInterceptedModal: Socket disconnected:", reason);
-      // Optionally set error state on disconnect if needed
-      // setError("Realtime connection lost.");
+    newSocket.on("connect", () => {
+      console.log("WorkInterceptedModal: Socket connected:", newSocket.id);
+      setError(null);
     });
+    newSocket.on("disconnect", (reason) =>
+      console.log("WorkInterceptedModal: Socket disconnected:", reason),
+    );
     newSocket.on("connect_error", (err) => {
       console.error("WorkInterceptedModal: Socket connection error:", err);
-      setError("Realtime connection failed.");
+      setError("Connection failed. Refresh?");
     });
-
-    // Cleanup function
     return () => {
-      if (newSocket?.connected) {
-        // Check if connected before logging disconnect
-        console.log("WorkInterceptedModal: Disconnecting socket.");
-        newSocket.disconnect();
-      }
+      if (newSocket?.connected) newSocket.disconnect();
       setSocket(null);
     };
-  }, [accountId]); // Reconnect if accountId changes
+  }, [accountId]);
+
+  // --- Format Currency ---
+  const formatCurrency = (value: number | null | undefined): string => {
+    if (
+      value == null ||
+      typeof value !== "number" ||
+      isNaN(value) ||
+      !isFinite(value)
+    )
+      value = 0;
+    // Assuming PHP main unit. Adjust if value is in smallest unit (value / 100)
+    return value.toLocaleString("en-PH", {
+      style: "currency",
+      currency: "PHP",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+  };
 
   // --- Socket Event Handlers ---
   const handleAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
+      if (!updatedAvailedService?.id) return;
       console.log(
-        "WorkInterceptedModal: Received availedServiceUpdated:",
-        updatedAvailedService.id,
+        `WorkInterceptedModal: Update for AS_ID=${updatedAvailedService.id}, TX_ID=${updatedAvailedService.transactionId}`,
       );
+      // Clear processing state for this item
       setProcessingCheckActions((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(updatedAvailedService.id); // Remove processing state
-        return newSet;
+        if (!prev.has(updatedAvailedService.id)) return prev;
+        const next = new Set(prev);
+        next.delete(updatedAvailedService.id);
+        return next;
       });
-
-      // Function to update the transaction list state safely
-      const updateTransactionsState = (
-        prev: TransactionProps[] | null,
-      ): TransactionProps[] | null => {
-        if (!prev) return null; // Handle null case
-        return prev.map((transaction) =>
-          transaction.id === updatedAvailedService.transactionId
-            ? {
-                ...transaction,
-                availedServices: transaction.availedServices.map((service) =>
-                  service.id === updatedAvailedService.id
-                    ? updatedAvailedService
-                    : service,
-                ),
-              }
-            : transaction,
+      // Immutable update logic
+      const updateList = (
+        list: AvailedServicesProps[],
+      ): AvailedServicesProps[] =>
+        list.map((s) =>
+          s.id === updatedAvailedService.id
+            ? { ...s, ...updatedAvailedService }
+            : s,
         );
-      };
-
-      setFetchedTransactions(updateTransactionsState);
-
-      // Update the selected transaction view state safely
-      setSelectedTransaction((prevSelected) => {
-        if (
-          !prevSelected ||
-          prevSelected.id !== updatedAvailedService.transactionId
-        ) {
-          return prevSelected; // No change needed if not selected or different transaction
-        }
-        // Apply the update to the selected transaction
-        return {
-          ...prevSelected,
-          availedServices: prevSelected.availedServices.map((service) =>
-            service.id === updatedAvailedService.id
-              ? updatedAvailedService
-              : service,
-          ),
-        };
-      });
+      setFetchedTransactions(
+        (prev) =>
+          prev?.map((tx) =>
+            tx.id === updatedAvailedService.transactionId
+              ? { ...tx, availedServices: updateList(tx.availedServices ?? []) }
+              : tx,
+          ) ?? null,
+      );
+      setSelectedTransaction((prev) =>
+        prev?.id === updatedAvailedService.transactionId
+          ? { ...prev, availedServices: updateList(prev.availedServices ?? []) }
+          : prev,
+      );
     },
     [],
-  ); // Dependencies: Keep empty if functional updates cover it
+  ); // Empty deps - uses functional updates
 
   const handleTransactionCompletion = useCallback(
     (completedTransaction: TransactionProps) => {
+      if (!completedTransaction?.id) return;
       console.log(
-        "WorkInterceptedModal: Transaction completed:",
-        completedTransaction.id,
+        `WorkInterceptedModal: Transaction completed: ${completedTransaction.id}`,
       );
       setFetchedTransactions(
         (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
@@ -156,34 +152,38 @@ export default function WorkInterceptedModal() {
       setSelectedTransaction((prev) =>
         prev?.id === completedTransaction.id ? null : prev,
       );
-      // Consider showing a success toast instead of alert
-      // toast.success(`Transaction for ${completedTransaction.customer.name} completed.`);
+      // toast.success(`Transaction completed.`);
     },
     [],
-  );
+  ); // Empty deps
 
   const handleCheckError = useCallback(
-    (error: { availedServiceId: string; message: string }) => {
-      console.error("WorkInterceptedModal: Check/Uncheck Error:", error);
-      setError(`Error processing service: ${error.message}`); // Show error state
+    (error: { availedServiceId?: string; message?: string }) => {
+      if (!error?.availedServiceId) return;
+      console.error(
+        `WorkInterceptedModal: Check Error for ${error.availedServiceId}:`,
+        error.message,
+      );
+      setError(`Action Failed: ${error.message || "Unknown error"}`); // Display error
+      // toast.error(`Action Failed: ${error.message || "Unknown error"}`);
       setProcessingCheckActions((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(error.availedServiceId); // Remove processing state on error
-        return newSet;
-      });
+        if (!prev.has(error.availedServiceId!)) return prev;
+        const next = new Set(prev);
+        next.delete(error.availedServiceId!);
+        return next;
+      }); // Clear processing on error
     },
     [],
-  );
+  ); // Empty deps
 
+  // Attach/Detach Listeners
   useEffect(() => {
     if (!socket) return;
-    console.log("WorkInterceptedModal: Attaching socket listeners.");
     socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
     socket.on("transactionCompleted", handleTransactionCompletion);
     socket.on("serviceCheckError", handleCheckError);
     socket.on("serviceUncheckError", handleCheckError);
     return () => {
-      console.log("WorkInterceptedModal: Removing socket listeners.");
       socket.off("availedServiceUpdated", handleAvailedServiceUpdate);
       socket.off("transactionCompleted", handleTransactionCompletion);
       socket.off("serviceCheckError", handleCheckError);
@@ -194,65 +194,45 @@ export default function WorkInterceptedModal() {
     handleAvailedServiceUpdate,
     handleTransactionCompletion,
     handleCheckError,
-  ]); // Include all handlers
+  ]); // Include stable handlers
 
   // --- Fetch Initial Data ---
   useEffect(() => {
+    let isMounted = true;
     async function fetchTransactions() {
       setLoading(true);
       setError(null);
+      setFetchedTransactions(null);
+      setSelectedTransaction(null);
+      if (typeof accountId !== "string" || !accountId) {
+        setLoading(false);
+        return;
+      }
       try {
-        if (typeof accountId === "string") {
-          const data = await getActiveTransactions();
-          const processedData = data.map((tx) => ({
-            ...tx,
-            createdAt: new Date(tx.createdAt),
-            bookedFor: new Date(tx.bookedFor),
-            availedServices: tx.availedServices.map((as) => ({
-              ...as,
-              checkedBy: as.checkedBy || null,
-              servedBy: as.servedBy || null,
-              // Ensure nested service object exists, even if partial
-              service: as.service || {
-                id: "unknown",
-                title: "Unknown Service",
-              },
-            })),
-            // Ensure customer object exists
-            customer: tx.customer || {
-              id: "unknown",
-              name: "Unknown Customer",
-              email: null,
-            },
-          }));
-          setFetchedTransactions(processedData);
-        } else {
-          // Don't throw error, just set state appropriately if ID is missing initially
-          console.warn(
-            "WorkInterceptedModal: Account ID invalid during fetch.",
-          );
-          setFetchedTransactions(null);
-          // setError("Cannot load data: Invalid User ID."); // Optional: Set error state
+        const data = await getActiveTransactions(); // Assume action returns correct TransactionProps[]
+        if (isMounted) {
+          if (!Array.isArray(data)) throw new Error("Fetched data invalid.");
+          setFetchedTransactions(data);
         }
       } catch (err: any) {
-        console.error(
-          "WorkInterceptedModal: Error fetching transactions:",
-          err,
-        );
-        setError("Failed to fetch work queue.");
-        setFetchedTransactions(null);
+        if (isMounted) setError(`Fetch error: ${err.message || "Unknown"}`);
       } finally {
-        setLoading(false);
+        if (isMounted) setLoading(false);
       }
     }
     fetchTransactions();
-  }, [accountId]); // Re-fetch only if accountId changes
+    return () => {
+      isMounted = false;
+    };
+  }, [accountId]);
 
   // --- UI Event Handlers ---
-  const handleSelectTransaction = (transaction: TransactionProps) =>
+  const handleSelectTransaction = (transaction: TransactionProps) => {
+    setError(null);
     setSelectedTransaction(transaction);
+  }; // Clear error when selecting details
   const handleCloseDetails = () => setSelectedTransaction(null);
-  const handleModalClose = () => router.back(); // Navigate back to close intercepted route
+  const handleModalClose = () => router.back();
 
   // --- Check/Uncheck Handler ---
   const handleServiceCheckToggle = useCallback(
@@ -260,269 +240,338 @@ export default function WorkInterceptedModal() {
       if (
         !socket ||
         typeof accountId !== "string" ||
+        !accountId ||
         processingCheckActions.has(availedService.id)
       )
         return;
       setProcessingCheckActions((prev) => new Set(prev).add(availedService.id));
+      setError(null); // Clear general error before new action
       const eventName = isChecked ? "checkService" : "uncheckService";
-      console.log(
-        `WorkInterceptedModal: Emitting ${eventName} for ${availedService.id}`,
-      );
-      socket.emit(eventName, {
+      const payload = {
         availedServiceId: availedService.id,
         transactionId: availedService.transactionId,
-        accountId: accountId,
-      });
+        accountId,
+      };
+      socket.emit(eventName, payload);
     },
     [socket, accountId, processingCheckActions],
-  );
+  ); // Include processingCheckActions
 
   // --- Checkbox Disabled Logic ---
   const isCheckboxDisabled = useCallback(
     (service: AvailedServicesProps): boolean => {
-      if (processingCheckActions.has(service.id)) return true;
-      if (service.checkedById && service.checkedById !== accountId) return true;
-      if (service.servedById) return true;
-      return false;
-    },
-    [accountId, processingCheckActions],
-  );
-
-  // --- Determine Background Color ---
-  const getServiceBackgroundColor = useCallback(
-    (service: AvailedServicesProps): string => {
-      if (processingCheckActions.has(service.id))
-        return "animate-pulse bg-customGray text-customBlack opacity-70";
-      if (service.servedById) return "bg-green-600 text-customOffWhite";
-      if (service.checkedById === accountId)
-        return "bg-customDarkPink text-customOffWhite";
-      if (service.checkedById) return "bg-customGray text-customBlack";
-      return "bg-customBlack text-customOffWhite"; // Default available
-    },
-    [accountId, processingCheckActions],
-  );
-
-  // --- Render Logic for Content ---
-  const renderContent = () => {
-    if (loading) {
       return (
-        <div className="flex h-full items-center justify-center p-10 text-customBlack/70">
-          Loading Work Queue...
+        processingCheckActions.has(service.id) ||
+        (!!service.checkedById && service.checkedById !== accountId) ||
+        !!service.servedById
+      );
+    },
+    [accountId, processingCheckActions],
+  );
+
+  // --- Render Logic ---
+  const renderContent = () => {
+    if (loading)
+      return (
+        <div className="flex h-full items-center justify-center p-10 text-gray-500">
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading...
         </div>
       );
-    }
-    // Show error prominently if fetching failed
-    if (error && !fetchedTransactions) {
+    // Only show critical fetch error if NO transactions loaded
+    if (
+      error &&
+      !loading &&
+      !selectedTransaction &&
+      !fetchedTransactions?.length
+    )
       return (
         <div className="flex h-full flex-col items-center justify-center p-10 text-red-600">
-          <AlertCircle className="mb-2" size={30} /> <p>{error}</p>{" "}
+          <AlertCircle className="mb-2 h-8 w-8" />
+          <p className="text-center font-medium">{error}</p>
         </div>
       );
-    }
 
-    // --- Transaction Details View ---
+    // Details View
     if (selectedTransaction) {
       return (
         <div className="flex h-full flex-col">
-          {" "}
-          {/* Takes full height of the scrollable container */}
-          {/* Header Section */}
-          <div className="flex-shrink-0 rounded-t-md bg-customDarkPink p-3 text-customOffWhite">
-            <h2 className="mb-1 truncate text-base font-bold">
-              {selectedTransaction.customer.name}
+          {/* Header */}
+          <div className="flex-shrink-0 border-b border-customDarkPink/30 bg-customDarkPink/10 p-3">
+            <h2 className="mb-1 truncate text-base font-semibold text-customDarkPink">
+              {selectedTransaction.customer?.name ?? "Unknown"}
             </h2>
-            <div className="space-y-0.5 text-xs text-customOffWhite/80">
-              <p>
-                <strong>Created:</strong>{" "}
-                {selectedTransaction.createdAt.toLocaleDateString()}
-              </p>
-              <p>
-                <strong>Booked:</strong>{" "}
-                {selectedTransaction.bookedFor.toLocaleDateString()}{" "}
-                {selectedTransaction.bookedFor.toLocaleTimeString([], {
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600">
+              <span className="flex items-center gap-1">
+                <Clock size={12} /> Created:{" "}
+                {selectedTransaction.createdAt?.toLocaleDateString() ?? "N/A"}
+              </span>
+              <span className="flex items-center gap-1">
+                <Clock size={12} /> Booked:{" "}
+                {selectedTransaction.bookedFor?.toLocaleDateString() ?? "N/A"} @{" "}
+                {selectedTransaction.bookedFor?.toLocaleTimeString([], {
                   hour: "2-digit",
                   minute: "2-digit",
-                })}
-              </p>
-              <p>
-                <strong>Status:</strong>{" "}
+                }) ?? ""}
+              </span>
+              <span className="flex items-center gap-1">
+                Status:{" "}
                 <span
-                  className={`font-medium ${selectedTransaction.status === "PENDING" ? "text-orange-200" : "text-green-200"}`}
+                  className={`font-medium ${selectedTransaction.status === "PENDING" ? "text-orange-600" : "text-green-600"}`}
                 >
                   {selectedTransaction.status}
                 </span>
-              </p>
+              </span>
             </div>
           </div>
+          {/* Error specific to this transaction's actions */}
+          {error && (
+            <div className="flex flex-shrink-0 items-center gap-2 border-b border-red-200 bg-red-100 p-2 text-sm text-red-700">
+              <AlertCircle size={16} />
+              <span>{error}</span>
+            </div>
+          )}
           {/* Services List */}
-          <div className="flex-grow space-y-2 overflow-y-auto bg-customWhiteBlue p-3">
-            {" "}
-            {/* Scrolls if needed */}
+          <div className="flex-grow space-y-2 overflow-y-auto bg-gray-50 p-3">
             {selectedTransaction.availedServices.length === 0 ? (
-              <p className="mt-10 text-center italic text-customBlack/60">
-                No services availed.
+              <p className="mt-10 text-center italic text-gray-500">
+                No services.
               </p>
             ) : (
-              selectedTransaction.availedServices.map((service) => (
-                <div
-                  key={service.id}
-                  className={`flex flex-col rounded-md p-2.5 shadow-sm transition-colors duration-200 ${getServiceBackgroundColor(service)}`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="relative flex min-w-0 flex-grow items-center">
-                      {" "}
-                      {/* Allow shrinking */}
-                      <input
-                        type="checkbox"
-                        checked={!!service.checkedById}
-                        onChange={(e) =>
-                          handleServiceCheckToggle(service, e.target.checked)
-                        }
-                        className={`peer relative mr-2 size-4 flex-shrink-0 appearance-none rounded border border-customGray bg-customOffWhite checked:border-customDarkPink checked:bg-customDarkPink focus:outline-none focus:ring-1 focus:ring-customDarkPink/50 focus:ring-offset-1 disabled:opacity-50 ${isCheckboxDisabled(service) ? "cursor-not-allowed" : "cursor-pointer"}`}
-                        id={`check-${service.id}`}
-                        disabled={isCheckboxDisabled(service)}
-                        aria-label={`Check ${service.service.title}`}
-                      />
-                      <div className="pointer-events-none absolute left-[2px] top-[2px] hidden size-3 text-customOffWhite peer-checked:block peer-disabled:text-customGray/50">
-                        {" "}
-                        <Check strokeWidth={3} />{" "}
-                      </div>
-                      <label
-                        htmlFor={`check-${service.id}`}
-                        className={`truncate text-sm font-medium ${isCheckboxDisabled(service) ? "" : "cursor-pointer"}`}
-                      >
-                        {service.service.title}{" "}
-                        {service.quantity > 1 ? `(x${service.quantity})` : ""}
-                      </label>
-                    </div>
-                    <span className="ml-2 flex-shrink-0 text-sm font-semibold">
-                      ₱{service.price}
-                    </span>
-                  </div>
+              selectedTransaction.availedServices.map((service) => {
+                const isProcessing = processingCheckActions.has(service.id);
+                const isCheckedByMe = service.checkedById === accountId;
+                const isCheckedByOther =
+                  !!service.checkedById && !isCheckedByMe;
+                const isServed = !!service.servedById;
+                const isDisabled = isCheckboxDisabled(service);
+                return (
                   <div
-                    className={`mt-1 flex flex-wrap justify-between gap-x-2 pl-[calc(1rem+0.5rem)] text-[11px] opacity-80`}
+                    key={service.id}
+                    className={`flex flex-col rounded-lg border bg-white p-3 shadow-sm transition-opacity duration-150 ${isProcessing ? "animate-pulse opacity-60" : ""} ${isCheckedByMe ? "border-blue-300 bg-blue-50" : "border-gray-200"} ${isCheckedByOther ? "border-yellow-300 bg-yellow-50 opacity-80" : ""} ${isServed ? "border-green-300 bg-green-50 opacity-80" : ""}`}
                   >
-                    {" "}
-                    {/* Adjusted padding */}
-                    <span>
-                      Checked:{" "}
-                      <span className="font-medium">
-                        {service.checkedBy?.name ?? "Nobody"}
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="relative flex min-w-0 flex-grow items-center gap-2.5">
+                        <button
+                          type="button"
+                          role="checkbox"
+                          aria-checked={!!service.checkedById}
+                          onClick={() =>
+                            handleServiceCheckToggle(
+                              service,
+                              !service.checkedById,
+                            )
+                          }
+                          disabled={isDisabled || isProcessing}
+                          className={`relative flex h-5 w-5 flex-shrink-0 items-center justify-center rounded border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-customDarkPink/50 focus:ring-offset-1 ${isDisabled ? "cursor-not-allowed border-gray-300 bg-gray-100" : "cursor-pointer border-gray-400 bg-white hover:border-customDarkPink"} ${service.checkedById ? "border-customDarkPink bg-customDarkPink" : ""}`}
+                          aria-label={`Check ${service.service?.title ?? "service"}`}
+                        >
+                          {isProcessing && (
+                            <Loader2
+                              size={12}
+                              className="animate-spin text-gray-500"
+                            />
+                          )}
+                          {!isProcessing && service.checkedById && (
+                            <Check
+                              size={14}
+                              className="text-white"
+                              strokeWidth={3}
+                            />
+                          )}
+                        </button>
+                        <label
+                          className={`truncate text-sm font-medium text-gray-800 ${isDisabled ? "" : "cursor-pointer"}`}
+                          onClick={() =>
+                            !isDisabled &&
+                            !isProcessing &&
+                            handleServiceCheckToggle(
+                              service,
+                              !service.checkedById,
+                            )
+                          }
+                        >
+                          {service.service?.title ?? "Unknown"}{" "}
+                          {service.originatingSetTitle && (
+                            <span className="ml-1 text-[10px] font-normal text-gray-500">
+                              (from {service.originatingSetTitle})
+                            </span>
+                          )}
+                        </label>
+                      </div>
+                      <span
+                        className={`ml-2 flex-shrink-0 text-sm font-semibold ${isServed ? "text-green-700" : isCheckedByMe ? "text-blue-700" : "text-gray-700"}`}
+                      >
+                        {formatCurrency(service.price)}
                       </span>
-                    </span>
-                    <span className="text-right">
-                      Served:{" "}
-                      <span className="font-medium">
-                        {service.servedBy?.name ?? "No"}
+                    </div>
+                    <div className="mt-1.5 flex flex-wrap justify-between gap-x-3 pl-8 text-[11px] text-gray-500">
+                      <span className="flex items-center gap-1">
+                        <UserCheck
+                          size={12}
+                          className={`${isCheckedByOther ? "text-yellow-600" : isCheckedByMe ? "text-blue-600" : "text-gray-400"}`}
+                        />
+                        Checked:
+                        <span
+                          className={`ml-1 font-medium ${isCheckedByOther ? "text-yellow-700" : isCheckedByMe ? "text-blue-700" : "text-gray-600"}`}
+                        >
+                          {service.checkedBy?.name ?? "Nobody"}
+                        </span>
                       </span>
-                    </span>
+                      <span className="flex items-center gap-1 text-right">
+                        <CheckCircle
+                          size={12}
+                          className={`${isServed ? "text-green-600" : "text-gray-400"}`}
+                        />
+                        Served:
+                        <span
+                          className={`ml-1 font-medium ${isServed ? "text-green-700" : "text-gray-600"}`}
+                        >
+                          {service.servedBy?.name ?? "No"}
+                        </span>
+                      </span>
+                    </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
       );
     }
 
-    // --- Transaction List View ---
+    // Transaction List View
     return (
       <div className="h-full overflow-y-auto">
         <table className="min-w-full table-fixed border-collapse">
-          <thead className="sticky top-0 z-10 bg-customGray/90 backdrop-blur-sm">
+          <thead className="sticky top-0 z-10 bg-gray-100/80 backdrop-blur-sm">
             <tr>
-              <th className="w-1/4 border-b border-customGray px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
-                Date
+              <th className="w-[30%] border-b border-gray-200 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
+                Date/Time
               </th>
-              <th className="w-1/2 border-b border-customGray px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
+              <th className="w-[45%] border-b border-gray-200 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
                 Customer
               </th>
-              <th className="w-1/4 border-b border-customGray px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-customBlack">
+              <th className="w-[25%] border-b border-gray-200 px-3 py-2.5 text-left text-xs font-semibold uppercase tracking-wider text-gray-600">
                 Status
               </th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-customGray/50 bg-customOffWhite/80">
-            {fetchedTransactions && fetchedTransactions.length > 0 ? (
-              fetchedTransactions.map((transaction) => (
-                <tr
-                  className="cursor-pointer hover:bg-customLightBlue/40"
-                  key={transaction.id}
-                  onClick={() => handleSelectTransaction(transaction)}
-                  tabIndex={0}
-                  onKeyDown={(e) =>
-                    e.key === "Enter" && handleSelectTransaction(transaction)
-                  }
-                >
-                  <td className="whitespace-nowrap px-3 py-2.5 text-sm text-customBlack/80">
-                    {transaction.bookedFor.toLocaleDateString()}
-                  </td>
-                  <td className="truncate whitespace-nowrap px-3 py-2.5 text-sm font-medium text-customBlack">
-                    {transaction.customer.name}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2.5 text-sm">
-                    <span
-                      className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold lowercase leading-tight ${transaction.status === "PENDING" ? "bg-customDarkPink/20 text-customDarkPink" : transaction.status === "DONE" ? "bg-green-100 text-green-800" : "bg-red-100 text-red-700"}`}
-                    >
-                      {transaction.status.toLowerCase()}
-                    </span>
-                  </td>
-                </tr>
-              ))
-            ) : (
-              <tr>
+          <tbody className="divide-y divide-gray-200 bg-white">
+            {/* Show error inline if list fetch failed but component didn't unmount */}
+            {error && !loading && (
+              <tr className="bg-red-50">
                 <td
                   colSpan={3}
-                  className="py-10 text-center text-sm italic text-customBlack/60"
+                  className="px-3 py-2 text-center text-sm text-red-700"
                 >
-                  {loading ? "Loading..." : "No pending transactions."}
+                  {error}
                 </td>
               </tr>
             )}
+            {/* Table rows */}
+            {fetchedTransactions && fetchedTransactions.length > 0
+              ? fetchedTransactions.map((transaction) => (
+                  <tr
+                    className="cursor-pointer hover:bg-blue-50/50"
+                    key={transaction.id}
+                    onClick={() => handleSelectTransaction(transaction)}
+                    tabIndex={0}
+                    onKeyDown={(e) =>
+                      e.key === "Enter" && handleSelectTransaction(transaction)
+                    }
+                  >
+                    <td className="whitespace-nowrap px-3 py-2.5 text-xs text-gray-600">
+                      <div>
+                        {transaction.bookedFor?.toLocaleDateString() ?? "N/A"}
+                      </div>
+                      <div className="text-[10px]">
+                        {transaction.bookedFor?.toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        }) ?? ""}
+                      </div>
+                    </td>
+                    <td className="truncate px-3 py-2.5 text-sm font-medium text-gray-800">
+                      {transaction.customer?.name ?? "Unknown"}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm">
+                      <span
+                        className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold lowercase leading-tight ${transaction.status === "PENDING" ? "bg-orange-100 text-orange-700" : ""} ${transaction.status === "DONE" ? "bg-green-100 text-green-800" : ""} ${transaction.status !== "PENDING" && transaction.status !== "DONE" ? "bg-red-100 text-red-700" : ""}`}
+                      >
+                        {transaction.status.toLowerCase()}
+                      </span>
+                    </td>
+                  </tr>
+                ))
+              : !error &&
+                !loading && (
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="py-10 text-center text-sm italic text-gray-500"
+                    >
+                      No pending transactions.
+                    </td>
+                  </tr>
+                )}
           </tbody>
         </table>
       </div>
     );
   };
 
-  // --- Modal Title Definition ---
+  // Modal Title
   const modalTitle = (
-    <div className="relative flex items-center justify-center text-center">
+    <div className="relative w-full text-center">
+      <div className="flex items-center justify-center">
+        {!selectedTransaction && (
+          <ListChecks size={18} className="mr-2 text-customDarkPink" />
+        )}
+        <DialogTitle>
+          {selectedTransaction ? "Transaction Details" : "Work Queue"}
+        </DialogTitle>
+      </div>
+      <button
+        onClick={handleModalClose}
+        className="absolute right-0 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600 focus:outline-none focus:ring-1 focus:ring-customDarkPink"
+        aria-label="Close"
+      >
+        <X size={20} />
+      </button>
       {selectedTransaction && (
         <button
           onClick={handleCloseDetails}
-          className="absolute left-0 top-1/2 -translate-y-1/2 p-1 text-customBlack/60 hover:text-customBlack"
+          className="absolute left-0 top-1/2 -translate-y-1/2 rounded-full p-1.5 text-gray-400 hover:bg-gray-200 hover:text-gray-600 focus:outline-none focus:ring-1 focus:ring-customDarkPink"
           aria-label="Back"
         >
-          {" "}
-          <ChevronLeft size={20} />{" "}
+          <ChevronLeft size={20} />
         </button>
       )}
-      <DialogTitle>Work Queue</DialogTitle>
-      {/* Spacer to balance the back button, keeping title centered */}
-      <div className="absolute right-0 h-6 w-6"></div>
     </div>
   );
 
-  // --- Final Render using Modal ---
+  // Final Render
   return (
     <Modal
-      isOpen={true} // Intercepted route modal is always considered "open" when active
-      onClose={handleModalClose} // Use router.back to close
+      isOpen={true}
+      onClose={handleModalClose}
       title={modalTitle}
-      // Apply specific styles for this modal's container
-      containerClassName="relative m-auto flex flex-col max-h-[85vh] h-[600px] w-full max-w-md overflow-hidden rounded-lg bg-customOffWhite shadow-xl border-2 border-customDarkPink/50" // Fixed height, flex-col, overflow-hidden
+      hideDefaultHeader={false}
+      hideDefaultCloseButton={true}
+      titleClassName="p-4 border-b border-gray-200 bg-white"
+      contentClassName="p-0"
+      containerClassName="relative m-auto flex flex-col max-h-[90vh] h-[700px] w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-xl border border-gray-200"
+      size="lg"
     >
-      {/* Error display (optional, shown below title) */}
-      {error && !loading && (
-        <div className="flex flex-shrink-0 items-center justify-center gap-2 border-b border-red-200 bg-red-50 p-3 text-center text-sm text-red-600">
-          <AlertCircle className="inline h-5 w-5" /> {error}
+      {/* Error Display (Only shows non-critical errors after initial load) */}
+      {error && !loading && fetchedTransactions && (
+        <div className="flex flex-shrink-0 items-center justify-center gap-2 border-b border-red-200 bg-red-50 p-2 text-center text-sm text-red-600">
+          <AlertCircle className="inline h-4 w-4 flex-shrink-0" />
+          <span>{error}</span>
         </div>
       )}
-      {/* This inner div handles the scrolling of the list or details */}
-      <div className="min-h-0 flex-grow overflow-hidden">
-        {" "}
-        {/* Added min-h-0 for flexbox calculation */}
+      {/* Main Content */}
+      <div className="min-h-0 flex-grow overflow-hidden bg-gray-50">
         {renderContent()}
       </div>
     </Modal>

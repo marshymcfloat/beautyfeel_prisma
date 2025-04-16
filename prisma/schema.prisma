@@ -12,6 +12,44 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum PayslipStatus {
+  PENDING
+  RELEASED
+  // Add other statuses if needed (e.g., FAILED, PROCESSING)
+}
+
+model Payslip {
+  id              String   @id @default(uuid())
+  accountId       String // Employee receiving the payslip
+  account         Account  @relation(fields: [accountId], references: [id])
+  periodStartDate DateTime @db.Date // Start date of the pay period
+  periodEndDate   DateTime @db.Date // End date of the pay period
+
+  baseSalary       Int // Base salary amount for this period (in smallest unit)
+  totalCommissions Int // Total commissions earned this period (in smallest unit)
+  totalDeductions  Int @default(0) // Total deductions (in smallest unit)
+  totalBonuses     Int @default(0) // Total bonuses (in smallest unit)
+  netPay           Int // Final calculated amount (in smallest unit)
+
+  status       PayslipStatus @default(PENDING) // Current status
+  releasedDate DateTime? // Timestamp when it was marked RELEASED
+  generatedAt  DateTime      @default(now()) // When this payslip record was created
+
+  // Optional: Store a reference to the person who released it
+  // releasedById    String?
+  // releasedBy      Account?      @relation("ReleasedPayslips", fields: [releasedById], references: [id])
+
+  @@unique([accountId, periodStartDate, periodEndDate]) // Ensure only one payslip per employee per period
+  @@index([accountId])
+  @@index([periodStartDate, periodEndDate])
+  @@index([status])
+}
+
+enum AvailedItemType {
+  SERVICE
+  SET
+}
+
 // --- Enums ---
 enum Role {
   OWNER
@@ -37,8 +75,6 @@ enum PaymentMethod {
   bank
 }
 
-// --- Models ---
-
 model DiscountRule {
   id            String       @id @default(uuid())
   description   String?
@@ -48,11 +84,9 @@ model DiscountRule {
   endDate       DateTime
   isActive      Boolean      @default(true)
 
-  // --- Applicability ---
   applyToAll Boolean   @default(false) // <<< ADD THIS FLAG
   services   Service[] @relation("DiscountedServices") // Still keep for specific discounts
 
-  // --- Tracking ---
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -87,6 +121,7 @@ model Account {
   // Relation to Attendance records
   attendances        Attendance[] @relation("EmployeeAttendance") // <<< NEW RELATION
   attendancesChecked Attendance[] @relation("CheckerAttendance") // <<< NEW RELATION (Who marked the attendance)
+  Payslip            Payslip[]
 
   @@index([branchId]) // Good to have index on branchId
 }
@@ -102,7 +137,6 @@ model Attendance {
   checkedBy   Account  @relation("CheckerAttendance", fields: [checkedById], references: [id])
   checkedAt   DateTime @default(now()) // When this record was created/updated
 
-  // Unique constraint to prevent multiple records for the same employee on the same day
   @@unique([date, accountId])
   @@index([date]) // Index date for faster querying
 }
@@ -110,31 +144,29 @@ model Attendance {
 model Service {
   id String @id @default(uuid())
 
-  title          String           @unique // Consider if title should be unique globally or per branch
-  description    String?
-  price          Int              @default(0) // Price per unit in smallest unit (e.g., centavos)
-  branchId       String
-  totalSales     Int              @default(0) // Total units sold perhaps? Or total value? Clarify meaning or use Float for value.
-  branch         Branch           @relation(fields: [branchId], references: [id])
-  AvailedService AvailedService[]
-  serviceSets    ServiceSet[]     @relation("ServiceToSet")
-
-  // Relation to Gift Certificates (Many-to-Many)
+  title            String            @unique
+  description      String?
+  price            Int               @default(0) // Original price of this single service
+  branchId         String
+  totalSales       Int               @default(0)
+  branch           Branch            @relation(fields: [branchId], references: [id])
+  AvailedService   AvailedService[] // <<< Relation FROM AvailedService remains
+  serviceSets      ServiceSet[]      @relation("ServiceToSet")
   giftCertificates GiftCertificate[] @relation("GCService")
+  discountRules    DiscountRule[]    @relation("DiscountedServices")
 
-  discountRules DiscountRule[] @relation("DiscountedServices")
+  @@index([branchId])
 }
 
 model ServiceSet {
   id    String @id @default(uuid())
-  title String @unique // Title for the set (e.g., "Spa Day Package")
-  price Int // Price for the entire set in smallest unit (e.g., centavos)
+  title String @unique
+  price Int
 
-  // Many-to-Many relation with Service
-  services Service[] @relation("ServiceToSet")
-
-  // Relation to Gift Certificates (Many-to-Many, if GCs can be for sets)
+  services         Service[]         @relation("ServiceToSet")
   giftCertificates GiftCertificate[] @relation("GCServiceSet")
+
+  // <<< REMOVE relation to AvailedService: availedServices AvailedService[]
 }
 
 model Customer {
@@ -145,14 +177,13 @@ model Customer {
   nextAppointment    DateTime?
   transactionHistory Transaction[]
 
-  // Relation to purchased GCs
   purchasedGiftCertificates GiftCertificate[] @relation("PurchasedGiftCertificates")
 }
 
 model Voucher {
   id          String        @id @default(uuid())
   code        String        @unique
-  value       Int // Discount value in smallest unit (e.g., centavos) or percentage? Clarify. Assuming amount for now.
+  value       Int
   usedAt      DateTime?
   Transaction Transaction[]
 }
@@ -163,18 +194,17 @@ model Transaction {
   bookedFor       DateTime         @default(now())
   customerId      String
   customer        Customer         @relation(fields: [customerId], references: [id])
-  availedServices AvailedService[]
+  availedServices AvailedService[] // Relation remains the same, links to individual service items
   voucherId       String?
   voucherUsed     Voucher?         @relation(fields: [voucherId], references: [id])
-  discount        Int              @default(0) // Total discount amount in smallest unit (e.g., centavos)
-  paymentMethod   PaymentMethod? // e.g., 'cash', 'ewallet', 'bank'
-  grandTotal      Int // Final amount paid in smallest unit (e.g., centavos)
+  discount        Int              @default(0) // Total transaction discount
+  paymentMethod   PaymentMethod?
+  grandTotal      Int // Final transaction total paid
   status          Status           @default(PENDING)
-  branchId        String? // Link to Branch if transactions are branch-specific
+  branchId        String?
 
-  // Relation to used GCs (A transaction might use one GC)
-  giftCertificateUsedId String?          @unique // A GC can only be used once
-  giftCertificateUsed   GiftCertificate? @relation("UsedGiftCertificates", fields: [giftCertificateUsedId], references: [id])
+  @@index([customerId])
+  @@index([createdAt])
 }
 
 model AvailedService {
@@ -182,18 +212,33 @@ model AvailedService {
   transactionId String
   transaction   Transaction @relation(fields: [transactionId], references: [id])
 
-  serviceId String
-  service   Service @relation(fields: [serviceId], references: [id])
+  serviceId String? // <<< Now always links to a Service
+  service   Service? @relation(fields: [serviceId], references: [id])
 
-  quantity Int @default(1)
+  quantity        Int @default(1) // Quantity of THIS specific service (usually 1, even in sets)
+  price           Int // Price snapshot for THIS service unit *at time of transaction*.
+  commissionValue Int @default(0) // <<< NEW: Pre-calculated commission for serving THIS item (in smallest unit)
 
-  price Int // Price snapshot per unit in smallest unit (e.g., centavos) at time of transaction
+  originatingSetId    String? // <<< NEW: ID of the ServiceSet this came from, if any
+  originatingSetTitle String? // <<< NEW: Denormalized title of the set for easier display
 
   checkedById String?
   checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
 
-  servedById String?
-  servedBy   Account? @relation("ServedRelation", fields: [servedById], references: [id])
+  servedById   String?
+  servedBy     Account? @relation("ServedRelation", fields: [servedById], references: [id])
+  serviceSetId String?
+
+  status      Status    @default(PENDING)
+  completedAt DateTime? // <<< ADD THIS: Timestamp when status becomes DONE
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @default(now()) @updatedAt
+
+  @@index([serviceId])
+  @@index([transactionId])
+  @@index([checkedById])
+  @@index([servedById])
+  @@index([originatingSetId]) // Index if you query by set origin often
 }
 
 model GiftCertificate {
@@ -202,22 +247,16 @@ model GiftCertificate {
   issuedAt  DateTime  @default(now())
   expiresAt DateTime? // Optional expiry date
 
-  // Who bought it (optional)
   purchaserCustomerId String?
   purchaserCustomer   Customer? @relation("PurchasedGiftCertificates", fields: [purchaserCustomerId], references: [id])
 
-  // Who is it for? (Optional details)
   recipientName  String?
   recipientEmail String?
 
-  // What services/sets is it valid for? (Many-to-Many)
   services    Service[]    @relation("GCService")
   serviceSets ServiceSet[] @relation("GCServiceSet") // If applicable
 
-  // Tracking Usage
-  usedAt            DateTime? // When it was redeemed
-  // Relation field defined by Transaction model (`giftCertificateUsed`)
-  usedInTransaction Transaction? @relation("UsedGiftCertificates")
+  usedAt DateTime? // When it was redeemed
 
   @@index([purchaserCustomerId])
 }
