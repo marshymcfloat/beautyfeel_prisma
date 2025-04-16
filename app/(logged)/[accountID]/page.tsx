@@ -91,8 +91,7 @@ export default function Home() {
   // --- Socket Connection Effect (Stable) ---
   useEffect(() => {
     if (!accountId) return;
-    const backendUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
+    const backendUrl = "https://beautyfeel-prisma.onrender.com";
     if (!backendUrl) {
       console.error("Socket URL missing.");
       setSocketError("Config Error.");

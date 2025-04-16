@@ -52,8 +52,8 @@ export default function WorkInterceptedModal() {
       setLoading(false);
       return;
     }
-    const backendUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
+    const backendUrl = "https://beautyfeel-prisma.onrender.com";
+
     if (!backendUrl) {
       setError("Server Connection Error.");
       setLoading(false);
