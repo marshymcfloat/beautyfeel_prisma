@@ -110,27 +110,6 @@ type ServiceAvailed = {
   price: number;
 };
 
-/* // Define CashierState interface based on your form structure
-interface CashierState {
-  name: string;
-  date?: string; // Optional for 'serve now'
-  time?: string; // Optional for 'serve now'
-  serveTime: "now" | "later";
-  email?: string | null;
-  servicesAvailed: {
-    id: string; // Service ID
-    name: string; // Service Name (useful for display, maybe not needed here)
-    price: number; // Price PER UNIT
-    quantity: number; // How many units of this service
-  }[];
-  voucherCode?: string | null;
-  paymentMethod: PaymentMethod;
-  grandTotal: number;
-  totalDiscount: number;
-  // Add branchId if it comes from the form or context
-  // branchId?: string;
-} */
-
 export async function getCustomer(name: string) {
   try {
     const foundCustomers = await prisma.customer.findMany({

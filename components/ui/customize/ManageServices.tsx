@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageServices.tsx
 "use client";
 import React, {
   useState,
@@ -138,10 +137,10 @@ export default function ManageServices() {
   const isSaving = isPending;
 
   // --- Style constants ---
-  // Base styles, responsiveness handled by utility classes below
+  // Using px-2 for slightly less padding than before
   const thStyleBase =
-    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Use align-top for consistency if rows wrap slightly
+    "px-2 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-2 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
   const selectStyle = `${inputStyle} bg-white`;
@@ -170,8 +169,8 @@ export default function ManageServices() {
       {/* List Error */}
       {listError && <p className={listErrorMsgStyle}>{listError}</p>}
 
-      {/* Table Display */}
-      {/* Add min-w-full even within overflow-x-auto for better consistency */}
+      {/* Table Display - Wrapper with overflow */}
+      {/* Make sure this div structure is identical to the working components */}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading ? (
           <p className="py-10 text-center text-customBlack/70">
@@ -182,38 +181,44 @@ export default function ManageServices() {
             No services found.
           </p>
         ) : (
+          // Table itself also needs min-w-full
           <table className="min-w-full divide-y divide-customGray/30">
             <thead className="bg-customGray/10">
               <tr>
-                {/* Title: Always Visible */}
-                <th className={`${thStyleBase}`}>Title</th>
+                {/* Col 1: Title (Always Visible) */}
+                <th className={thStyleBase}>Title</th>
 
-                {/* Description: Hidden on xs, visible sm and up */}
+                {/* Col 2: Description (Hidden on XS, Visible SM+) */}
+                {/* ----> CHECK THIS CLASS CAREFULLY <---- */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Description
                 </th>
 
-                {/* Price: Always Visible */}
-                <th className={`${thStyleBase}`}>Price (cents)</th>
+                {/* Col 3: Price (Always Visible) */}
+                <th className={thStyleBase}>Price (cents)</th>
 
-                {/* Branch: Hidden on xs, visible sm and up */}
+                {/* Col 4: Branch (Hidden on XS, Visible SM+) */}
+                {/* ----> CHECK THIS CLASS CAREFULLY <---- */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Branch
                 </th>
 
-                {/* Actions: Always Visible */}
+                {/* Col 5: Actions (Always Visible) */}
                 <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-customGray/30">
               {services.map((service) => (
                 <tr key={service.id} className="hover:bg-customLightBlue/10">
-                  {/* Title: Allow wrap, medium weight */}
+                  {/* Col 1 TD: Title */}
+                  {/* Allow wrap, medium font */}
                   <td className={`${tdStyleBase} font-medium`}>
                     {service.title}
                   </td>
 
-                  {/* Description: Hidden on xs, allow wrap on sm+ */}
+                  {/* Col 2 TD: Description */}
+                  {/* ----> CHECK THIS CLASS CAREFULLY <---- */}
+                  {/* Hidden on XS, allow wrap + break words when visible */}
                   <td
                     className={`${tdStyleBase} hidden whitespace-normal break-words sm:table-cell`}
                   >
@@ -222,12 +227,15 @@ export default function ManageServices() {
                     )}
                   </td>
 
-                  {/* Price: No wrap */}
+                  {/* Col 3 TD: Price */}
+                  {/* No wrap */}
                   <td className={`${tdStyleBase} whitespace-nowrap`}>
                     {service.price}
                   </td>
 
-                  {/* Branch: Hidden on xs, no wrap on sm+ */}
+                  {/* Col 4 TD: Branch */}
+                  {/* ----> CHECK THIS CLASS CAREFULLY <---- */}
+                  {/* Hidden on XS, no wrap when visible */}
                   <td
                     className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
                   >
@@ -236,7 +244,8 @@ export default function ManageServices() {
                     )}
                   </td>
 
-                  {/* Actions: No wrap, right-aligned */}
+                  {/* Col 5 TD: Actions */}
+                  {/* No wrap, text right */}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(service)}
@@ -262,7 +271,7 @@ export default function ManageServices() {
         )}
       </div>
 
-      {/* Add/Edit Modal (No changes needed here for table responsiveness) */}
+      {/* Add/Edit Modal (Modal code remains unchanged) */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
@@ -279,7 +288,7 @@ export default function ManageServices() {
           onSubmit={(e) => e.preventDefault()}
           className="space-y-4"
         >
-          {/* Form Fields... (keep existing) */}
+          {/* Form Fields... */}
           <div>
             <label htmlFor="title" className={labelStyle}>
               Service Title <span className="text-red-500">*</span>

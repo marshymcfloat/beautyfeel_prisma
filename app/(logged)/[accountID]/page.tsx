@@ -35,7 +35,6 @@ import ExpandedSales from "@/components/ui/ExpandedSales";
 import ManageAttendance from "@/components/ui/customize/ManageAttendance";
 import LoadingWidget from "@/components/ui/LoadingWidget"; // Adjust path
 
-// --- Type Imports ---
 import {
   AccountData,
   SalaryBreakdownItem,
@@ -46,14 +45,12 @@ import {
   PayslipStatusOption,
 } from "@/lib/Types"; // Adjust path
 
-// --- Main Dashboard Component ---
 export default function Home() {
   const params = useParams();
   const router = useRouter();
   const accountId =
     typeof params.accountID === "string" ? params.accountID : undefined;
 
-  // --- State Definitions ---
   const [socket, setSocket] = useState<Socket | null>(null);
   const [allPendingTransactions, setAllPendingTransactions] = useState<
     TransactionProps[]
@@ -84,11 +81,9 @@ export default function Home() {
     const today = new Date();
     return { start: startOfMonth(today), end: endOfMonth(today) };
   });
-  // State for Payslip status check
   const [payslipStatus, setPayslipStatus] = useState<PayslipStatusOption>(null);
   const [isPayslipStatusLoading, setIsPayslipStatusLoading] = useState(false);
 
-  // --- Socket Connection Effect (Stable) ---
   useEffect(() => {
     if (!accountId) return;
     const backendUrl = "https://beautyfeel-prisma.onrender.com";

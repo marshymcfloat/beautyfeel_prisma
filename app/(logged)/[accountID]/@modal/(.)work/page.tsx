@@ -91,7 +91,6 @@ export default function WorkInterceptedModal() {
       !isFinite(value)
     )
       value = 0;
-    // Assuming PHP main unit. Adjust if value is in smallest unit (value / 100)
     return value.toLocaleString("en-PH", {
       style: "currency",
       currency: "PHP",
@@ -100,14 +99,12 @@ export default function WorkInterceptedModal() {
     });
   };
 
-  // --- Socket Event Handlers ---
   const handleAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
       if (!updatedAvailedService?.id) return;
       console.log(
         `WorkInterceptedModal: Update for AS_ID=${updatedAvailedService.id}, TX_ID=${updatedAvailedService.transactionId}`,
       );
-      // Clear processing state for this item
       setProcessingCheckActions((prev) => {
         if (!prev.has(updatedAvailedService.id)) return prev;
         const next = new Set(prev);
@@ -374,7 +371,7 @@ export default function WorkInterceptedModal() {
                           {!isProcessing && service.checkedById && (
                             <Check
                               size={14}
-                              className="text-white"
+                              className="text-black"
                               strokeWidth={3}
                             />
                           )}

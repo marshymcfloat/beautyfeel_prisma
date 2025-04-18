@@ -47,17 +47,14 @@ const paymentMethodOptions = [
   { id: "ewallet", title: "E-wallet" },
   { id: "bank", title: "Bank" },
 ];
-// --- End Options ---
 
 export default function CashierInterceptedModal() {
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
 
-  // --- State ---
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
 
-  // --- Redux State ---
   const { services, serviceSets, itemsLoading, itemsError } = useSelector(
     (state: RootState) => state.data,
   );
@@ -128,7 +125,6 @@ export default function CashierInterceptedModal() {
   async function handleConfirmClick() {
     setIsSubmitting(true);
     setFormErrors({});
-    // Validation
     let errors: Record<string, string> = {};
     if (!name?.trim()) errors.name = "Customer name required.";
     if (!servicesAvailed || servicesAvailed.length === 0)
@@ -141,12 +137,10 @@ export default function CashierInterceptedModal() {
       setIsSubmitting(false);
       return;
     }
-    // Action Call
     const response: TransactionSubmissionResponse = await transactionSubmission(
       { ...cashierForm },
     );
     setIsSubmitting(false);
-    // Handle Response
     if (response.success) {
       dispatch(cashierActions.reset());
       router.back();

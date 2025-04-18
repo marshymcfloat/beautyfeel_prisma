@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageBranches.tsx
 "use client";
 import React, {
   useState,
@@ -30,7 +29,6 @@ export default function ManageBranches() {
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
-  // --- Load Data ---
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
@@ -47,9 +45,6 @@ export default function ManageBranches() {
     loadData();
   }, [loadData]);
 
-  // --- REMOVE useEffect for body scroll lock ---
-
-  // --- Modal and Action Handlers ---
   const handleAdd = () => {
     setEditingBranch(null);
     setError(null);
@@ -62,7 +57,7 @@ export default function ManageBranches() {
     setIsModalOpen(true);
   };
   const handleDelete = (branchId: string) => {
-    /* ... (keep existing logic) ... */ if (!window.confirm("Delete?")) return;
+    if (!window.confirm("Delete this branch? This cannot be undone.")) return;
     setError(null);
     startTransition(async () => {
       const res = await deleteBranchAction(branchId);
@@ -71,23 +66,25 @@ export default function ManageBranches() {
     });
   };
   const handleSave = () => {
-    /* ... (keep existing logic, including validation) ... */ if (
-      !formRef.current
-    )
-      return setError("Form error.");
+    if (!formRef.current) return setError("Form reference error.");
     setError(null);
     const fd = new FormData(formRef.current);
-    if (!fd.get("title")) return setError("Title required.");
+    const title = fd.get("title");
+    const code = fd.get("code");
+
+    if (!title) return setError("Branch Title is required.");
     if (
       !editingBranch &&
-      (!fd.get("code") || (fd.get("code") as string).length !== 6)
-    )
-      return setError("Code must be 6 chars.");
+      (!code || typeof code !== "string" || code.trim().length !== 6)
+    ) {
+      return setError("New Branch Code must be exactly 6 characters.");
+    }
+
     startTransition(async () => {
       try {
         const action = editingBranch
-          ? updateBranchAction(editingBranch.id, fd)
-          : createBranchAction(fd);
+          ? updateBranchAction(editingBranch.id, fd) // Update allows changing title, not code
+          : createBranchAction(fd); // Create requires title and code
         const res = await action;
         if (res.success) {
           setIsModalOpen(false);
@@ -100,17 +97,17 @@ export default function ManageBranches() {
           );
         }
       } catch (err) {
-        setError("Unexpected error.");
+        setError("An unexpected error occurred during save.");
       }
     });
   };
   const closeModal = () => setIsModalOpen(false);
   const isSaving = isPending;
 
-  // --- Styles ---
-  const thStyle =
-    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyle = "px-4 py-2 whitespace-nowrap text-sm text-customBlack/90";
+  // --- Styles (aligning with ManageAccounts) ---
+  const thStyleBase =
+    "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
   const labelStyle = "block text-sm font-medium text-customBlack/80";
@@ -127,7 +124,7 @@ export default function ManageBranches() {
         </h2>
         <Button
           onClick={handleAdd}
-          disabled={isPending}
+          disabled={isPending || isLoading} // Disable if loading branches too
           size="sm"
           className="w-full sm:w-auto"
         >
@@ -135,44 +132,56 @@ export default function ManageBranches() {
         </Button>
       </div>
 
-      {/* List Error */}
+      {/* List Error (show only if modal is closed) */}
       {error && !isModalOpen && <p className={errorMsgStyle}>{error}</p>}
 
-      {/* Table */}
-      <div className="overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
-        {/* ... Table structure (keep existing) ... */}
+      {/* Table - Use overflow-x-auto and min-w-full */}
+      <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading ? (
           <p className="py-10 text-center text-customBlack/70">Loading...</p>
-        ) : branches.length === 0 ? (
-          <p className="py-10 text-center text-customBlack/60">No branches.</p>
+        ) : !error && branches.length === 0 ? (
+          <p className="py-10 text-center text-customBlack/60">
+            No branches found.
+          </p>
         ) : (
+          // Add min-w-full to table itself
           <table className="min-w-full divide-y divide-customGray/30">
             <thead className="bg-customGray/10">
               <tr>
-                <th className={thStyle}>Title</th>
-                <th className={thStyle}>Code</th>
-                <th className={`${thStyle} text-right`}>Actions</th>
+                {/* Title: Always Visible */}
+                <th className={thStyleBase}>Title</th>
+                {/* Code: Hidden on xs, visible sm+ */}
+                <th className={`${thStyleBase} hidden sm:table-cell`}>Code</th>
+                {/* Actions: Always Visible */}
+                <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-customGray/30">
               {branches.map((b) => (
                 <tr key={b.id} className="hover:bg-customLightBlue/10">
-                  <td className={`${tdStyle} font-medium`}>{b.title}</td>
-                  <td className={`${tdStyle} font-mono uppercase`}>{b.code}</td>
-                  <td className={`${tdStyle} text-right`}>
+                  {/* Title: Allow wrap, medium weight */}
+                  <td className={`${tdStyleBase} font-medium`}>{b.title}</td>
+                  {/* Code: Hidden on xs, visible sm+, monospace */}
+                  <td
+                    className={`${tdStyleBase} hidden font-mono uppercase sm:table-cell`}
+                  >
+                    {b.code}
+                  </td>
+                  {/* Actions: No wrap, right-aligned */}
+                  <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(b)}
                       disabled={isPending}
-                      className="mr-2 p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
-                      title="Edit"
+                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      title="Edit Branch"
                     >
                       <Edit3 size={16} />
                     </button>
                     <button
                       onClick={() => handleDelete(b.id)}
                       disabled={isPending}
-                      className="p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
-                      title="Delete"
+                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      title="Delete Branch"
                     >
                       <Trash2 size={16} />
                     </button>
@@ -184,7 +193,7 @@ export default function ManageBranches() {
         )}
       </div>
 
-      {/* Modal using new component */}
+      {/* Add/Edit Modal */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
@@ -215,11 +224,11 @@ export default function ManageBranches() {
               required
               defaultValue={editingBranch?.title ?? ""}
               className={inputStyle}
+              disabled={isSaving}
             />
           </div>
           <div>
             <label htmlFor="code" className={labelStyle}>
-              {" "}
               Branch Code{" "}
               {!editingBranch && <span className="text-red-500">*</span>}{" "}
             </label>
@@ -227,16 +236,21 @@ export default function ManageBranches() {
               type="text"
               name="code"
               id="code"
-              required={!editingBranch}
+              required={!editingBranch} // Required only when adding
               maxLength={6}
+              minLength={6} // Enforce 6 chars
+              pattern="[A-Z0-9]{6}" // Optional: Pattern for uppercase letters/numbers
+              title="Must be 6 uppercase letters or numbers" // Tooltip for pattern
               defaultValue={editingBranch?.code ?? ""}
-              disabled={!!editingBranch}
+              disabled={!!editingBranch || isSaving} // Disable if editing or saving
               className={`${inputStyle} font-mono uppercase tracking-widest`}
+              // Make visually clear it's disabled when editing
+              readOnly={!!editingBranch}
             />
             <p className="mt-1 text-xs text-gray-500">
               {editingBranch
-                ? "Code cannot be changed."
-                : "Exactly 6 uppercase characters."}
+                ? "Code cannot be changed after creation."
+                : "Exactly 6 uppercase characters or numbers."}
             </p>
           </div>
           <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
@@ -246,8 +260,7 @@ export default function ManageBranches() {
               disabled={isSaving}
               invert
             >
-              {" "}
-              Cancel{" "}
+              Cancel
             </Button>
             <Button type="button" onClick={handleSave} disabled={isSaving}>
               {isSaving
