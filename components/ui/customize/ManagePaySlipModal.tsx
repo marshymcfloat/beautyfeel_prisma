@@ -1,69 +1,79 @@
-// components/payslip/ManagePayslipModal.tsx
+// src/components/ui/customize/ManagePaySlipModal.tsx
 "use client";
 
-import React, { useState, useMemo } from "react";
-import { format } from "date-fns";
-import {
-  User,
-  CalendarDays,
-  Receipt, // Icon for payslip title/details
-  Coins, // Icon for base salary
-  Sparkles, // Icon for commissions/bonuses
-  ArrowDownCircle, // Icon for deductions (optional)
-  CircleDollarSign, // Icon for Net Pay
-  CheckCircle2, // Icon for Released status
-  Clock, // Icon for Pending status / Released Date
-  Loader2, // Spinner icon
-  ChevronDown, // Icon for expanding breakdown
-  ChevronUp, // Icon for collapsing breakdown
-  AlertCircle, // Icon for errors
-} from "lucide-react";
+import React from "react";
+import { format, isValid } from "date-fns";
+import { DayPicker } from "react-day-picker";
+import "react-day-picker/dist/style.css";
 
 // --- UI Components ---
-import Modal from "@/components/Dialog/Modal"; // Import your Modal component (adjust path)
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Import DialogTitle (adjust path)
-import Button from "@/components/Buttons/Button"; // Import your Button component (adjust path)
+import Modal from "@/components/Dialog/Modal"; // Adjust path
+import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
+import Button from "@/components/Buttons/Button"; // Adjust path
+import {
+  Loader2,
+  AlertCircle,
+  CheckCircle,
+  X,
+  User,
+  Tag,
+  PhilippinePeso,
+  CalendarDays,
+  Clock,
+  Info,
+  Receipt, // Icons
+} from "lucide-react";
 
 // --- Types ---
 import {
   PayslipData,
-  SalaryBreakdownItem, // Import if using breakdown feature
   ReleaseSalaryHandler,
+  AttendanceRecord, // Import needed types
+  SalaryBreakdownItem,
+  SALARY_COMMISSION_RATE,
+  AccountData,
 } from "@/lib/Types"; // Adjust path
-
 import { PayslipStatus } from "@prisma/client";
 
+// --- Props ---
+type ManagePayslipModalProps = {
+  isOpen: boolean;
+  onClose: () => void;
+  payslipData: PayslipData; // The core payslip data
+  onReleaseSalary: ReleaseSalaryHandler;
+  isReleasing: boolean; // Loading state specifically for the release action
+  releaseError: string | null; // Error from the release action
+  // --- Added Props for Historical Data Display ---
+  attendanceRecords: AttendanceRecord[];
+  breakdownItems: SalaryBreakdownItem[];
+  isModalDataLoading: boolean; // Loading state for attendance/breakdown
+  modalDataError: string | null; // Error fetching attendance/breakdown
+};
+
 // --- Helper Functions ---
-// Formats number (assumed smallest unit like centavos) to PHP currency string
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
     typeof value !== "number" ||
     isNaN(value) ||
     !isFinite(value)
-  ) {
+  )
     value = 0;
-  }
-  // Convert from smallest unit (e.g., centavos) to main unit (PHP) for display
-  const amountInPHP = value;
-  return amountInPHP.toLocaleString("en-PH", {
+  return value.toLocaleString("en-PH", {
     style: "currency",
     currency: "PHP",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 };
-
-const formatDate = (date: Date | null | undefined): string => {
-  if (!date || !(date instanceof Date) || isNaN(date.getTime())) return "N/A";
+const formatDate = (date: Date | string | null | undefined): string => {
+  if (!date) return "N/A";
   try {
-    return format(date, "PP p");
+    return format(new Date(date), "MMM d, yyyy");
   } catch {
-    // Format: Aug 15, 2024, 3:30 PM
     return "Invalid Date";
   }
 };
-
 const formatDateRange = (start: Date, end: Date): string => {
   if (
     !start ||
@@ -88,280 +98,284 @@ const formatDateRange = (start: Date, end: Date): string => {
   }
 };
 
-interface ManagePayslipModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  payslipData: PayslipData | null; // The specific payslip to display
-  onReleaseSalary: ReleaseSalaryHandler; // Function called when 'Release' is clicked
-  isLoading: boolean; // True when the release action is in progress
-  releaseError?: string | null; // Error message from the release action, if any
-}
+// Calendar Styles (similar to ExpandedUserSalary)
+const modifierStyles = {
+  present: {
+    backgroundColor: "#A7F3D0",
+    color: "#065F46",
+    fontWeight: "bold",
+    borderRadius: "50%",
+  },
+  absent: {
+    backgroundColor: "#FECACA",
+    color: "#991B1B",
+    textDecoration: "line-through",
+    opacity: 0.8,
+    borderRadius: "50%",
+  },
+  today: { fontWeight: "bold" },
+};
 
-// --- Main Modal Component ---
+// --- Component ---
 export default function ManagePayslipModal({
   isOpen,
   onClose,
   payslipData,
   onReleaseSalary,
-  isLoading, // This is the loading state for the RELEASE action
+  isReleasing,
   releaseError,
+  // --- Destructure new props ---
+  attendanceRecords,
+  breakdownItems,
+  isModalDataLoading,
+  modalDataError,
 }: ManagePayslipModalProps) {
-  const [showBreakdown, setShowBreakdown] = useState(false);
-
-  // Trigger the release action passed from the parent
-  const handleReleaseClick = async () => {
-    // Prevent action if no data, already loading, or not pending
-    if (
-      !payslipData ||
-      isLoading ||
-      payslipData.status !== PayslipStatus.PENDING
-    ) {
-      return;
-    }
-    // Parent component (ManagePayslips) handles the actual server call and state update
-    try {
-      await onReleaseSalary(payslipData.id);
-      // Parent will typically close modal on success or handle state updates
-    } catch (error) {
-      // Error state is managed by parent and passed via `releaseError` prop
-      console.error("Release action failed (reported by parent):", error);
-    }
+  const handleReleaseClick = () => {
+    if (isReleasing || payslipData.status !== PayslipStatus.PENDING) return;
+    onReleaseSalary(payslipData.id);
   };
 
-  // Memoize derived values safely
-  const totalDeductions = useMemo(
-    () => payslipData?.totalDeductions ?? 0,
-    [payslipData],
+  // Prepare calendar modifiers
+  const presentDays = React.useMemo(
+    () =>
+      attendanceRecords
+        ?.filter((r) => r.isPresent)
+        .map((r) => new Date(r.date))
+        .filter(isValid) ?? [],
+    [attendanceRecords],
   );
-  const totalBonuses = useMemo(
-    () => payslipData?.totalBonuses ?? 0,
-    [payslipData],
+  const absentDays = React.useMemo(
+    () =>
+      attendanceRecords
+        ?.filter((r) => !r.isPresent)
+        .map((r) => new Date(r.date))
+        .filter(isValid) ?? [],
+    [attendanceRecords],
   );
-  const breakdownItems = useMemo(
-    () => payslipData?.breakdownItems ?? [],
-    [payslipData],
-  );
+  const periodStartDate = payslipData.periodStartDate;
+  const periodEndDate = payslipData.periodEndDate;
 
-  // Render nothing if modal is not open
-  if (!isOpen) {
-    return null;
-  }
-
-  // Render loading state if modal is open but data is null (might happen briefly)
-  if (!payslipData) {
-    return (
-      <Modal
-        isOpen={true}
-        onClose={onClose}
-        title="Loading Payslip..."
-        size="lg"
-      >
-        <div className="flex h-60 items-center justify-center text-gray-500">
-          <Loader2 className="mr-2 h-6 w-6 animate-spin" /> Loading details...
-        </div>
-      </Modal>
-    );
-  }
-
-  // Determine if the payslip is pending release
-  const isPending = payslipData.status === PayslipStatus.PENDING;
+  // Basic account data from payslipData
+  const accountData = payslipData.accountData;
 
   return (
     <Modal
-      isOpen={true} // Controlled by parent's state
+      isOpen={isOpen}
       onClose={onClose}
-      title={<DialogTitle>Manage Payslip</DialogTitle>} // Use DialogTitle component
-      size="2xl" // Adjust size as needed for content
-      contentClassName="p-0" // Handle padding internally
-      containerClassName="relative m-auto flex max-h-[90vh] w-full flex-col overflow-hidden rounded-lg bg-gray-100 shadow-xl border border-gray-200"
+      title={
+        <DialogTitle>
+          {payslipData.status === PayslipStatus.PENDING
+            ? "Manage Payslip"
+            : "Payslip Details"}
+        </DialogTitle>
+      }
+      // Adjust container size if needed
+      containerClassName="relative m-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-customOffWhite shadow-xl flex flex-col" // Increased max-w, added flex
     >
-      {/* Modal Content Structure */}
-      <div className="flex h-full flex-col">
-        {/* 1. Header Info */}
-        <div className="flex-shrink-0 border-b border-gray-200 bg-white p-4 md:p-5">
-          <div className="flex flex-col items-start justify-between gap-2 sm:flex-row sm:items-center">
-            {/* Employee & Period */}
-            <div className="flex-grow">
-              <h3 className="flex items-center gap-2 text-base font-semibold text-gray-800 md:text-lg">
-                <User size={18} /> {payslipData.employeeName}
-              </h3>
-              <p className="mt-1 flex items-center gap-2 text-xs text-gray-500 md:text-sm">
-                <CalendarDays size={16} />
-                {formatDateRange(
-                  payslipData.periodStartDate,
-                  payslipData.periodEndDate,
-                )}
+      {/* Close Button (Top Right) */}
+      <button
+        onClick={onClose}
+        className="absolute right-3 top-3 p-1 text-gray-400 hover:text-gray-600 focus:outline-none"
+        aria-label="Close modal"
+      >
+        <X size={20} />
+      </button>
+      {/* Main Scrollable Content */}
+      <div className="flex-grow space-y-4 overflow-y-auto p-4 sm:p-6">
+        {/* Payslip Summary */}
+        <div className="rounded border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
+          <h3 className="mb-2 text-base font-semibold text-gray-800">
+            Payslip Summary for {payslipData.employeeName}
+          </h3>
+          <p className="text-sm text-gray-600">
+            Period:{" "}
+            {formatDateRange(
+              payslipData.periodStartDate,
+              payslipData.periodEndDate,
+            )}
+          </p>
+          {payslipData.status === PayslipStatus.RELEASED &&
+            payslipData.releasedDate && (
+              <p className="text-sm text-green-600">
+                Released: {format(new Date(payslipData.releasedDate), "PPpp")}
               </p>
-            </div>
-            {/* Status Badge */}
-            <div
-              className={`ml-auto inline-flex flex-shrink-0 items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium sm:ml-4 ${isPending ? "bg-orange-100 text-orange-700" : "bg-green-100 text-green-700"} `}
-            >
-              {isPending ? <Clock size={14} /> : <CheckCircle2 size={14} />}
-              {payslipData.status}
-            </div>
-          </div>
-          {/* Released Date Info */}
-          {!isPending && payslipData.releasedDate && (
-            <p className="mt-2 flex items-center gap-1.5 text-xs text-gray-500">
-              <Clock size={12} /> Released:{" "}
-              {formatDate(payslipData.releasedDate)}
+            )}
+          <div className="mt-2 space-y-1 border-t border-gray-200 pt-2 text-sm">
+            <p className="flex justify-between">
+              <span>Base Salary:</span>{" "}
+              <span>{formatCurrency(payslipData.baseSalary)}</span>
             </p>
-          )}
+            <p className="flex justify-between">
+              <span>Total Commissions:</span>{" "}
+              <span className="text-green-600">
+                (+) {formatCurrency(payslipData.totalCommissions)}
+              </span>
+            </p>
+            <p className="flex justify-between">
+              <span>Total Bonuses:</span>{" "}
+              <span className="text-green-600">
+                (+) {formatCurrency(payslipData.totalBonuses)}
+              </span>
+            </p>
+            <p className="flex justify-between">
+              <span>Total Deductions:</span>{" "}
+              <span className="text-red-600">
+                (-) {formatCurrency(payslipData.totalDeductions)}
+              </span>
+            </p>
+            <p className="mt-1 flex justify-between border-t border-gray-300 pt-1 text-base font-bold text-blue-700">
+              <span>Net Pay:</span>
+              <span>{formatCurrency(payslipData.netPay)}</span>
+            </p>
+          </div>
         </div>
-        {/* Display Release Error if it exists */}
-        {releaseError && (
-          <div className="flex flex-shrink-0 items-center gap-2 border-b border-red-200 bg-red-100 p-3 text-sm text-red-700">
-            <AlertCircle size={16} />
-            <span>Release Failed: {releaseError}</span>
+
+        {/* Loading/Error state for historical data */}
+        {isModalDataLoading && (
+          <div className="flex items-center justify-center py-6 text-gray-500">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading details...
           </div>
         )}
-        {/* 2. Scrollable Main Content */}
-        <div className="flex-grow space-y-4 overflow-y-auto p-4 md:p-6">
-          {/* Financial Summary Card */}
-          <div className="grid grid-cols-1 gap-4 rounded-lg border border-gray-200 bg-white p-4 shadow-sm md:grid-cols-3 md:gap-6">
-            {/* Column 1 & 2: Earnings & Deductions */}
-            <div className="space-y-3 md:col-span-2">
-              <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500">
-                Summary
-              </h4>
-              {/* Base Salary */}
-              <div className="flex justify-between border-b pb-1">
-                <span className="flex items-center gap-1.5 text-sm text-gray-600">
-                  <Coins size={16} /> Base Salary
-                </span>
-                <span className="font-medium text-gray-800">
-                  {formatCurrency(payslipData.baseSalary)}
-                </span>
-              </div>
-              {/* Commissions */}
-              <div className="flex justify-between border-b pb-1">
-                <span className="flex items-center gap-1.5 text-sm text-gray-600">
-                  <Sparkles size={16} /> Commissions
-                </span>
-                <span className="font-medium text-gray-800">
-                  {formatCurrency(payslipData.totalCommissions)}
-                </span>
-              </div>
-              {/* Optional Bonuses */}
-              {totalBonuses > 0 && (
-                <div className="flex justify-between border-b pb-1">
-                  <span className="flex items-center gap-1.5 text-sm text-gray-600">
-                    <Sparkles size={16} /> Bonuses
-                  </span>
-                  <span className="font-medium text-gray-800">
-                    {formatCurrency(totalBonuses)}
-                  </span>
-                </div>
-              )}
-              {/* Optional Deductions */}
-              {totalDeductions > 0 && (
-                <div className="flex justify-between border-b pb-1 text-red-600">
-                  <span className="flex items-center gap-1.5 text-sm">
-                    <ArrowDownCircle size={16} /> Total Deductions
-                  </span>
-                  <span className="font-medium">
-                    ({formatCurrency(totalDeductions)})
-                  </span>
-                </div>
-              )}
-            </div>
-
-            {/* Column 3: Net Pay */}
-            <div className="flex flex-col items-start justify-center space-y-1 border-t pt-4 md:items-end md:border-l md:border-t-0 md:pl-6 md:pt-0">
-              <span className="text-sm font-semibold uppercase tracking-wider text-gray-500">
-                Net Pay
-              </span>
-              <span className="text-2xl font-bold text-blue-600 md:text-3xl">
-                {formatCurrency(payslipData.netPay)}
-              </span>
-              <span className="text-xs text-gray-500">Amount to Release</span>
-            </div>
+        {modalDataError && !isModalDataLoading && (
+          <div className="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700">
+            <AlertCircle size={18} /> <span>{modalDataError}</span>
           </div>
+        )}
 
-          {/* Commission Breakdown (Collapsible) */}
-          {breakdownItems.length > 0 && (
-            <div className="rounded-lg border border-gray-200 bg-white shadow-sm">
-              <button
-                onClick={() => setShowBreakdown(!showBreakdown)}
-                className="flex w-full items-center justify-between p-3 text-left text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none"
-                aria-expanded={showBreakdown}
-              >
-                <span className="flex items-center gap-2">
-                  <Receipt size={16} /> Commission Details (
-                  {breakdownItems.length})
-                </span>
-                {showBreakdown ? (
-                  <ChevronUp size={18} />
-                ) : (
-                  <ChevronDown size={18} />
-                )}
-              </button>
-              {/* Breakdown Content */}
-              {showBreakdown && (
-                <div className="max-h-[250px] space-y-2 overflow-y-auto border-t border-gray-200 p-3">
+        {/* Conditional display of Attendance and Breakdown */}
+        {!isModalDataLoading && !modalDataError && (
+          <>
+            {/* Attendance Section */}
+            <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
+              <h4 className="mb-3 text-center text-base font-semibold text-gray-800 sm:text-left">
+                Attendance ({format(periodStartDate, "MMMM yyyy")})
+              </h4>
+              <div className="flex flex-col items-center">
+                <DayPicker
+                  showOutsideDays
+                  fixedWeeks
+                  month={periodStartDate}
+                  fromDate={periodStartDate}
+                  toDate={periodEndDate}
+                  modifiers={{
+                    present: presentDays,
+                    absent: absentDays,
+                    today: new Date(),
+                  }}
+                  modifiersStyles={modifierStyles}
+                  className="text-sm" // Make calendar slightly smaller
+                />
+                <div className="mt-3 flex justify-center space-x-4 text-xs text-gray-600">
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{
+                        backgroundColor: modifierStyles.present.backgroundColor,
+                      }}
+                    ></span>{" "}
+                    Present ({presentDays.length})
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{
+                        backgroundColor: modifierStyles.absent.backgroundColor,
+                      }}
+                    ></span>{" "}
+                    Absent ({absentDays.length})
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Commission Breakdown Section */}
+            <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
+              <h4 className="mb-3 text-center text-base font-semibold text-gray-800 sm:text-left">
+                Commission Breakdown for Period
+              </h4>
+              {breakdownItems.length > 0 ? (
+                <ul className="max-h-[200px] space-y-2 overflow-y-auto pr-1">
                   {breakdownItems.map((item) => (
-                    <div
+                    <li
                       key={item.id}
-                      className="rounded border border-gray-100 p-2 text-xs hover:bg-gray-50"
+                      className="rounded-md border border-gray-100 bg-white p-2.5 text-xs"
                     >
-                      <div className="flex flex-wrap justify-between gap-x-2 font-medium">
-                        <span className="text-gray-800">
-                          {item.serviceTitle}
+                      <div className="mb-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                        <span className="flex items-center gap-1.5 font-medium text-gray-800">
+                          <Tag size={12} className="text-blue-500" />{" "}
+                          {item.serviceTitle || "Unknown"}
                         </span>
-                        <span className="text-green-600">
+                        <span className="whitespace-nowrap font-semibold text-green-600">
                           +{formatCurrency(item.commissionEarned)}
                         </span>
                       </div>
-                      <div className="mt-0.5 text-gray-500">
-                        <span>Client: {item.customerName} | </span>
-                        <span>Date: {formatDate(item.transactionDate)}</span>
+                      <div className="space-y-0.5 text-gray-500">
+                        <p className="flex items-center gap-1">
+                          <User size={10} /> Client:{" "}
+                          {item.customerName || "N/A"}
+                        </p>
+                        <p className="flex items-center gap-1">
+                          <PhilippinePeso size={10} /> Price:{" "}
+                          {formatCurrency(item.servicePrice)} (
+                          {(SALARY_COMMISSION_RATE * 100).toFixed(0)}% rate)
+                        </p>
+                        <p className="flex items-center gap-1">
+                          <CalendarDays size={10} /> Date:{" "}
+                          {item.transactionDate
+                            ? format(new Date(item.transactionDate), "PP")
+                            : "N/A"}
+                        </p>
                       </div>
-                    </div>
+                    </li>
                   ))}
-                  <div className="mt-2 border-t pt-2 text-right text-sm font-semibold">
-                    Total Commission:{" "}
-                    {formatCurrency(payslipData.totalCommissions)}
-                  </div>
-                </div>
+                </ul>
+              ) : (
+                <p className="py-4 text-center italic text-gray-500">
+                  No commission details found for this period.
+                </p>
               )}
             </div>
+          </>
+        )}
+      </div>{" "}
+      {/* End Scrollable Content */}
+      {/* Footer / Actions */}
+      <div className="flex shrink-0 items-center justify-between gap-4 border-t border-gray-200 bg-gray-50 p-4">
+        {/* Release Error Display */}
+        <div className="flex-grow text-left">
+          {releaseError && (
+            <p className="text-sm text-red-600">{releaseError}</p>
           )}
-        </div>{" "}
-        {/* End Scrollable Content */}
-        {/* 3. Footer Actions */}
-        <div className="flex flex-shrink-0 flex-wrap items-center justify-end gap-3 border-t border-gray-200 bg-gray-100 p-4">
-          <Button type="button" onClick={onClose} invert={true} size="sm">
+        </div>
+        {/* Action Buttons */}
+        <div className="flex gap-3">
+          <Button
+            type="button"
+            onClick={onClose}
+            invert={true}
+            size="sm"
+            disabled={isReleasing}
+          >
             Close
           </Button>
-          {/* Only show Release button if status is PENDING */}
-          {isPending && (
+          {payslipData.status === PayslipStatus.PENDING && (
             <Button
               type="button"
               onClick={handleReleaseClick}
-              disabled={isLoading} // Disable while release action is running
+              disabled={isReleasing || isModalDataLoading} // Disable if releasing or details still loading
               size="sm"
-              className="min-w-[130px]" // Ensure button doesn't jump size
+              className="bg-green-600 text-white hover:bg-green-700" // Explicit styling for primary action
             >
-              {isLoading ? (
-                <>
-                  <Loader2 size={16} className="mr-1.5 animate-spin" />{" "}
-                  Releasing...
-                </>
+              {isReleasing ? (
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
               ) : (
-                "Release Salary"
+                <CheckCircle size={16} className="mr-1.5" />
               )}
+              {isReleasing ? "Releasing..." : "Release Salary"}
             </Button>
           )}
-          {/* Optional: Show confirmation text when already released */}
-          {!isPending && (
-            <span className="flex items-center gap-1.5 text-sm text-green-700">
-              <CheckCircle2 size={16} /> Salary Released
-            </span>
-          )}
         </div>
-      </div>{" "}
-      {/* End Modal Content Flex Container */}
+      </div>
     </Modal>
   );
 }

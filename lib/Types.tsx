@@ -1,31 +1,33 @@
 import type {
   Role,
+  Prisma,
   PaymentMethod,
   Service,
   Account,
   Branch,
   Attendance,
   DiscountRule,
+  AvailedService,
+  Transaction,
   Status,
   PayslipStatus,
 } from "@prisma/client";
 import { MultiValue, ActionMeta } from "react-select";
 
-export interface AccountData {
+export type AccountData = {
   id: string;
   name: string;
-  role: Role[];
-  salary: number;
-  dailyRate: number;
-}
-
+  role: Role[]; // <-- ADDED ROLE
+  salary: number; // <-- ADDED SALARY
+  dailyRate?: number | null;
+};
 export type SalaryBreakdownItem = {
-  id: string;
-  serviceTitle: string;
-  customerName: string;
-  transactionDate: Date;
+  id: string; // AvailedService ID
+  serviceTitle: string | null;
   servicePrice: number;
   commissionEarned: number;
+  customerName: string | null;
+  transactionDate: Date | null;
 };
 
 export const SALARY_COMMISSION_RATE = 0.1;
@@ -37,6 +39,16 @@ export type CustomerProp = {
 };
 
 export type PayslipStatusOption = PayslipStatus | "NOT_FOUND" | null;
+
+export type CurrentSalaryDetailsData = {
+  attendanceRecords: AttendanceRecord[];
+  breakdownItems: SalaryBreakdownItem[];
+  periodStartDate: Date;
+  periodEndDate: Date;
+  accountData: AccountData | null;
+  lastReleasedPayslipEndDate?: Date | null; // Keep for attendance filtering
+  lastReleasedTimestamp?: Date | null; // <-- ADD EXACT TIMESTAMP
+};
 
 export type ServiceProps = {
   title: string;
@@ -101,11 +113,12 @@ export type TransactionProps = {
   status: Status;
 };
 
-export interface AttendanceRecord {
-  date: Date;
+export type AttendanceRecord = {
+  id: string;
+  date: string | Date; // Store as ISO string or Date object
   isPresent: boolean;
   notes?: string | null;
-}
+};
 
 export type MonthlySalesWithPaymentBreakdown = {
   month: string;
@@ -146,7 +159,6 @@ export type RequestPayslipHandler = (
   payslipId?: string;
   status?: PayslipStatus;
 }>;
-
 export type PayslipData = {
   id: string;
   employeeId: string;
@@ -155,12 +167,13 @@ export type PayslipData = {
   periodEndDate: Date;
   baseSalary: number;
   totalCommissions: number;
-  totalDeductions?: number;
-  totalBonuses?: number;
+  totalDeductions: number;
+  totalBonuses: number;
   netPay: number;
   status: PayslipStatus;
-  releasedDate?: Date | null;
-  breakdownItems?: SalaryBreakdownItem[];
+  releasedDate: Date | null;
+  // --- Added for Modal Display ---
+  accountData?: AccountData | null; // Include basic account info needed by modal
 };
 
 export type ReleaseSalaryHandler = (payslipId: string) => Promise<void>;
@@ -270,6 +283,22 @@ export type TransactionSubmissionResponse = {
   errors?: Record<string, string[]>; // Field-specific errors on validation/submission failure
 };
 
+export interface TabConfig {
+  id: ActiveTab;
+  label: string;
+  icon: React.ElementType;
+}
+
+export type TransactionForManagement = Transaction & {
+  customer: { name: string; email: string | null } | null;
+  // Removed: branch: { title: string } | null;
+  voucherUsed: { code: string } | null;
+  availedServices: (AvailedService & {
+    service: { title: string } | null;
+    servedBy: { name: string } | null;
+  })[];
+};
+
 export type ActiveTab =
   | "services"
   | "serviceSets"
@@ -278,10 +307,33 @@ export type ActiveTab =
   | "vouchers"
   | "giftCertificate"
   | "discounts"
-  | "branches";
+  | "branches"
+  | "transactions";
+
+export type ServerActionResponse<T = null> =
+  | { success: true; data?: T; message?: string; status?: PayslipStatusOption } // Add status for payslip actions
+  | { success: false; message: string; errors?: Record<string, string[]> };
 
 export interface TabConfig {
   id: ActiveTab;
   label: string;
-  icon: React.ElementType;
+  icon: React.ElementType; // Or specific icon type like LucideIcon
 }
+
+export interface GetTransactionsFilters {
+  startDate?: string; // ISO Date string or undefined
+  endDate?: string; // ISO Date string or undefined
+  status?: Status;
+  // Removed: branchId?: string;
+  // Add pagination parameters if needed: page?: number; pageSize?: number;
+}
+
+export type TransactionListData = Transaction & {
+  customer: { name: string; email: string | null } | null;
+  // branch is NOT included here
+  voucherUsed: { code: string } | null;
+  availedServices: (AvailedService & {
+    service: { title: string } | null;
+    servedBy: { name: string } | null;
+  })[];
+};

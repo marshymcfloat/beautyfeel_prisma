@@ -1,4 +1,3 @@
-// src/app/(app)/customize/_components/ManageServiceSets.tsx
 "use client";
 import React, {
   useState,
@@ -11,32 +10,21 @@ import {
   createServiceSetAction,
   updateServiceSetAction,
   deleteServiceSetAction,
-  // Assuming these actions exist or you use direct fetch/API routes
-  // If using actions, import them:
-  // getServiceSetsAction,
-  // getAllServicesAction, // Or reuse getAllServices from other components
 } from "@/lib/ServerAction"; // Adjust path if necessary
 import type {
   ServiceSet as PrismaServiceSet,
   Service as PrismaService,
 } from "@prisma/client";
 
-// Shared UI Components
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import { Plus, Edit3, Trash2 } from "lucide-react"; // Import icons
 
-// Define more specific types
 type Service = Pick<PrismaService, "id" | "title" | "price">; // Only need these fields
 type ServiceSet = PrismaServiceSet & { services?: Service[] };
 
-// --- API Fetch Functions (Keep or replace with Server Actions) ---
-// It's generally better to use Server Actions if the pattern is established
 const fetchServiceSets = async (): Promise<ServiceSet[]> => {
-  console.log("Fetching /api/service-sets..."); // Keep for debugging if needed
-  // Replace with Server Action if available:
-  // return await getServiceSetsAction();
   const response = await fetch("/api/service-sets");
   if (!response.ok)
     throw new Error(`Failed to fetch service sets: ${response.statusText}`);
@@ -45,9 +33,6 @@ const fetchServiceSets = async (): Promise<ServiceSet[]> => {
 };
 
 const fetchAvailableServices = async (): Promise<Service[]> => {
-  console.log("Fetching /api/services (for sets)..."); // Keep for debugging if needed
-  // Replace with Server Action if available:
-  // return await getAllServicesAction(); // Or reuse existing getServices action
   const response = await fetch("/api/services");
   if (!response.ok)
     throw new Error(`Failed to fetch services: ${response.statusText}`);
@@ -176,7 +161,6 @@ export default function ManageServiceSets() {
   const closeModal = () => setIsModalOpen(false);
   const isSaving = isPending;
 
-  // --- Style constants (Adopt from other components) ---
   const thStyleBase =
     "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
   const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Added align-top

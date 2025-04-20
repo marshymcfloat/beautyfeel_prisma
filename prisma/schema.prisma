@@ -50,7 +50,6 @@ enum AvailedItemType {
   SET
 }
 
-// --- Enums ---
 enum Role {
   OWNER
   CASHIER

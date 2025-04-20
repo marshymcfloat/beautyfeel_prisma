@@ -1,21 +1,25 @@
-// app/(dashboard)/page.tsx (or your specific page route)
-import Link from "next/link";
+// app/(marketing)/page.tsx (or wherever your dashboard page is)
+
+// No Link import needed here for the login button
 
 export default function DashboardPage() {
   return (
-    <main className="relative flex h-screen flex-grow flex-col items-center justify-center p-4 pt-16 sm:pt-4">
-      <Link href={"/login"} legacyBehavior>
-        <a className="absolute right-4 top-4 text-sm underline sm:right-6 sm:top-6">
-          login
-        </a>
-      </Link>
+    // Keep 'main' semantic, remove layout/positioning classes
+    <main>
+      {/* Login Link component is REMOVED from here */}
 
-      <div className="w-full px-4 text-center lg:max-w-7xl">
-        <p className="text-xl lg:text-3xl lg:tracking-widest">
+      <div className="w-full max-w-7xl px-4 text-center">
+        {" "}
+        {/* Ensure max-width if needed */}
+        <p className="text-xl text-black lg:text-3xl lg:tracking-widest">
+          {" "}
+          {/* Ensure text color */}
           Your Beauty, Our Passion
         </p>
         <div className="mt-2 border-t-4 border-black">
-          <h1 className="text-nowrap break-words text-4xl font-medium uppercase leading-tight tracking-[12px] lg:text-8xl lg:tracking-[60px]">
+          <h1 className="text-nowrap break-words text-4xl font-medium uppercase leading-tight tracking-[12px] text-black lg:text-8xl lg:tracking-[60px]">
+            {" "}
+            {/* Ensure text color */}
             beautyfeel
           </h1>
         </div>

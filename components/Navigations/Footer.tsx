@@ -1,10 +1,9 @@
-// components/Navigations/Footer.tsx
 import { Facebook } from "lucide-react";
 import Link from "next/link";
 
 export default function Footer() {
   return (
-    <footer className="absolute bottom-0 flex min-h-[40px] w-full flex-shrink-0 items-center bg-customBlack px-4 py-2 sm:px-6">
+    <footer className="flex min-h-[40px] w-full flex-shrink-0 items-center bg-customBlack px-4 py-2 sm:px-6">
       <div className="flex items-center gap-3">
         <Link
           target="_blank"

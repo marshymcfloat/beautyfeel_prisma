@@ -1,23 +1,29 @@
-// src/app/dashboard/[accountID]/page.tsx
+// src/app/dashboard/[accountID]/page.tsx (or similar path)
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react"; // Removed unused useTransition here
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { io, Socket } from "socket.io-client";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { startOfMonth, endOfMonth, format, isValid } from "date-fns";
-import { Status, Role } from "@prisma/client"; // Assuming Status enum is needed
-import { AlertCircle, ListChecks, X, ChevronLeft } from "lucide-react";
+import { format, isValid } from "date-fns";
+import { Status, Role } from "@prisma/client";
+import {
+  AlertCircle,
+  ListChecks,
+  X,
+  ChevronLeft,
+  Eye,
+  History,
+  Loader2,
+} from "lucide-react";
 
-// --- Server Action Imports ---
 import {
   getActiveTransactions,
   getCurrentAccountData,
-  getSalaryBreakdown,
   getSalesDataLast6Months,
-  getAttendanceForPeriod,
-  getPayslipStatusForPeriod,
-  requestPayslipGeneration,
+  // --- Actions called by buttons ---
+  getCurrentSalaryDetails, // This now includes last released date AND timestamp
+  getMyReleasedPayslips,
 } from "@/lib/ServerAction"; // Adjust path
 
 // --- UI Component Imports ---
@@ -28,12 +34,12 @@ import Modal from "@/components/Dialog/Modal";
 import ExpandedListedServices from "@/components/ui/ExpandedListedServices";
 import PreviewListedServices from "@/components/ui/PreviewListedServices";
 import PreviewUserSalary from "@/components/ui/PreviewUserSalary";
-// Ensure this is the correct path and component name
-import ExpandedUserSalary from "@/components/ui/ExpandedUserSalary";
+import CurrentSalaryDetailsModal from "@/components/ui/CurrentSalaryDetailsModal";
 import PreviewSales from "@/components/ui/PreviewSales";
 import ExpandedSales from "@/components/ui/ExpandedSales";
 import ManageAttendance from "@/components/ui/customize/ManageAttendance";
-import LoadingWidget from "@/components/ui/LoadingWidget"; // Adjust path
+import LoadingWidget from "@/components/ui/LoadingWidget";
+import PayslipHistoryModal from "@/components/ui/PayslipHistoryModal";
 
 import {
   AccountData,
@@ -42,8 +48,25 @@ import {
   AttendanceRecord,
   AvailedServicesProps,
   TransactionProps,
-  PayslipStatusOption,
+  PayslipData,
+  CurrentSalaryDetailsData, // The updated type from Types.ts
 } from "@/lib/Types"; // Adjust path
+
+// --- Formatting ---
+const formatCurrencyWidget = (value: number | null | undefined): string => {
+  if (
+    value == null ||
+    typeof value !== "number" ||
+    isNaN(value) ||
+    !isFinite(value)
+  )
+    value = 0;
+  // Format based on smallest unit assumption
+  return (value / 100).toLocaleString("en-PH", {
+    style: "currency",
+    currency: "PHP",
+  });
+};
 
 export default function Home() {
   const params = useParams();
@@ -51,44 +74,52 @@ export default function Home() {
   const accountId =
     typeof params.accountID === "string" ? params.accountID : undefined;
 
+  // Socket State
   const [socket, setSocket] = useState<Socket | null>(null);
+  const [socketError, setSocketError] = useState<string | null>(null);
+
+  // Data State
   const [allPendingTransactions, setAllPendingTransactions] = useState<
     TransactionProps[]
   >([]);
+  const [accountData, setAccountData] = useState<AccountData | null>(null);
+  const [salesData, setSalesData] = useState<SalesDataDetailed | null>(null);
+
+  // Loading State
+  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
+  const [isLoadingAccount, setIsLoadingAccount] = useState(true);
+  const [isLoadingSales, setIsLoadingSales] = useState(true);
+
+  // Modal State
+  const [isMyServicesModalOpen, setIsMyServicesModalOpen] = useState(false);
+  const [isSalesDetailsModalOpen, setIsSalesDetailsModalOpen] = useState(false);
+
+  // --- State for CURRENT Salary Details Modal ---
+  const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
+  const [isLoadingDetails, setIsLoadingDetails] = useState(false);
+  const [detailsError, setDetailsError] = useState<string | null>(null);
+  const [currentDetails, setCurrentDetails] =
+    useState<CurrentSalaryDetailsData | null>(null);
+
+  // --- State for Payslip History Modal ---
+  const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [payslipHistory, setPayslipHistory] = useState<PayslipData[]>([]);
+
+  // State for tracking socket actions
   const [processingServeActions, setProcessingServeActions] = useState<
     Set<string>
   >(new Set());
-  const [isMyServicesModalOpen, setIsMyServicesModalOpen] = useState(false);
-  const [isSalaryDetailsModalOpen, setIsSalaryDetailsModalOpen] =
-    useState(false);
-  const [isSalesDetailsModalOpen, setIsSalesDetailsModalOpen] = useState(false);
-  const [accountData, setAccountData] = useState<AccountData | null>(null);
-  const [salaryBreakdown, setSalaryBreakdown] = useState<SalaryBreakdownItem[]>(
-    [],
-  );
-  const [attendanceRecords, setAttendanceRecords] = useState<
-    AttendanceRecord[]
-  >([]);
-  const [salesData, setSalesData] = useState<SalesDataDetailed | null>(null);
-  const [isLoadingTransactions, setIsLoadingTransactions] = useState(true);
-  const [isLoadingAccount, setIsLoadingAccount] = useState(true);
-  const [isLoadingBreakdown, setIsLoadingBreakdown] = useState(false);
-  const [isLoadingAttendance, setIsLoadingAttendance] = useState(false);
-  const [isLoadingSales, setIsLoadingSales] = useState(true);
-  const [socketError, setSocketError] = useState<string | null>(null);
-  const [attendanceError, setAttendanceError] = useState<string | null>(null);
-  const [currentPeriod, setCurrentPeriod] = useState(() => {
-    const today = new Date();
-    return { start: startOfMonth(today), end: endOfMonth(today) };
-  });
-  const [payslipStatus, setPayslipStatus] = useState<PayslipStatusOption>(null);
-  const [isPayslipStatusLoading, setIsPayslipStatusLoading] = useState(false);
 
+  // --- Socket Connection Effect ---
   useEffect(() => {
     if (!accountId) return;
-    const backendUrl = "https://beautyfeel-prisma.onrender.com";
+    const backendUrl =
+      process.env.NEXT_PUBLIC_SOCKET_URL ||
+      "https://beautyfeel-prisma.onrender.com";
     if (!backendUrl) {
-      console.error("Socket URL missing.");
+      console.error("Socket URL missing (NEXT_PUBLIC_SOCKET_URL).");
       setSocketError("Config Error.");
       return;
     }
@@ -118,8 +149,8 @@ export default function Home() {
     };
   }, [accountId]);
 
-  // --- Data Fetching Logic (Stable) ---
-  const fetchAllData = useCallback(async () => {
+  // --- Initial Data Fetch ---
+  const fetchInitialData = useCallback(async () => {
     if (!accountId) {
       setIsLoadingTransactions(false);
       setIsLoadingAccount(false);
@@ -130,39 +161,25 @@ export default function Home() {
     setIsLoadingSales(true);
     setIsLoadingTransactions(true);
     try {
-      const [accountResult, salesResult, transactionsResult] =
-        await Promise.allSettled([
-          getCurrentAccountData(accountId),
-          getSalesDataLast6Months(),
-          getActiveTransactions(),
-        ]);
-      if (accountResult.status === "fulfilled" && accountResult.value)
-        setAccountData(accountResult.value);
-      else {
-        console.error(
-          "Failed fetch account:",
-          accountResult.status === "rejected"
-            ? accountResult.reason
-            : "No data",
-        );
-        setAccountData(null);
-      }
+      const accountResult = await getCurrentAccountData(accountId);
+      setAccountData(accountResult);
+      const [salesResult, transactionsResult] = await Promise.allSettled([
+        getSalesDataLast6Months(),
+        getActiveTransactions(),
+      ]);
       if (salesResult.status === "fulfilled" && salesResult.value)
         setSalesData(salesResult.value);
-      else {
+      else
         console.error(
           "Failed fetch sales:",
           salesResult.status === "rejected" ? salesResult.reason : "No data",
         );
-        setSalesData(null);
-      }
       if (
         transactionsResult.status === "fulfilled" &&
         Array.isArray(transactionsResult.value)
-      ) {
-        // Assume transaction processing logic is correct
+      )
         setAllPendingTransactions(transactionsResult.value);
-      } else {
+      else {
         console.error(
           "Failed fetch transactions:",
           transactionsResult.status === "rejected"
@@ -172,7 +189,7 @@ export default function Home() {
         setAllPendingTransactions([]);
       }
     } catch (error) {
-      console.error("Unexpected fetch error:", error);
+      console.error("Unexpected initial fetch error:", error);
       setAccountData(null);
       setSalesData(null);
       setAllPendingTransactions([]);
@@ -182,16 +199,13 @@ export default function Home() {
       setIsLoadingTransactions(false);
     }
   }, [accountId]);
-
-  // --- Initial Data Fetch (Stable) ---
   useEffect(() => {
-    if (accountId) fetchAllData();
-  }, [accountId, fetchAllData]);
+    fetchInitialData();
+  }, [fetchInitialData]);
 
-  // --- Socket Event Handling Effect (Stable) ---
+  // --- Socket Event Handling ---
   useEffect(() => {
     if (!socket) return;
-    // Define handlers using useCallback or ensure dependencies are listed if needed
     const handleAvailedServiceUpdate = (
       updatedServiceData: AvailedServicesProps,
     ) => {
@@ -230,9 +244,8 @@ export default function Home() {
           next.delete(error.availedServiceId!);
           return next;
         });
-      } /* Add toast error */
+      }
     };
-    // Attach/Detach Listeners
     socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
     socket.on("transactionCompleted", handleTransactionComplete);
     socket.on("serviceMarkServedError", (err) =>
@@ -248,150 +261,96 @@ export default function Home() {
       handleActionError(err, "serviceUncheckError"),
     );
     return () => {
-      socket.off("availedServiceUpdated", handleAvailedServiceUpdate);
-      socket.off("transactionCompleted", handleTransactionComplete);
+      socket.off("availedServiceUpdated");
+      socket.off("transactionCompleted");
       socket.off("serviceMarkServedError");
       socket.off("serviceUnmarkServedError");
       socket.off("serviceCheckError");
       socket.off("serviceUncheckError");
     };
-  }, [socket]); // Only depends on socket instance
+  }, [socket]);
 
-  // --- Modal Data Fetching Callbacks (Stable) ---
-  const fetchBreakdown = useCallback(async () => {
-    if (
-      !accountId ||
-      !currentPeriod.start ||
-      !currentPeriod.end ||
-      isLoadingBreakdown
-    )
-      return;
-    setIsLoadingBreakdown(true);
-    setSalaryBreakdown([]);
-    try {
-      const data = await getSalaryBreakdown(
-        accountId,
-        currentPeriod.start,
-        currentPeriod.end,
-      );
-      setSalaryBreakdown(data || []);
-    } catch (error) {
-      console.error("fetchBreakdown Error:", error);
-      setSalaryBreakdown([]);
-    } finally {
-      setIsLoadingBreakdown(false);
-    }
-  }, [accountId, currentPeriod.start, currentPeriod.end, isLoadingBreakdown]);
-
-  const fetchAttendance = useCallback(async () => {
-    if (
-      !accountId ||
-      !currentPeriod.start ||
-      !currentPeriod.end ||
-      isLoadingAttendance
-    )
-      return;
-    setIsLoadingAttendance(true);
-    setAttendanceError(null);
-    setAttendanceRecords([]);
-    try {
-      const data = await getAttendanceForPeriod(
-        accountId,
-        currentPeriod.start,
-        currentPeriod.end,
-      );
-      setAttendanceRecords(data || []);
-    } catch (error: any) {
-      console.error("fetchAttendance Error:", error);
-      setAttendanceRecords([]);
-      setAttendanceError(error.message || "Err");
-    } finally {
-      setIsLoadingAttendance(false);
-    }
-  }, [accountId, currentPeriod.start, currentPeriod.end, isLoadingAttendance]);
-
-  const fetchPayslipStatus = useCallback(async () => {
-    if (
-      !accountId ||
-      !currentPeriod.start ||
-      !currentPeriod.end ||
-      !isValid(currentPeriod.start) ||
-      !isValid(currentPeriod.end)
-    )
-      return;
-    setIsPayslipStatusLoading(true);
-    setPayslipStatus(null);
-    try {
-      const status = await getPayslipStatusForPeriod(
-        accountId,
-        currentPeriod.start,
-        currentPeriod.end,
-      );
-      setPayslipStatus(status);
-    } catch (error) {
-      console.error("Failed fetch payslip status:", error);
-      setPayslipStatus(null);
-    } finally {
-      setIsPayslipStatusLoading(false);
-    }
-  }, [accountId, currentPeriod.start, currentPeriod.end]);
-
-  // --- Memoized Derived State (Stable) ---
+  // --- Memoized Derived State ---
   const servicesCheckedByMe = useMemo(() => {
     if (!accountId || !allPendingTransactions) return [];
-    // Ensure Status enum is correctly imported/used if needed here
     return allPendingTransactions
       .filter((tx) => tx.status === Status.PENDING)
       .flatMap((tx) => tx.availedServices ?? [])
       .filter((s) => s.checkedById === accountId);
   }, [allPendingTransactions, accountId]);
 
-  // --- Modal Control Functions (Stable) ---
+  // --- Modal Control & Data Fetching Callbacks ---
   const openMyServicesModal = () => setIsMyServicesModalOpen(true);
   const closeMyServicesModal = () => setIsMyServicesModalOpen(false);
-  const openSalaryDetailsModal = useCallback(() => {
-    if (accountData) {
-      setIsSalaryDetailsModalOpen(true);
-      fetchBreakdown();
-      fetchAttendance();
-      fetchPayslipStatus();
-    } else {
-      console.warn("Cannot open salary modal: Account data missing.");
-    }
-  }, [accountData, fetchBreakdown, fetchAttendance, fetchPayslipStatus]);
-  const closeSalaryDetailsModal = () => setIsSalaryDetailsModalOpen(false);
   const openSalesDetailsModal = () => setIsSalesDetailsModalOpen(true);
   const closeSalesDetailsModal = () => setIsSalesDetailsModalOpen(false);
 
-  if (isLoadingAccount && !accountData)
+  const handleViewCurrentDetails = useCallback(async () => {
+    if (!accountId) return;
+    setIsLoadingDetails(true);
+    setDetailsError(null);
+    setCurrentDetails(null);
+    setIsDetailsModalOpen(true);
+    try {
+      const details: CurrentSalaryDetailsData =
+        await getCurrentSalaryDetails(accountId);
+      setCurrentDetails(details);
+    } catch (err: any) {
+      console.error("Failed fetch current details:", err);
+      setDetailsError("Could not load current salary details.");
+    } finally {
+      setIsLoadingDetails(false);
+    }
+  }, [accountId]);
+  const closeCurrentDetailsModal = () => setIsDetailsModalOpen(false);
+
+  const handleViewHistory = useCallback(async () => {
+    if (!accountId) return;
+    setIsLoadingHistory(true);
+    setHistoryError(null);
+    setPayslipHistory([]);
+    setIsHistoryModalOpen(true);
+    try {
+      const history = await getMyReleasedPayslips(accountId);
+      setPayslipHistory(history);
+    } catch (err: any) {
+      console.error("Failed fetch payslip history:", err);
+      setHistoryError("Could not load payslip history.");
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, [accountId]);
+  const closeHistoryModal = () => setIsHistoryModalOpen(false);
+
+  // --- Loading/Error States ---
+  if (isLoadingAccount && !accountData) {
     return (
       <div className="flex h-screen items-center justify-center">
-        <LoadingWidget text="Loading Dashboard..." height="h-auto" />
+        {" "}
+        <LoadingWidget text="Loading Dashboard..." height="h-auto" />{" "}
       </div>
     );
+  }
   if (!isLoadingAccount && !accountId) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-gray-100 p-4">
         <div className="w-full max-w-md rounded-lg border border-red-300 bg-white p-6 text-center shadow-md sm:p-8">
           <AlertCircle className="mx-auto mb-4 h-12 w-12 text-red-500" />
           <h2 className="mb-2 text-xl font-semibold text-red-700">
-            Access Denied
+            {" "}
+            Access Denied{" "}
           </h2>
           <p className="mb-6 text-sm text-gray-600">
+            {" "}
             We couldn't identify your account, or you do not have permission to
-            view this page. Please try logging in again.
+            view this page. Please try logging in again.{" "}
           </p>
           <Link href="/login" passHref>
             {" "}
-            {/* Make sure '/login' is your actual login route */}
-            <Button
-              // Use your Button component's styling
-              className="w-full bg-red-600 text-white hover:bg-red-700 focus:ring-red-500"
-              // Add appropriate props like size or invert if needed
-              // size="md"
-            >
-              Go to Login
-            </Button>
+            <Button className="w-full bg-red-600 text-white hover:bg-red-700 focus:ring-red-500">
+              {" "}
+              Go to Login{" "}
+            </Button>{" "}
           </Link>
         </div>
       </div>
@@ -400,31 +359,18 @@ export default function Home() {
 
   const isLoadingTxWidget = isLoadingTransactions;
 
+  // --- Render ---
   return (
     <>
       {/* Header */}
       <div className="mb-6 flex flex-shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="truncate text-xl font-semibold text-customBlack sm:text-2xl md:text-3xl">
-          Welcome, {accountData?.name ?? "User"}!
+          {" "}
+          Welcome, {accountData?.name ?? "User"}!{" "}
         </h1>
         {socketError && (
           <div className="text-xs text-red-600">{socketError}</div>
         )}
-        <Link
-          href={accountId ? `/dashboard/${accountId}/work-queue` : "#"}
-          passHref
-          className={!accountId ? "pointer-events-none opacity-50" : ""}
-          aria-disabled={!accountId}
-        >
-          <Button
-            size="sm"
-            disabled={isLoadingTxWidget || !accountId}
-            className="w-full shrink-0 bg-customDarkPink text-white hover:bg-customDarkPink/90 sm:w-auto"
-          >
-            Work Queue (
-            {isLoadingTxWidget ? "..." : allPendingTransactions.length})
-          </Button>
-        </Link>
       </div>
 
       {/* Main Grid */}
@@ -440,21 +386,25 @@ export default function Home() {
             )}
           </div>
           <div className="w-full">
+            {" "}
             <PreviewSales
               monthlyData={salesData?.monthlySales ?? []}
               isLoading={isLoadingSales}
               onViewDetails={openSalesDetailsModal}
-            />
+            />{" "}
           </div>
         </div>
+
         {/* Right Col */}
         <div className="flex flex-col space-y-6 xl:col-span-1">
           <div className="w-full">
-            <CalendarUI />
+            {" "}
+            <CalendarUI />{" "}
           </div>
-          <div className="min-h-[150px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
+          <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
             <h3 className="mb-3 text-base font-semibold">
-              Your Claimed Services
+              {" "}
+              Your Claimed Services{" "}
             </h3>
             <PreviewListedServices
               checkedServices={servicesCheckedByMe}
@@ -466,24 +416,26 @@ export default function Home() {
             <LoadingWidget height="h-[170px]" />
           ) : accountData?.role.includes(Role.OWNER) ? (
             <div className="flex min-h-[170px] items-center justify-center rounded-lg border p-4 text-sm text-gray-500">
-              Owner view.
+              {" "}
+              Owner view.{" "}
             </div>
           ) : accountData ? (
             <PreviewUserSalary
               salary={accountData.salary}
-              onOpenDetails={openSalaryDetailsModal}
+              onOpenDetails={handleViewCurrentDetails}
+              onOpenHistory={handleViewHistory}
               isLoading={false}
             />
           ) : (
             <div className="flex min-h-[170px] items-center justify-center rounded-lg border border-red-300 p-4 text-sm text-red-600">
-              Salary info error.
+              {" "}
+              Salary info error.{" "}
             </div>
           )}
         </div>
       </div>
 
       {/* --- Modals --- */}
-      {/* My Services Modal */}
       <Modal
         isOpen={isMyServicesModalOpen}
         onClose={closeMyServicesModal}
@@ -504,48 +456,39 @@ export default function Home() {
         )}
       </Modal>
 
-      {/* Salary Details Modal */}
-      <Modal
-        isOpen={isSalaryDetailsModalOpen}
-        onClose={closeSalaryDetailsModal}
-        title={
-          <DialogTitle>
-            Salary & Attendance (
-            {isValid(currentPeriod.start)
-              ? format(currentPeriod.start, "MMMM yyyy")
-              : "..."}
-            )
-          </DialogTitle>
-        }
-        size="xl"
-      >
-        {accountData ? (
-          <ExpandedUserSalary
-            breakdownItems={salaryBreakdown}
-            attendanceRecords={attendanceRecords}
-            accountData={accountData}
-            onClose={closeSalaryDetailsModal}
-            isLoading={isLoadingBreakdown || isLoadingAttendance} // Main loading
-            periodStartDate={currentPeriod.start}
-            periodEndDate={currentPeriod.end}
-            attendanceError={attendanceError}
-            // Payslip Props
-            onRequestPayslip={requestPayslipGeneration}
-            initialPayslipStatus={payslipStatus}
-            isPayslipStatusLoading={isPayslipStatusLoading} // Status loading
-          />
-        ) : (
-          <div className="p-6 text-center">
-            {isLoadingAccount ? (
-              <LoadingWidget text="Loading..." />
-            ) : (
-              <div className="text-red-600">Account details unavailable.</div>
-            )}
-          </div>
-        )}
-      </Modal>
+      {/* Render modal only when details are ready to avoid passing nulls unnecessarily */}
+      {isDetailsModalOpen && currentDetails && (
+        <CurrentSalaryDetailsModal
+          isOpen={isDetailsModalOpen}
+          onClose={closeCurrentDetailsModal}
+          isLoading={isLoadingDetails} // Pass loading state for internal spinner
+          error={detailsError} // Pass error for internal display
+          currentBreakdownItems={currentDetails.breakdownItems}
+          currentAttendanceRecords={currentDetails.attendanceRecords}
+          accountData={currentDetails.accountData}
+          currentPeriodStartDate={currentDetails.periodStartDate}
+          currentPeriodEndDate={currentDetails.periodEndDate}
+          lastReleasedPayslipEndDate={currentDetails.lastReleasedPayslipEndDate}
+          lastReleasedTimestamp={currentDetails.lastReleasedTimestamp}
+        />
+      )}
+      {/* Handle case where modal is open but details are still loading or failed */}
+      {isDetailsModalOpen && !currentDetails && (
+        <CurrentSalaryDetailsModal
+          isOpen={isDetailsModalOpen}
+          onClose={closeCurrentDetailsModal}
+          isLoading={isLoadingDetails}
+          error={detailsError}
+          currentBreakdownItems={[]} // Pass empty arrays while loading/error
+          currentAttendanceRecords={[]}
+          accountData={null}
+          currentPeriodStartDate={null}
+          currentPeriodEndDate={null}
+          lastReleasedPayslipEndDate={null}
+          lastReleasedTimestamp={null}
+        />
+      )}
 
-      {/* Sales Details Modal */}
       <Modal
         isOpen={isSalesDetailsModalOpen}
         onClose={closeSalesDetailsModal}
@@ -564,10 +507,21 @@ export default function Home() {
           />
         ) : (
           <div className="p-6 text-center text-red-500">
-            Failed to load sales data.
+            {" "}
+            Failed to load sales data.{" "}
           </div>
         )}
       </Modal>
+
+      {isHistoryModalOpen && (
+        <PayslipHistoryModal
+          isOpen={isHistoryModalOpen}
+          onClose={closeHistoryModal}
+          isLoading={isLoadingHistory}
+          error={historyError}
+          payslips={payslipHistory}
+        />
+      )}
     </>
   );
 }

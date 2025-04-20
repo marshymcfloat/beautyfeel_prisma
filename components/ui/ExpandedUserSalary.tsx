@@ -101,21 +101,18 @@ export default function ExpandedUserSalary({
   initialPayslipStatus,
   isPayslipStatusLoading, // Loading state specifically for payslip status check
 }: ExpandedUserSalaryProps) {
-  // --- Component State ---
   const [currentPayslipStatus, setCurrentPayslipStatus] =
     useState<PayslipStatusOption>(initialPayslipStatus);
   const [requestMessage, setRequestMessage] = useState<{
     type: "success" | "error" | "info";
     text: string;
   } | null>(null);
-  const [isRequesting, startRequestTransition] = useTransition(); // Loading state for the request action
+  const [isRequesting, startRequestTransition] = useTransition();
 
-  // Sync local state if the initial prop changes
   useEffect(() => {
     setCurrentPayslipStatus(initialPayslipStatus);
   }, [initialPayslipStatus]);
 
-  // --- Attendance & Salary Calculations ---
   const presentDays = useMemo(
     () =>
       attendanceRecords

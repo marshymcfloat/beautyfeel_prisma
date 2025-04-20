@@ -1,24 +1,26 @@
-// components/ui/customize/ManagePayslips.tsx
+// src/components/ui/customize/ManagePayslips.tsx
 "use client";
 
 import React, { useState, useCallback, useEffect, useTransition } from "react";
-// --- Component Imports ---
-// *** Ensure this path is correct for your project structure ***
 import ManagePayslipModal from "./ManagePaySlipModal";
-import Button from "@/components/Buttons/Button"; // Adjust path if needed
+import Button from "@/components/Buttons/Button";
 import { Loader2, AlertCircle } from "lucide-react";
 import { format } from "date-fns";
+import {
+  PayslipData,
+  ReleaseSalaryHandler,
+  AttendanceRecord, // Import types for historical data
+  SalaryBreakdownItem, // Import types for historical data
+} from "@/lib/Types";
+import { PayslipStatus } from "@prisma/client";
+import {
+  getPayslips,
+  releaseSalary,
+  getAttendanceForPeriod, // Import new actions
+  getCommissionBreakdownForPeriod, // Import new actions
+} from "@/lib/ServerAction";
 
-// --- Types ---
-import { PayslipData, ReleaseSalaryHandler } from "@/lib/Types"; // Adjust path if needed
-// Import enum directly if using it for status comparison/display logic
-import { PayslipStatus } from "@prisma/client"; // Assuming your type uses Prisma's enum
-
-// --- Server Action Imports ---
-// *** Ensure this path is correct and actions are implemented ***
-import { getPayslips, releaseSalary } from "@/lib/ServerAction"; // Using ServerAction alias
-
-// --- Helper Functions ---
+// --- Helper Functions (keep as they are) ---
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
@@ -27,8 +29,7 @@ const formatCurrency = (value: number | null | undefined): string => {
     !isFinite(value)
   )
     value = 0;
-  const amountInPHP = value; // Assumes smallest unit input
-  return amountInPHP.toLocaleString("en-PH", {
+  return value.toLocaleString("en-PH", {
     style: "currency",
     currency: "PHP",
     minimumFractionDigits: 2,
@@ -59,13 +60,12 @@ const formatDateRange = (start: Date, end: Date): string => {
   }
 };
 
-// --- Main Component for the "Payslips" Tab ---
+// --- Main Component ---
 export default function ManagePayslips() {
-  // State remains the same
   const [payslips, setPayslips] = useState<PayslipData[]>([]);
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
-  const [filterStatus, setFilterStatus] = useState<string>("PENDING");
+  const [filterStatus, setFilterStatus] = useState<string>("PENDING"); // Default to PENDING
   const [selectedPayslip, setSelectedPayslip] = useState<PayslipData | null>(
     null,
   );
@@ -73,7 +73,17 @@ export default function ManagePayslips() {
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [isReleasing, startReleaseTransition] = useTransition();
 
-  // Data fetching and handlers remain the same
+  // --- State for Historical Data in Modal ---
+  const [modalAttendance, setModalAttendance] = useState<AttendanceRecord[]>(
+    [],
+  );
+  const [modalBreakdown, setModalBreakdown] = useState<SalaryBreakdownItem[]>(
+    [],
+  );
+  const [isLoadingModalData, setIsLoadingModalData] = useState(false);
+  const [modalDataError, setModalDataError] = useState<string | null>(null);
+
+  // --- Data Fetching ---
   const loadPayslips = useCallback(async (statusFilter: string) => {
     setIsLoadingList(true);
     setListError(null);
@@ -93,42 +103,86 @@ export default function ManagePayslips() {
     loadPayslips(filterStatus);
   }, [filterStatus, loadPayslips]);
 
-  const handleOpenModal = (payslip: PayslipData) => {
+  // --- Modal Handling ---
+  const handleOpenModal = useCallback(async (payslip: PayslipData) => {
     setSelectedPayslip(payslip);
     setReleaseError(null);
-    setIsModalOpen(true);
-  };
+    setModalDataError(null);
+    setModalAttendance([]); // Reset historical data
+    setModalBreakdown([]);
+
+    // Fetch historical data needed for the modal display (attendance & breakdown)
+    setIsLoadingModalData(true);
+    setIsModalOpen(true); // Open modal immediately
+
+    try {
+      // Fetch in parallel
+      const [attendanceData, breakdownData] = await Promise.all([
+        getAttendanceForPeriod(
+          payslip.employeeId,
+          payslip.periodStartDate,
+          payslip.periodEndDate,
+        ),
+        getCommissionBreakdownForPeriod(
+          payslip.employeeId,
+          payslip.periodStartDate,
+          payslip.periodEndDate,
+        ),
+      ]);
+      setModalAttendance(attendanceData);
+      setModalBreakdown(breakdownData);
+    } catch (error: any) {
+      console.error("Failed to fetch modal details", error);
+      setModalDataError(
+        error.message || "Could not load breakdown/attendance details.",
+      );
+    } finally {
+      setIsLoadingModalData(false);
+    }
+  }, []); // Add dependencies if needed, but usually stable functions
+
   const handleCloseModal = () => {
     setIsModalOpen(false);
-    setTimeout(() => setSelectedPayslip(null), 300);
+    // Delay clearing selected payslip to allow modal fade-out animation
+    setTimeout(() => {
+      setSelectedPayslip(null);
+      setModalAttendance([]);
+      setModalBreakdown([]);
+      setModalDataError(null);
+      setIsLoadingModalData(false);
+    }, 300);
   };
 
+  // --- Salary Release Handling ---
   const handleReleaseSalary: ReleaseSalaryHandler = useCallback(
     async (payslipId: string) => {
       setReleaseError(null);
       startReleaseTransition(async () => {
         try {
+          // The server action now handles payslip update AND account reset
           await releaseSalary(payslipId);
+          // Refresh the list after successful release
           await loadPayslips(filterStatus);
-          handleCloseModal();
+          handleCloseModal(); // Close modal on success
         } catch (error: any) {
           console.error("Release salary failed:", error);
           setReleaseError(error.message || "Failed to release salary.");
+          // Keep modal open to show the error
         }
       });
     },
-    [filterStatus, loadPayslips],
+    [filterStatus, loadPayslips], // Include loadPayslips in dependency array
   );
 
-  // --- Styling Constants (Similar to ManageAccounts for consistency) ---
+  // --- Styling Constants ---
   const thStyleBase =
-    "px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider"; // Adjusted style
-  const tdStyleBase = "px-3 py-2 text-sm text-gray-800 align-top"; // Use align-top
+    "px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider";
+  const tdStyleBase = "px-3 py-2 text-sm text-gray-800 align-top";
 
   // --- Render ---
   return (
     <div className="space-y-4">
-      {/* Header and Filter Controls */}
+      {/* Header and Filter */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-gray-800">Manage Payslips</h2>
         <div className="flex items-center gap-2">
@@ -136,7 +190,8 @@ export default function ManagePayslips() {
             htmlFor="status-filter"
             className="text-sm font-medium text-gray-600"
           >
-            Filter:
+            {" "}
+            Filter:{" "}
           </label>
           <select
             id="status-filter"
@@ -148,111 +203,109 @@ export default function ManagePayslips() {
             <option value="ALL">All</option>
             <option value="PENDING">Pending</option>
             <option value="RELEASED">Released</option>
+            {/* Add other statuses if they exist */}
           </select>
         </div>
       </div>
 
-      {/* Loading State for List */}
+      {/* Loading/Error/List Display */}
       {isLoadingList && (
         <div className="flex items-center justify-center py-10 text-gray-500">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading payslips...
+          {" "}
+          <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading
+          payslips...{" "}
         </div>
       )}
-      {/* Error State for List */}
       {listError && !isLoadingList && (
         <div className="flex items-center gap-2 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-          <AlertCircle size={16} /> <span>{listError}</span>
+          {" "}
+          <AlertCircle size={16} /> <span>{listError}</span>{" "}
         </div>
       )}
 
-      {/* Responsive Payslip List Table */}
       {!isLoadingList && !listError && (
-        // Add overflow container for horizontal scrolling on very small screens
         <div className="min-w-full overflow-x-auto rounded border border-gray-200 bg-white shadow-sm">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                {/* Employee: Always Visible */}
                 <th scope="col" className={`${thStyleBase} w-[30%] sm:w-[25%]`}>
-                  Employee
+                  {" "}
+                  Employee{" "}
                 </th>
-                {/* Period: Hidden on xs, visible sm+ */}
                 <th
                   scope="col"
                   className={`${thStyleBase} hidden sm:table-cell sm:w-[25%]`}
                 >
-                  Period
+                  {" "}
+                  Period{" "}
                 </th>
-                {/* Net Pay: Hidden on xs, visible sm+ */}
                 <th
                   scope="col"
                   className={`${thStyleBase} hidden sm:table-cell sm:w-[15%]`}
                 >
-                  Net Pay
+                  {" "}
+                  Net Pay{" "}
                 </th>
-                {/* Status: Always Visible */}
                 <th scope="col" className={`${thStyleBase} w-[20%] sm:w-[15%]`}>
-                  Status
+                  {" "}
+                  Status{" "}
                 </th>
-                {/* Actions: Always Visible */}
                 <th
                   scope="col"
                   className={`${thStyleBase} w-[20%] text-right sm:w-[20%]`}
                 >
-                  Actions
+                  {" "}
+                  Actions{" "}
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200 bg-white">
-              {/* Handle Empty State */}
               {payslips.length === 0 ? (
                 <tr>
                   <td
                     colSpan={5}
                     className="py-10 text-center italic text-gray-500"
                   >
+                    {" "}
                     No payslips found
                     {filterStatus !== "ALL"
                       ? ` for "${filterStatus}" status`
                       : ""}
-                    .
+                    .{" "}
                   </td>
                 </tr>
               ) : (
-                // Map Payslip Data to Table Rows
                 payslips.map((payslip) => (
                   <tr key={payslip.id} className="hover:bg-gray-50">
-                    {/* Employee: Always Visible */}
                     <td className={`${tdStyleBase} font-medium text-gray-900`}>
                       {payslip.employeeName}
-                      {/* Show Period below name on XS screens */}
                       <div className="text-xs text-gray-500 sm:hidden">
+                        {" "}
                         {formatDateRange(
                           payslip.periodStartDate,
                           payslip.periodEndDate,
-                        )}
+                        )}{" "}
                       </div>
-                      {/* Show Net Pay below name on XS screens */}
                       <div className="text-xs font-semibold text-blue-600 sm:hidden">
-                        {formatCurrency(payslip.netPay)}
+                        {" "}
+                        {formatCurrency(payslip.netPay)}{" "}
                       </div>
                     </td>
-                    {/* Period: Hidden on xs */}
                     <td
                       className={`${tdStyleBase} hidden whitespace-nowrap text-gray-500 sm:table-cell`}
                     >
+                      {" "}
                       {formatDateRange(
                         payslip.periodStartDate,
                         payslip.periodEndDate,
-                      )}
+                      )}{" "}
                     </td>
-                    {/* Net Pay: Hidden on xs */}
                     <td
                       className={`${tdStyleBase} hidden whitespace-nowrap font-semibold text-blue-600 sm:table-cell`}
                     >
-                      {formatCurrency(payslip.netPay)}
+                      {" "}
+                      {formatCurrency(payslip.netPay)}{" "}
                     </td>
-                    {/* Status: Always Visible */}
                     <td className={`${tdStyleBase} whitespace-nowrap`}>
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-semibold leading-5 ${payslip.status === PayslipStatus.PENDING ? "bg-orange-100 text-orange-800" : "bg-green-100 text-green-800"}`}
@@ -260,7 +313,6 @@ export default function ManagePayslips() {
                         {payslip.status}
                       </span>
                     </td>
-                    {/* Actions: Always Visible */}
                     <td
                       className={`${tdStyleBase} whitespace-nowrap text-right`}
                     >
@@ -281,15 +333,21 @@ export default function ManagePayslips() {
         </div>
       )}
 
-      {/* --- MODAL RENDERING --- */}
-      {/* Render the modal when a payslip is selected */}
+      {/* Modal Rendering */}
       {selectedPayslip && (
         <ManagePayslipModal
           isOpen={isModalOpen}
           onClose={handleCloseModal}
           payslipData={selectedPayslip}
+          // Pass fetched historical data
+          attendanceRecords={modalAttendance}
+          breakdownItems={modalBreakdown}
+          // Pass loading/error states for modal data
+          isModalDataLoading={isLoadingModalData}
+          modalDataError={modalDataError}
+          // Pass release handlers
           onReleaseSalary={handleReleaseSalary}
-          isLoading={isReleasing}
+          isReleasing={isReleasing} // Use isReleasing for the button state
           releaseError={releaseError}
         />
       )}

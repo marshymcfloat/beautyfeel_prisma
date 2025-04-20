@@ -13,21 +13,39 @@ import {
   DiscountRule,
   ServiceSet,
   AvailedItemType,
+  Prisma,
   Customer,
   Voucher,
   DiscountType,
   PayslipStatus,
 } from "@prisma/client";
+
+import {
+  subDays,
+  startOfDay,
+  endOfDay,
+  getDate,
+  getMonth,
+  getYear,
+  startOfMonth,
+  endOfMonth,
+  setDate,
+} from "date-fns"; // Import date-fns functions
+
 import { withAccelerate } from "@prisma/extension-accelerate";
 import {
   MonthlySalesWithPaymentBreakdown,
   SalesDataDetailed,
   PaymentMethodTotals,
+  TransactionForManagement,
+  ServerActionResponse,
   CheckGCResult,
   UIDiscountRuleWithServices,
   AccountForManagement,
   TransactionSubmissionResponse,
   AttendanceRecord,
+  GetTransactionsFilters,
+  CurrentSalaryDetailsData,
   CustomerProp,
   AvailedServicesProps,
   AccountInfo,
@@ -46,6 +64,15 @@ import { CashierState } from "./Slices/CashierSlice";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { ParamValue } from "next/dist/server/request/params";
+
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    // Handle Prisma known errors more specifically if needed
+    // if (error instanceof Prisma.PrismaClientKnownRequestError) { ... }
+    return error.message;
+  }
+  return "An unknown error occurred";
+}
 
 function convertErrorsToStringArrays(
   errorObj: Record<string, string>,
@@ -1090,7 +1117,54 @@ export async function getSalaryBreakdown(
     return [];
   }
 }
+
+function getCurrentPayPeriodDates(today: Date = new Date()): {
+  startDate: Date;
+  endDate: Date;
+} {
+  const dayOfMonth = getDate(today);
+  const currentMonth = getMonth(today);
+  const currentYear = getYear(today);
+
+  let startDate: Date;
+  let endDate: Date;
+
+  if (dayOfMonth <= 15) {
+    // First half of the month (1st to 15th)
+    startDate = startOfDay(setDate(today, 1));
+    endDate = endOfDay(setDate(today, 15));
+  } else {
+    // Second half of the month (16th to end of month)
+    startDate = startOfDay(setDate(today, 16));
+    endDate = endOfDay(endOfMonth(today)); // endOfMonth handles different month lengths
+  }
+
+  return { startDate, endDate };
+}
 export async function getCurrentAccountData(
+  accountId: string,
+): Promise<AccountData | null> {
+  if (!accountId) return null;
+  try {
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      // Select all fields needed for AccountData type
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        salary: true,
+        dailyRate: true,
+      },
+    });
+    return account; // This now matches AccountData
+  } catch (error) {
+    console.error(`Error fetching account data for ${accountId}:`, error);
+    return null;
+  }
+}
+
+/* export async function getCurrentAccountData(
   accountId: string,
 ): Promise<AccountData | null> {
   // Return null if not found or error
@@ -1123,7 +1197,7 @@ export async function getCurrentAccountData(
     return null; // Return null on error
   }
 }
-
+ */
 export async function createBranchAction(formData: FormData) {
   const data = {
     title: formData.get("title") as string,
@@ -1493,6 +1567,23 @@ const updateAccountSchema = z.object({
 // --- NEW: Server Action to Fetch Accounts ---
 // Define the specific type we want to return to the client
 
+export async function getAccountSalary(
+  accountId: string,
+): Promise<{ salary: number } | null> {
+  if (!accountId) return null;
+  try {
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { salary: true },
+    });
+    // Return type here is simpler, no change needed based on AccountData update
+    return account ? { salary: account.salary } : null;
+  } catch (error) {
+    console.error(`Error fetching salary for ${accountId}:`, error);
+    return null;
+  }
+}
+
 export async function getAccountsAction(): Promise<AccountForManagement[]> {
   console.log("Server Action: getAccountsAction executing...");
   try {
@@ -1745,6 +1836,49 @@ export async function getAttendanceForPeriod(
   startDate: Date,
   endDate: Date,
 ): Promise<AttendanceRecord[]> {
+  if (!accountId || !startDate || !endDate) {
+    console.warn("Missing parameters for getAttendanceForPeriod");
+    return [];
+  }
+  console.log(
+    `SERVER ACTION: Fetching attendance for Acc ${accountId} from ${startDate.toISOString()} to ${endDate.toISOString()}`,
+  );
+  try {
+    const records = await prisma.attendance.findMany({
+      where: {
+        accountId: accountId,
+        date: {
+          gte: startOfDay(startDate), // Ensure start of day
+          lte: endOfDay(endDate), // Ensure end of day
+        },
+      },
+      select: {
+        id: true,
+        date: true,
+        isPresent: true,
+        notes: true,
+      },
+      orderBy: {
+        date: "asc",
+      },
+    });
+
+    // Map to AttendanceRecord type, ensuring date is serializable (ISO string)
+    return records.map((r) => ({
+      ...r,
+      date: r.date.toISOString(), // Convert Date to ISO string
+    }));
+  } catch (error) {
+    console.error(`Error fetching attendance for account ${accountId}:`, error);
+    throw new Error("Failed to fetch attendance records.");
+  }
+}
+
+/* export async function getAttendanceForPeriod(
+  accountId: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<AttendanceRecord[]> {
   if (!accountId) {
     throw new Error("Account ID is required for attendance fetching.");
   }
@@ -1793,7 +1927,7 @@ export async function getAttendanceForPeriod(
     );
     throw new Error("Failed to fetch attendance data.");
   }
-}
+} */
 
 export async function updateAccountAction(id: string, formData: FormData) {
   // ... (keep your existing updateAccountAction implementation)
@@ -3189,6 +3323,74 @@ export async function getPayslips(
 ): Promise<PayslipData[]> {
   console.log("SERVER ACTION: Fetching payslips with filter:", filterStatus);
   try {
+    const whereClause: Prisma.PayslipWhereInput = {};
+    if (filterStatus && filterStatus !== "ALL") {
+      if (
+        Object.values(PayslipStatus).includes(filterStatus as PayslipStatus)
+      ) {
+        whereClause.status = filterStatus as PayslipStatus;
+      } else {
+        console.warn(`Invalid filter status: ${filterStatus}. Fetching all.`);
+      }
+    }
+
+    const payslips = await prisma.payslip.findMany({
+      where: whereClause,
+      include: {
+        account: {
+          // Include ALL fields needed for the AccountData type within PayslipData
+          select: {
+            id: true,
+            name: true,
+            role: true,
+            salary: true,
+            dailyRate: true,
+          }, // <-- Added role, salary
+        },
+      },
+      orderBy: [
+        { status: "asc" },
+        { periodEndDate: "desc" },
+        { account: { name: "asc" } },
+      ],
+    });
+
+    // Map Prisma result to PayslipData type
+    const payslipDataList: PayslipData[] = payslips.map((p) => ({
+      id: p.id,
+      employeeId: p.accountId,
+      employeeName: p.account.name,
+      periodStartDate: p.periodStartDate,
+      periodEndDate: p.periodEndDate,
+      baseSalary: p.baseSalary,
+      totalCommissions: p.totalCommissions,
+      totalDeductions: p.totalDeductions,
+      totalBonuses: p.totalBonuses,
+      netPay: p.netPay,
+      status: p.status,
+      releasedDate: p.releasedDate,
+      // Construct the nested accountData including role and salary
+      accountData: {
+        id: p.account.id,
+        name: p.account.name,
+        role: p.account.role, // <-- Include role
+        salary: p.account.salary, // <-- Include salary
+        dailyRate: p.account.dailyRate,
+      },
+    }));
+    // This mapping now satisfies the PayslipData type, including the nested AccountData
+
+    return payslipDataList;
+  } catch (error) {
+    console.error("Error fetching payslips:", error);
+    throw new Error("Failed to fetch payslips.");
+  }
+}
+/* export async function getPayslips(
+  filterStatus: string | null,
+): Promise<PayslipData[]> {
+  console.log("SERVER ACTION: Fetching payslips with filter:", filterStatus);
+  try {
     const whereClause: any = {};
     if (filterStatus && filterStatus !== "ALL") {
       // Ensure filterStatus matches your enum values (PENDING, RELEASED)
@@ -3241,7 +3443,7 @@ export async function getPayslips(
     console.error("Error fetching payslips:", error);
     throw new Error("Failed to fetch payslips."); // Throw error for client handling
   }
-}
+} */
 
 export async function getPayslipStatusForPeriod(
   accountId: string,
@@ -3281,8 +3483,59 @@ export async function getPayslipStatusForPeriod(
   }
 }
 
-// --- Release Salary Action ---
 export async function releaseSalary(payslipId: string): Promise<void> {
+  console.log(`SERVER ACTION: Releasing salary for payslip ID: ${payslipId}`);
+  if (!payslipId) {
+    throw new Error("Payslip ID is required.");
+  }
+  try {
+    await prisma.$transaction(async (tx) => {
+      const payslip = await tx.payslip.findUnique({
+        where: { id: payslipId },
+        select: { status: true, accountId: true },
+      });
+      if (!payslip) {
+        throw new Error("Payslip not found.");
+      }
+      if (payslip.status !== PayslipStatus.PENDING) {
+        throw new Error("Payslip is not in PENDING status.");
+      }
+      await tx.payslip.update({
+        where: { id: payslipId },
+        data: { status: PayslipStatus.RELEASED, releasedDate: new Date() },
+      });
+      await tx.account.update({
+        where: { id: payslip.accountId },
+        data: { salary: 0 },
+      }); // Resetting salary
+      console.log(
+        `SERVER ACTION: Successfully released payslip ${payslipId} and reset salary for account ${payslip.accountId}`,
+      );
+    });
+    // !!! IMPORTANT: Adjust this path !!!
+    revalidatePath("/dashboard/[accountID]/manage"); // Example Path
+  } catch (error: any) {
+    console.error(`Error releasing salary for ${payslipId}:`, error);
+    if (error.message.includes("PENDING status")) {
+      throw new Error(
+        "Cannot release: Payslip is already released or in an unexpected state.",
+      );
+    } else if (error.message.includes("not found")) {
+      throw new Error("Cannot release: Payslip record not found.");
+    } else if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      throw new Error(
+        "Cannot release: Account or Payslip record not found during update.",
+      );
+    }
+    throw new Error(`Failed to release salary: ${getErrorMessage(error)}`);
+  }
+}
+
+// --- Release Salary Action ---
+/* export async function releaseSalary(payslipId: string): Promise<void> {
   // Return void or boolean/updated record
   console.log(`SERVER ACTION: Releasing salary for payslip ID: ${payslipId}`);
   if (!payslipId) {
@@ -3320,5 +3573,282 @@ export async function releaseSalary(payslipId: string): Promise<void> {
     throw new Error(
       `Failed to release salary: ${error.message || "Database error"}`,
     );
+  }
+}
+ */
+export async function getTransactionsAction(
+  filters: GetTransactionsFilters = {},
+): Promise<ServerActionResponse<TransactionForManagement[]>> {
+  try {
+    const whereClause: any = {};
+
+    if (filters.startDate) {
+      whereClause.createdAt = {
+        ...(whereClause.createdAt || {}),
+        gte: new Date(filters.startDate),
+      };
+    }
+    if (filters.endDate) {
+      const endOfDay = new Date(filters.endDate);
+      endOfDay.setDate(endOfDay.getDate() + 1);
+      whereClause.createdAt = {
+        ...(whereClause.createdAt || {}),
+        lt: endOfDay,
+      };
+    }
+    if (filters.status) {
+      whereClause.status = filters.status;
+    }
+
+    const transactions = await prisma.transaction.findMany({
+      where: whereClause,
+      include: {
+        customer: { select: { name: true, email: true } },
+        // Removed: branch: { select: { title: true } },
+        voucherUsed: { select: { code: true } },
+        availedServices: {
+          include: {
+            service: { select: { title: true } },
+            servedBy: { select: { name: true } },
+          },
+          orderBy: {
+            createdAt: "asc",
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    // Type assertion remains valid as the base Transaction still has branchId,
+    // but the fetched object won't have the nested branch relation.
+    const typedTransactions: TransactionForManagement[] = transactions as any;
+    // Note: We use 'as any' here temporarily because the fetched data doesn't strictly
+    // match TransactionForManagement anymore (missing `branch`).
+    // A cleaner approach might be to define a different type for the *fetched* data
+    // vs the *ideal* data structure, but for simplicity, this works if you
+    // ensure the frontend doesn't try to access `t.branch`.
+
+    return { success: true, data: typedTransactions };
+  } catch (error) {
+    console.error("Error fetching transactions:", error);
+    return { success: false, message: getErrorMessage(error) };
+  }
+}
+
+export async function cancelTransactionAction(
+  transactionId: string,
+): Promise<ServerActionResponse> {
+  if (!transactionId) {
+    return { success: false, message: "Transaction ID is required." };
+  }
+  try {
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: transactionId },
+      select: { status: true },
+    });
+
+    if (!transaction) {
+      return { success: false, message: "Transaction not found." };
+    }
+    if (
+      transaction.status === Status.CANCELLED ||
+      transaction.status === Status.DONE
+    ) {
+      return {
+        success: false,
+        message: `Transaction is already ${transaction.status.toLowerCase()}.`,
+      };
+    }
+    await prisma.transaction.update({
+      where: { id: transactionId },
+      data: { status: Status.CANCELLED },
+    });
+    revalidatePath("/dashboard");
+    return { success: true, message: "Transaction cancelled successfully." };
+  } catch (error) {
+    console.error("Error cancelling transaction:", error);
+    return { success: false, message: getErrorMessage(error) };
+  }
+}
+
+export async function getCommissionBreakdownForPeriod(
+  accountId: string,
+  startDate: Date,
+  endDate: Date,
+): Promise<SalaryBreakdownItem[]> {
+  if (!accountId || !startDate || !endDate) {
+    console.warn("Missing parameters for getCommissionBreakdownForPeriod");
+    return [];
+  }
+  console.log(
+    `SERVER ACTION: Fetching commission breakdown for Acc ${accountId} from ${startDate.toISOString()} to ${endDate.toISOString()}`,
+  );
+
+  try {
+    const availedServices = await prisma.availedService.findMany({
+      where: {
+        servedById: accountId, // Service served by this account
+        status: Status.DONE, // Only completed services count for commission
+        completedAt: {
+          // Commission earned when completed within the period
+          gte: startOfDay(startDate),
+          lte: endOfDay(endDate),
+        },
+      },
+      include: {
+        service: { select: { title: true } }, // Get service title
+        transaction: { select: { customer: { select: { name: true } } } }, // Get customer name
+      },
+      orderBy: {
+        completedAt: "asc",
+      },
+    });
+
+    // Map to SalaryBreakdownItem type
+    return availedServices.map((av) => ({
+      id: av.id,
+      serviceTitle: av.service?.title ?? null,
+      servicePrice: av.price, // Price snapshot at time of transaction
+      // Calculate commission based on price and rate (assuming rate is constant)
+      // OR use pre-calculated `av.commissionValue` if available and correct
+      commissionEarned:
+        av.commissionValue > 0
+          ? av.commissionValue
+          : Math.round(av.price * SALARY_COMMISSION_RATE), // Use pre-calculated or fallback
+      customerName: av.transaction?.customer?.name ?? null,
+      transactionDate: av.completedAt, // Use completedAt as the date commission was earned
+    }));
+  } catch (error) {
+    console.error(
+      `Error fetching commission breakdown for account ${accountId}:`,
+      error,
+    );
+    throw new Error("Failed to fetch commission breakdown.");
+  }
+}
+
+export async function getCurrentSalaryDetails(
+  accountId: string,
+): Promise<CurrentSalaryDetailsData> {
+  // <-- Use updated return type
+  if (!accountId) {
+    throw new Error("Account ID is required.");
+  }
+  console.log(
+    `SERVER ACTION: Fetching CURRENT salary details for Acc ${accountId}`,
+  );
+
+  try {
+    const { startDate, endDate } = getCurrentPayPeriodDates();
+
+    const [account, latestReleasedPayslip, attendanceData, breakdownData] =
+      await Promise.all([
+        prisma.account.findUnique({
+          where: { id: accountId },
+          select: {
+            id: true,
+            name: true,
+            role: true,
+            salary: true,
+            dailyRate: true,
+          },
+        }),
+        prisma.payslip.findFirst({
+          // Fetch latest released payslip
+          where: { accountId: accountId, status: PayslipStatus.RELEASED },
+          orderBy: { releasedDate: "desc" }, // Order by release time
+          select: {
+            periodEndDate: true,
+            releasedDate: true, // <-- Fetch the timestamp
+          },
+        }),
+        getAttendanceForPeriod(accountId, startDate, endDate),
+        getCommissionBreakdownForPeriod(accountId, startDate, endDate),
+      ]);
+
+    const lastReleasedEndDate = latestReleasedPayslip?.periodEndDate ?? null;
+    const lastReleasedTimestamp = latestReleasedPayslip?.releasedDate ?? null; // <-- Get the timestamp
+
+    console.log(
+      `Last released end date for ${accountId}: ${lastReleasedEndDate}`,
+    );
+    console.log(
+      `Last released timestamp for ${accountId}: ${lastReleasedTimestamp}`,
+    );
+
+    return {
+      attendanceRecords: attendanceData,
+      breakdownItems: breakdownData,
+      periodStartDate: startDate,
+      periodEndDate: endDate,
+      accountData: account,
+      lastReleasedPayslipEndDate: lastReleasedEndDate, // Keep for attendance
+      lastReleasedTimestamp: lastReleasedTimestamp, // <-- Return the timestamp
+    };
+  } catch (error) {
+    console.error(
+      `Error fetching current salary details for account ${accountId}:`,
+      error,
+    );
+    throw new Error("Failed to fetch current salary details.");
+  }
+}
+
+export async function getMyReleasedPayslips(
+  accountId: string,
+): Promise<PayslipData[]> {
+  if (!accountId) {
+    throw new Error("Account ID is required.");
+  }
+  console.log(`SERVER ACTION: Fetching RELEASED payslips for Acc ${accountId}`);
+  try {
+    const payslips = await prisma.payslip.findMany({
+      where: { accountId: accountId, status: PayslipStatus.RELEASED },
+      include: {
+        account: {
+          // Select all fields needed for AccountData
+          select: {
+            id: true,
+            name: true,
+            role: true,
+            salary: true,
+            dailyRate: true,
+          }, // <-- Added role, salary
+        },
+      },
+      orderBy: [{ periodEndDate: "desc" }],
+    });
+
+    // Map to PayslipData type
+    return payslips.map((p) => ({
+      id: p.id,
+      employeeId: p.accountId,
+      employeeName: p.account.name,
+      periodStartDate: p.periodStartDate,
+      periodEndDate: p.periodEndDate,
+      baseSalary: p.baseSalary,
+      totalCommissions: p.totalCommissions,
+      totalDeductions: p.totalDeductions,
+      totalBonuses: p.totalBonuses,
+      netPay: p.netPay,
+      status: p.status,
+      releasedDate: p.releasedDate,
+      // Construct nested accountData correctly
+      accountData: {
+        id: p.account.id,
+        name: p.account.name,
+        role: p.account.role, // <-- Include role
+        salary: p.account.salary, // <-- Include salary
+        dailyRate: p.account.dailyRate,
+      }, // This now matches the AccountData type
+    }));
+  } catch (error) {
+    console.error(
+      `Error fetching released payslips for account ${accountId}:`,
+      error,
+    );
+    throw new Error("Failed to fetch payslip history.");
   }
 }

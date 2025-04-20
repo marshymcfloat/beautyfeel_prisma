@@ -1,14 +1,12 @@
-// LoginPage.tsx
 "use client";
 
 import { X } from "lucide-react";
-// Removed useCallback from this import line if it's no longer needed elsewhere
 import { ChangeEvent, useState, MouseEvent, useCallback } from "react";
 import Button from "@/components/Buttons/Button";
 import { loggingIn } from "@/lib/ServerAction";
 import { useRouter } from "next/navigation";
 
-export default function LoginPage() {
+export default function InterceptedLoginPage() {
   const router = useRouter();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -16,10 +14,8 @@ export default function LoginPage() {
     username: "",
     password: "",
   });
-  const [errorMessage, setErrorMessage] = useState<string | null>(null); // <-- Lint warning points here
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // REMOVED useCallback from handleInputChange
-  // Define as a regular function within the component scope
   function handleInputChange(
     identifier: string,
     e: ChangeEvent<HTMLInputElement>,
@@ -28,22 +24,16 @@ export default function LoginPage() {
       ...prev,
       [identifier]: e.target.value,
     }));
-    // Clear error when user starts typing again
-    // This logic remains the same - it needs to clear the error.
     if (errorMessage) {
-      setErrorMessage(null); // This state update WILL cause a re-render, which is intended.
+      setErrorMessage(null);
     }
   }
 
-  // Keep useCallback for handleLoggingIn as it's passed directly to Button onClick
   const handleLoggingIn = useCallback(async () => {
     setIsSubmitting(true);
-    // Clear previous errors on new submission attempt
-    // This state update WILL cause a re-render if errorMessage was not null. Intended.
     setErrorMessage(null);
 
     if (inputs.username.trim() === "" || inputs.password.trim() === "") {
-      // This state update WILL cause a re-render. Intended.
       setErrorMessage("Username and password are required.");
       setIsSubmitting(false);
       return;
@@ -64,23 +54,20 @@ export default function LoginPage() {
             router.push(targetPath);
           } catch (pushError) {
             console.error("Error during router.push:", pushError);
-            // This state update WILL cause a re-render. Intended.
             setErrorMessage("Failed to navigate after login. Please refresh.");
           }
         }, 0);
       } else {
         console.error("Login failed (Server Response):", response.message);
-        // This state update WILL cause a re-render. Intended.
         setErrorMessage(response.message || "Login failed. Please try again.");
       }
     } catch (error) {
       console.error("An error occurred during login (Client Catch):", error);
-      // This state update WILL cause a re-render. Intended.
       setErrorMessage("An unexpected error occurred. Please try again.");
     } finally {
-      setIsSubmitting(false); // This state update might cause a re-render if isSubmitting changes.
+      setIsSubmitting(false);
     }
-  }, [inputs, router]); // Dependencies remain the same
+  }, [inputs, router]);
 
   return (
     <div className="fixed inset-0 z-10 flex items-center justify-center bg-black/35 backdrop-blur-sm">
@@ -90,7 +77,7 @@ export default function LoginPage() {
       >
         <button
           type="button"
-          onClick={() => router.push("/")}
+          onClick={() => router.back()}
           className="absolute right-3 top-3 text-customDarkPink/70 transition-colors hover:text-customDarkPink"
           aria-label="Close login dialog"
         >
@@ -102,7 +89,6 @@ export default function LoginPage() {
             Login
           </h1>
 
-          {/* Username Input */}
           <div className="relative mb-5">
             <input
               id="username"
@@ -112,7 +98,6 @@ export default function LoginPage() {
               name="username"
               required
               value={inputs.username}
-              // Using the regular function via an inline arrow function
               onChange={(e) => handleInputChange("username", e)}
               disabled={isSubmitting}
               autoComplete="username"
@@ -125,7 +110,6 @@ export default function LoginPage() {
             </label>
           </div>
 
-          {/* Password Input */}
           <div className="relative mb-8">
             <input
               id="password"
@@ -135,7 +119,6 @@ export default function LoginPage() {
               name="password"
               required
               value={inputs.password}
-              // Using the regular function via an inline arrow function
               onChange={(e) => handleInputChange("password", e)}
               disabled={isSubmitting}
               autoComplete="current-password"
