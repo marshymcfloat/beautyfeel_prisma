@@ -10,25 +10,36 @@ import React, {
 } from "react";
 import {
   createGiftCertificateAction,
-  getAllServices,
+  // --- Need new/modified server actions ---
+  // getAllServices, // Replace this
+  getServicesAndSetsForGC, // New action to get filtered services/sets
   getActiveGiftCertificates,
-} from "@/lib/ServerAction";
+  getAllBranches, // New action to get branches
+  // --- End ---
+} from "@/lib/ServerAction"; // Assuming path is correct
 import type {
   GiftCertificate as PrismaGC,
   Service as PrismaService,
+  ServiceSet as PrismaServiceSet, // Import ServiceSet type if needed
+  Branch as PrismaBranch, // Import Branch type
 } from "@prisma/client";
 import Button from "@/components/Buttons/Button";
-import Select, { MultiValue, ActionMeta } from "react-select";
+import Select, { MultiValue, ActionMeta, SingleValue } from "react-select";
 import { RefreshCw } from "lucide-react";
 
+// --- Import the modified CustomerInput ---
+import CustomerInput from "@/components/Inputs/CustomerInput";
+import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types"; // Type for customer data
+
 // --- Types ---
-// Use value/label for react-select compatibility
-type SelectOption = { value: string; label: string };
+type ServiceTypeFilter = "service" | "set"; // For filtering
+// value/label for react-select, add 'type' if needed
+type SelectOption = { value: string; label: string; type?: ServiceTypeFilter };
 type ActiveGiftCertificate = PrismaGC; // Use full Prisma type for list
+type BranchOption = { value: string; label: string };
 
 // --- Helper Function --- (Keep as is)
 function generateRandomCode(length: number = 5): string {
-  // Adjusted default length
   const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789"; // Removed O
   let result = "";
   const charactersLength = characters.length;
@@ -38,9 +49,8 @@ function generateRandomCode(length: number = 5): string {
   return result;
 }
 
-// --- Reusable MultiSelect Component --- (Use definition from ManageDiscounts or shared file)
+// --- Reusable MultiSelect Component --- (Assuming definition exists or copy from above)
 interface MultiSelectPropsGC {
-  // Renamed slightly to avoid potential conflicts if copy-pasted directly
   name: string;
   options: SelectOption[];
   isLoading?: boolean;
@@ -51,7 +61,6 @@ interface MultiSelectPropsGC {
     actionMeta: ActionMeta<SelectOption>,
   ) => void;
 }
-
 const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
   name,
   options,
@@ -60,8 +69,7 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
   value,
   onChange,
 }) => {
-  // This component definition should ideally live in a shared file
-  // Copied here for completeness based on your provided code structure
+  // Definition copied from original prompt for completeness
   return (
     <div>
       {value.map((option) => (
@@ -74,7 +82,7 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
       ))}
       <Select
         isMulti
-        name={name + "_select"} // Avoid name clash with hidden inputs
+        name={name + "_select"}
         options={options}
         className="basic-multi-select"
         classNamePrefix="select"
@@ -84,7 +92,6 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
         placeholder={placeholder}
         inputId={name}
         styles={{
-          // Use consistent styling from other components
           control: (base, state) => ({
             ...base,
             borderColor: state.isFocused ? "#C28583" : "#D1D5DB",
@@ -110,7 +117,7 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
             "&:hover": { backgroundColor: "#EF4444", color: "white" },
           }),
         }}
-        aria-label={placeholder || "Select services"}
+        aria-label={placeholder || "Select services or sets"}
       />
     </div>
   );
@@ -119,68 +126,138 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
 
 // --- Main Component ---
 export default function ManageGiftCertificates() {
-  const [availableServices, setAvailableServices] = useState<SelectOption[]>(
-    [],
-  ); // Use SelectOption
+  // --- State for Filters ---
+  const [serviceType, setServiceType] = useState<ServiceTypeFilter>("service");
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all"); // 'all' or branch ID
+  const [branches, setBranches] = useState<BranchOption[]>([]);
+  const [isLoadingBranches, setIsLoadingBranches] = useState(true);
+
+  // --- State for Services/Sets based on filters ---
+  const [availableItems, setAvailableItems] = useState<SelectOption[]>([]);
+  const [isLoadingItems, setIsLoadingItems] = useState(true); // Renamed from isLoadingServices
+
+  // --- State for Customer Input ---
+  const [selectedCustomer, setSelectedCustomer] = useState<CustomerData | null>(
+    null,
+  );
+  const [recipientEmail, setRecipientEmail] = useState(""); // State for email input
+
+  // --- Existing State ---
   const [activeGCs, setActiveGCs] = useState<ActiveGiftCertificate[]>([]);
-  const [isLoadingServices, setIsLoadingServices] = useState(true);
   const [isLoadingGCs, setIsLoadingGCs] = useState(true);
   const [formError, setFormError] = useState<Record<string, string[]>>({});
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
   const codeInputRef = useRef<HTMLInputElement>(null);
-  const [selectedServices, setSelectedServices] = useState<
+  const [selectedServicesOrSets, setSelectedServicesOrSets] = useState<
     MultiValue<SelectOption>
   >([]); // Use SelectOption
 
-  // --- Fetch Data ---
-  const loadInitialData = useCallback(async () => {
-    setIsLoadingServices(true);
-    setIsLoadingGCs(true);
-    setFormError({}); // Clear errors on load
-    // Keep success message or clear it? Decide based on UX. Clearing here.
-    // setSuccessMessage(null);
+  // --- Fetch Branches (Once on Mount) ---
+  const loadBranches = useCallback(async () => {
+    setIsLoadingBranches(true);
     try {
-      const [servicesData, gcs] = await Promise.all([
-        getAllServices(), // Assuming this returns PrismaService[]
-        getActiveGiftCertificates(),
-      ]);
-      // Map PrismaService[] to SelectOption[]
-      const serviceOptions = servicesData.map((s) => ({
-        value: s.id,
-        label: s.title,
+      const branchesData = await getAllBranches(); // Assumes this action exists
+      const branchOptions = branchesData.map((b: PrismaBranch) => ({
+        value: b.id,
+        label: b.title,
       }));
-      setAvailableServices(serviceOptions);
+      setBranches([{ value: "all", label: "All Branches" }, ...branchOptions]); // Add 'All' option
+    } catch (err) {
+      console.error("Failed to load branches:", err);
+      setFormError((prev) => ({
+        ...prev,
+        general: [...(prev.general || []), "Failed to load branches."],
+      }));
+    } finally {
+      setIsLoadingBranches(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadBranches();
+  }, [loadBranches]);
+
+  // --- Fetch Services/Sets based on Filters ---
+  const loadItems = useCallback(async () => {
+    setIsLoadingItems(true);
+    setAvailableItems([]); // Clear previous items
+    setSelectedServicesOrSets([]); // Clear selection when filters change
+    try {
+      // Call the new action with filters
+      const itemsData = await getServicesAndSetsForGC(
+        serviceType,
+        selectedBranchId,
+      );
+      // Assume itemsData is already in { value, label } format from server action
+      setAvailableItems(itemsData);
+    } catch (err: any) {
+      console.error("Failed to load services/sets:", err);
+      setFormError((prev) => ({
+        ...prev,
+        general: [
+          ...(prev.general || []),
+          "Failed to load services/sets for selection.",
+        ],
+      }));
+    } finally {
+      setIsLoadingItems(false);
+    }
+  }, [serviceType, selectedBranchId]); // Re-run when filters change
+
+  useEffect(() => {
+    loadItems();
+  }, [loadItems]); // Fetch items whenever loadItems changes (i.e., filters change)
+
+  // --- Fetch Active GCs (Once on Mount or on demand) ---
+  const loadActiveGCs = useCallback(async () => {
+    setIsLoadingGCs(true);
+    try {
+      const gcs = await getActiveGiftCertificates();
       setActiveGCs(gcs);
     } catch (err: any) {
-      console.error("Failed to load initial data for GCs:", err);
-      // Show error to user?
-      setFormError({
-        general: ["Failed to load required data. Please refresh."],
-      });
+      console.error("Failed to load active GCs:", err);
+      setFormError((prev) => ({
+        ...prev,
+        general: [
+          ...(prev.general || []),
+          "Failed to load active gift certificates.",
+        ],
+      }));
     } finally {
-      setIsLoadingServices(false);
       setIsLoadingGCs(false);
     }
   }, []);
 
   useEffect(() => {
-    loadInitialData();
-  }, [loadInitialData]);
+    loadActiveGCs();
+  }, [loadActiveGCs]);
 
-  // --- Generate Code ---
+  // --- Handle Customer Selection ---
+  const handleCustomerSelected = useCallback(
+    (customer: CustomerData | null) => {
+      setSelectedCustomer(customer);
+      setRecipientEmail(customer?.email || ""); // Auto-fill email, allow override later
+      // Clear any previous customer-related errors if needed
+      setFormError((prev) => {
+        const { recipientName, recipientEmail, ...rest } = prev; // Remove specific errors
+        return rest;
+      });
+    },
+    [],
+  );
+
+  // --- Generate Code --- (No changes needed)
   const handleGenerateCode = () => {
-    const newCode = generateRandomCode(5); // Generate 5-char code
+    const newCode = generateRandomCode(5);
     if (codeInputRef.current) {
       codeInputRef.current.value = newCode;
-      // Optionally trigger change event if needed by other logic
     }
   };
 
   // --- Form Submission Handler ---
   const handleSaveClick = () => {
-    // Keep async for await inside
     if (!formRef.current) {
       setFormError({ general: ["Form reference error."] });
       return;
@@ -188,54 +265,72 @@ export default function ManageGiftCertificates() {
     setFormError({});
     setSuccessMessage(null);
 
-    const formData = new FormData(formRef.current);
-
-    // Manually add selected service IDs
-    formData.delete("serviceIds"); // Clear existing if any
-    selectedServices.forEach((option) =>
-      formData.append("serviceIds", option.value),
-    );
+    // --- Manually construct data instead of FormData ---
+    const codeValue = codeInputRef.current?.value.trim() || "";
+    const expiresValue = formRef.current.expiresAt.value;
+    const itemIds = selectedServicesOrSets.map((option) => option.value);
+    // recipientEmail state holds the potentially edited email
+    // selectedCustomer state holds the customer object (ID, name etc.)
 
     // Client-side validation
     let errors: Record<string, string[]> = {};
-    if (selectedServices.length === 0) {
-      errors.serviceIds = ["Please select at least one service."];
+    if (itemIds.length === 0) {
+      errors.serviceIds = ["Please select at least one service or set."];
     }
-    const codeValue = formData.get("code") as string;
-    if (!codeValue || codeValue.trim().length < 4) {
-      // Keep min 4 check
+    if (!codeValue || codeValue.length < 4) {
       errors.code = ["Code is required (min 4 chars)."];
     }
-    const emailValue = formData.get("recipientEmail") as string;
-    if (emailValue && !/\S+@\S+\.\S+/.test(emailValue)) {
-      // Basic email format check
+    if (
+      recipientEmail &&
+      !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(recipientEmail)
+    ) {
       errors.recipientEmail = ["Please enter a valid email address."];
     }
-    const expiresValue = formData.get("expiresAt") as string;
     if (
       expiresValue &&
       new Date(expiresValue) < new Date(new Date().setHours(0, 0, 0, 0))
     ) {
-      // Check if expiry is past
       errors.expiresAt = ["Expiry date cannot be in the past."];
     }
+    // Add validation for customer selection if needed (e.g., require selection)
+    // if (!selectedCustomer) {
+    //   errors.recipientName = ["Please select a recipient customer."];
+    // }
 
     if (Object.keys(errors).length > 0) {
       setFormError(errors);
       return;
     }
 
+    // --- Prepare data for the server action ---
+    const gcData = {
+      code: codeValue.toUpperCase(), // Send uppercase code
+      itemIds: itemIds, // Send array of IDs
+      itemType: serviceType, // Send the type ('service' or 'set') - Action needs to handle this
+      recipientCustomerId: selectedCustomer?.id || null, // Send customer ID or null
+      recipientName: selectedCustomer?.name || null, // Optional: Send name if action needs it
+      recipientEmail: recipientEmail || null, // Send potentially edited email
+      expiresAt: expiresValue || null, // Send date string or null
+    };
+
     startTransition(async () => {
-      const result = await createGiftCertificateAction(formData);
+      // Assume createGiftCertificateAction accepts an object now, not FormData
+      const result = await createGiftCertificateAction(gcData); // Pass structured data
       if (result.success) {
         setSuccessMessage(
           result.message || "Gift certificate created successfully!",
         );
         formRef.current?.reset(); // Reset form fields
-        setSelectedServices([]); // Clear multi-select state
+        setSelectedServicesOrSets([]); // Clear multi-select state
+        setSelectedCustomer(null); // Clear selected customer
+        setRecipientEmail(""); // Clear email state
+        setServiceType("service"); // Reset filters
+        setSelectedBranchId("all"); // Reset filters
         if (codeInputRef.current) codeInputRef.current.value = ""; // Clear code input
-        await loadInitialData(); // Refresh active GC list
-        setTimeout(() => setSuccessMessage(null), 5000); // Clear success message after delay
+        // Reload GCs, and items (which will happen due to filter reset)
+        await loadActiveGCs();
+        // loadItems(); // This will be triggered by filter state changes
+        setTimeout(() => setSuccessMessage(null), 5000);
       } else {
         setSuccessMessage(null);
         setFormError(
@@ -249,26 +344,30 @@ export default function ManageGiftCertificates() {
 
   const isSaving = isPending;
 
-  // --- Style constants --- (Adopt from other components)
+  // --- Style constants --- (Keep as defined in original prompt)
   const inputStyle =
+    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
+  const selectStyle = // Style for regular select dropdowns
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
   const labelStyle = "block text-sm font-medium text-customBlack/80";
   const errorTextStyle = "mt-1 text-xs text-red-500";
   const formSectionStyle =
-    "rounded border border-customGray/30 bg-white/80 shadow-sm p-4 md:p-6"; // Harmonized style
+    "rounded border border-customGray/30 bg-white/80 shadow-sm p-4 md:p-6";
   const listSectionStyle =
-    "rounded border border-customGray/30 bg-white/80 shadow-sm"; // Harmonized style
+    "rounded border border-customGray/30 bg-white/80 shadow-sm";
   const thStyleBase =
-    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider"; // Harmonized style
-  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Harmonized style
+    "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top";
 
   return (
     <div className="space-y-6 p-1">
+      {/* --- Create GC Form Section --- */}
       <div className={formSectionStyle}>
         <h2 className="mb-4 text-lg font-semibold text-customBlack">
           Create Gift Certificate
         </h2>
 
+        {/* General Feedback Messages */}
         {formError.general && (
           <p className="mb-4 rounded border border-red-300 bg-red-100 p-2 text-sm text-red-600">
             {formError.general.join(", ")}
@@ -285,6 +384,7 @@ export default function ManageGiftCertificates() {
           className="space-y-4"
           onSubmit={(e) => e.preventDefault()}
         >
+          {/* --- Row 1: Code --- */}
           <div>
             <label htmlFor="code" className={labelStyle}>
               Certificate Code <span className="text-red-500">*</span>
@@ -297,7 +397,7 @@ export default function ManageGiftCertificates() {
                 id="code"
                 required
                 minLength={4}
-                className={`block w-full flex-1 rounded-none rounded-l-md border border-r-0 border-customGray p-2 uppercase focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:text-sm`} // Added uppercase class
+                className={`block w-full flex-1 rounded-none rounded-l-md border border-r-0 border-customGray p-2 uppercase focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:text-sm`}
                 placeholder="Enter or Generate"
                 aria-invalid={!!formError.code}
                 aria-describedby={formError.code ? "code-error" : undefined}
@@ -307,12 +407,11 @@ export default function ManageGiftCertificates() {
                 onClick={handleGenerateCode}
                 className="relative -ml-px inline-flex items-center space-x-2 rounded-r-md border border-customGray bg-customGray/10 px-3 py-2 text-sm font-medium hover:bg-customGray/20 focus:border-customDarkPink focus:outline-none focus:ring-1 focus:ring-customDarkPink"
                 title="Generate Random Code (5 chars)"
-                size="sm" // Ensure size prop works if Button component supports it
+                size="sm"
                 invert
               >
                 <RefreshCw size={16} className="h-4 w-4" />
-                <span className="hidden sm:inline">Generate</span>{" "}
-                {/* Hide text on small screens */}
+                <span className="hidden sm:inline">Generate</span>
               </Button>
             </div>
             {formError.code && (
@@ -325,17 +424,64 @@ export default function ManageGiftCertificates() {
             </p>
           </div>
 
+          {/* --- Row 2: Filters for Services/Sets --- */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div>
+              <label htmlFor="serviceTypeFilter" className={labelStyle}>
+                Item Type <span className="text-red-500">*</span>
+              </label>
+              <select
+                id="serviceTypeFilter"
+                name="serviceTypeFilter"
+                value={serviceType}
+                onChange={(e) =>
+                  setServiceType(e.target.value as ServiceTypeFilter)
+                }
+                className={selectStyle} // Use consistent select style
+                disabled={isSaving || isLoadingItems || isLoadingBranches}
+              >
+                <option value="service">Single Service</option>
+                <option value="set">Set</option>
+              </select>
+            </div>
+            <div>
+              <label htmlFor="branchFilter" className={labelStyle}>
+                Filter by Branch
+              </label>
+              <select
+                id="branchFilter"
+                name="branchFilter"
+                value={selectedBranchId}
+                onChange={(e) => setSelectedBranchId(e.target.value)}
+                className={selectStyle} // Use consistent select style
+                disabled={isLoadingBranches || isSaving || isLoadingItems}
+              >
+                {isLoadingBranches ? (
+                  <option>Loading branches...</option>
+                ) : (
+                  branches.map((branch) => (
+                    <option key={branch.value} value={branch.value}>
+                      {branch.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+          </div>
+
+          {/* --- Row 3: Service/Set Selection --- */}
           <div>
             <label htmlFor="serviceIds" className={labelStyle}>
-              Included Services <span className="text-red-500">*</span>
+              Included {serviceType === "service" ? "Services" : "Sets"}
+              <span className="text-red-500">*</span>
             </label>
             <ServiceMultiSelectGC
-              name="serviceIds"
-              options={availableServices} // Use state with SelectOption[]
-              isLoading={isLoadingServices}
-              placeholder="Select one or more services..."
-              value={selectedServices} // Use state with MultiValue<SelectOption>
-              onChange={setSelectedServices} // Directly use the setter
+              name="serviceIds" // Keep name consistent, value extracted manually
+              options={availableItems} // Use state with filtered items
+              isLoading={isLoadingItems}
+              placeholder={`Select one or more ${serviceType === "service" ? "services" : "sets"}...`}
+              value={selectedServicesOrSets}
+              onChange={setSelectedServicesOrSets} // Directly use the setter
             />
             {formError.serviceIds && (
               <p className={errorTextStyle}>
@@ -345,38 +491,31 @@ export default function ManageGiftCertificates() {
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label htmlFor="recipientName" className={labelStyle}>
-                {" "}
-                Recipient Name{" "}
-              </label>
-              <input
-                type="text"
-                name="recipientName"
-                id="recipientName"
-                className={inputStyle}
-                aria-invalid={!!formError.recipientName}
+            <div className="relative flex flex-col items-center pt-2">
+              <CustomerInput
+                onCustomerSelect={handleCustomerSelected}
+                error={formError.recipientName?.join(", ")} // Pass potential error
+                initialValue={selectedCustomer?.name || ""} // Set initial value if customer selected
               />
-              {formError.recipientName && (
-                <p className={errorTextStyle}>
-                  {formError.recipientName.join(", ")}
-                </p>
-              )}
             </div>
+
+            {/* Recipient Email */}
             <div>
               <label htmlFor="recipientEmail" className={labelStyle}>
-                {" "}
-                Recipient Email{" "}
+                Recipient Email (Auto-filled, Editable)
               </label>
               <input
                 type="email"
                 name="recipientEmail"
                 id="recipientEmail"
-                className={inputStyle}
+                value={recipientEmail} // Controlled input
+                onChange={(e) => setRecipientEmail(e.target.value)} // Allow editing
+                className={inputStyle} // Use standard input style
                 aria-invalid={!!formError.recipientEmail}
                 aria-describedby={
                   formError.recipientEmail ? "email-error" : undefined
                 }
+                placeholder="Enter email or select customer"
               />
               {formError.recipientEmail && (
                 <p id="email-error" className={errorTextStyle}>
@@ -386,10 +525,10 @@ export default function ManageGiftCertificates() {
             </div>
           </div>
 
+          {/* --- Row 5: Expiry Date --- */}
           <div>
             <label htmlFor="expiresAt" className={labelStyle}>
-              {" "}
-              Expires At (Optional){" "}
+              Expires At (Optional)
             </label>
             <input
               type="date"
@@ -409,18 +548,22 @@ export default function ManageGiftCertificates() {
             )}
           </div>
 
-          {/* Submit Button */}
+          {/* --- Submit Button --- */}
           <div className="flex justify-end pt-2">
             <Button
               type="button"
               onClick={handleSaveClick}
-              disabled={isSaving || isLoadingServices || isLoadingGCs} // Disable if loading anything
+              disabled={
+                isSaving || isLoadingItems || isLoadingGCs || isLoadingBranches
+              } // Disable if loading anything
             >
               {isSaving ? "Creating..." : "Create Certificate"}
             </Button>
           </div>
         </form>
       </div>
+
+      {/* --- Active GC List Section --- */}
       <div className={listSectionStyle}>
         <h3 className="border-b border-customGray/30 bg-customGray/10 p-3 text-base font-semibold text-gray-700">
           Active Gift Certificates
@@ -430,7 +573,8 @@ export default function ManageGiftCertificates() {
             <p className="py-10 text-center text-customBlack/70">
               Loading certificates...
             </p>
-          ) : !formError.general && activeGCs.length === 0 ? ( // Check for general loading errors too
+          ) : !formError.general?.some((e) => e.includes("active gift cert")) && // Check specific general error
+            activeGCs.length === 0 ? (
             <p className="py-10 text-center text-customBlack/60">
               No active gift certificates found.
             </p>
@@ -442,10 +586,10 @@ export default function ManageGiftCertificates() {
                   <th className={`${thStyleBase} hidden sm:table-cell`}>
                     Recipient
                   </th>
-                  <th className={`${thStyleBase} hidden sm:table-cell`}>
+                  <th className={`${thStyleBase} hidden md:table-cell`}>
                     Expires
                   </th>
-                  <th className={`${thStyleBase} hidden sm:table-cell`}>
+                  <th className={`${thStyleBase} hidden lg:table-cell`}>
                     Issued
                   </th>
                 </tr>
@@ -457,14 +601,28 @@ export default function ManageGiftCertificates() {
                       className={`${tdStyleBase} whitespace-nowrap font-mono uppercase`}
                     >
                       {gc.code}
+                      <div className="text-xs text-gray-500 sm:hidden">
+                        Recipient: {gc.recipientName || "N/A"}
+                      </div>
+                      <div className="text-xs text-gray-500 sm:hidden">
+                        Expires:{" "}
+                        {gc.expiresAt
+                          ? new Date(gc.expiresAt).toLocaleDateString()
+                          : "Never"}
+                      </div>
                     </td>
                     <td className={`${tdStyleBase} hidden sm:table-cell`}>
                       {gc.recipientName || (
                         <span className="italic text-gray-400">N/A</span>
                       )}
+                      {gc.recipientEmail && (
+                        <div className="max-w-[150px] truncate text-[10px] text-gray-400">
+                          {gc.recipientEmail}
+                        </div>
+                      )}
                     </td>
                     <td
-                      className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
+                      className={`${tdStyleBase} hidden whitespace-nowrap md:table-cell`}
                     >
                       {gc.expiresAt ? (
                         new Date(gc.expiresAt).toLocaleDateString()
@@ -473,7 +631,7 @@ export default function ManageGiftCertificates() {
                       )}
                     </td>
                     <td
-                      className={`${tdStyleBase} hidden whitespace-nowrap sm:table-cell`}
+                      className={`${tdStyleBase} hidden whitespace-nowrap lg:table-cell`}
                     >
                       {new Date(gc.issuedAt).toLocaleDateString()}
                     </td>

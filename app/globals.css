@@ -24,3 +24,24 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #9e7876; /* Custom green when hovered */
 }
+
+@layer base {
+  /* Set the default body font to Lato */
+  body {
+    font-family: var(--font-lato);
+    /* You can add default font weight, color, etc. here */
+    @apply text-base font-normal text-gray-800; /* Example using Tailwind */
+  }
+
+  /* Set the font for all heading levels to Montserrat */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-montserrat);
+    /* Add default heading weight or other styles */
+    @apply font-semibold; /* Example: Make headings semi-bold by default */
+  }
+}

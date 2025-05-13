@@ -1,17 +1,22 @@
+// components/Buttons/Button.tsx
 import React from "react";
+import clsx from "clsx";
 
-// Define the possible size values
-type ButtonSize = "sm" | "md" | "lg";
+// Define the possible size values - ADD 'xs'
+type ButtonSize = "xs" | "sm" | "md" | "lg"; // Added "xs"
 
-// Update ButtonProps to include the optional size prop
+type ButtonVariant = "primary" | "secondary" | "outline";
+
 type ButtonProps = Omit<
   React.ButtonHTMLAttributes<HTMLButtonElement>,
   "className"
 > & {
   invert?: boolean;
   children: React.ReactNode;
-  className?: string; // Allow passing additional custom classes
-  size?: ButtonSize; // Add the optional size prop
+  className?: string;
+  size?: ButtonSize;
+  icon?: React.ReactNode;
+  variant?: ButtonVariant;
 };
 
 export default function Button({
@@ -21,46 +26,63 @@ export default function Button({
   className = "",
   disabled = false,
   size = "md", // Default size is 'md'
+  icon,
+  variant,
   ...rest
 }: ButtonProps) {
-  // --- Base styles - layout, border, transition, focus, disabled, min-height ---
-  // Removed padding and text-size as they are now size-dependent
   const baseStyles = `
     inline-flex items-center justify-center
     border-2 rounded-md font-medium
     transition-all duration-150 ease-in-out
     focus:outline-none focus:ring-2 focus:ring-offset-2
     disabled:opacity-60 disabled:cursor-not-allowed
-    min-h-[40px] // Adjusted min-height slightly, ensure it fits your smallest size well
   `;
 
-  // --- Size-specific styles ---
-  // Define padding and text size for each variant
   let sizeStyles = "";
   switch (size) {
+    case "xs": // New "xs" size
+      sizeStyles = "px-2 py-1 text-[10px] min-h-[26px]"; // Example for xs
+      break;
     case "sm":
-      sizeStyles = "px-3 py-1.5 text-xs"; // Small padding, extra small text
+      sizeStyles = "px-3 py-1.5 text-xs min-h-[30px]";
       break;
     case "lg":
-      sizeStyles = "px-6 py-3 text-base"; // Large padding, base text
+      sizeStyles = "px-6 py-3 text-base min-h-[50px]";
       break;
-    case "md": // Default case
+    case "md":
     default:
-      sizeStyles = "px-4 py-2 text-sm"; // Medium padding, small text
+      sizeStyles = "px-4 py-2 text-sm min-h-[40px]";
       break;
   }
 
-  // --- Conditional color styles based on 'invert' ---
-  // Keep your existing color logic
-  const colorStyles = invert
-    ? `border-customDarkPink text-customDarkPink bg-transparent hover:bg-customDarkPink hover:text-customOffWhite focus:ring-customDarkPink`
-    : `border-customDarkPink bg-customDarkPink text-customOffWhite hover:bg-transparent hover:text-customDarkPink focus:ring-customDarkPink`;
+  let colorStyles = "";
+  if (variant !== undefined) {
+    switch (variant) {
+      case "outline":
+        colorStyles = `border-customDarkPink text-customDarkPink bg-transparent hover:bg-customDarkPink hover:text-customOffWhite focus:ring-customDarkPink`;
+        break;
+      case "secondary":
+        colorStyles = `border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-400`;
+        break;
+      case "primary":
+      default:
+        colorStyles = `border-customDarkPink bg-customDarkPink text-customOffWhite hover:bg-transparent hover:text-customDarkPink focus:ring-customDarkPink`;
+        break;
+    }
+  } else {
+    if (invert) {
+      colorStyles = `border-customDarkPink text-customDarkPink bg-transparent hover:bg-customDarkPink hover:text-customOffWhite focus:ring-customDarkPink`;
+    } else {
+      colorStyles = `border-customDarkPink bg-customDarkPink text-customOffWhite hover:bg-transparent hover:text-customDarkPink focus:ring-customDarkPink`;
+    }
+  }
 
-  // Combine base, size, color, and any custom classes
-  const combinedClassName =
-    `${baseStyles} ${sizeStyles} ${colorStyles} ${className}`
-      .trim()
-      .replace(/\s+/g, " ");
+  const combinedClassName = clsx(
+    baseStyles,
+    sizeStyles, // Base size styles applied first
+    colorStyles,
+    className, // Custom className can override or add to size/color styles
+  );
 
   return (
     <button
@@ -69,6 +91,12 @@ export default function Button({
       disabled={disabled}
       {...rest}
     >
+      {icon && (
+        <span className={clsx("flex-shrink-0", children ? "mr-1.5" : "")}>
+          {icon}
+        </span>
+      )}{" "}
+      {/* Adjusted margin for icon-only buttons */}
       {children}
     </button>
   );

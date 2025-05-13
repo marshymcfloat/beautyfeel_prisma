@@ -2,52 +2,57 @@
 "use client";
 
 import { useState, useEffect, ChangeEvent, useRef, FocusEvent } from "react";
-import { useSelector, useDispatch } from "react-redux";
-import { cashierActions } from "@/lib/Slices/CashierSlice";
-import { RootState, AppDispatch } from "@/lib/reduxStore";
-import { getCustomer as fetchCustomers } from "@/lib/ServerAction";
+// Removed Redux imports as we'll use a callback prop instead for this specific use case
+// import { useSelector, useDispatch } from "react-redux";
+// import { cashierActions } from "@/lib/Slices/CashierSlice";
+// import { RootState, AppDispatch } from "@/lib/reduxStore";
+import { getCustomer as fetchCustomers } from "@/lib/ServerAction"; // Import the server action
+import type { CustomerWithRecommendations } from "@/lib/Types"; // Import the type
 
-type CustomerData = {
-  id: string;
-  name: string;
-  email: string | null;
-};
+// Use the refined type from Types.ts
+type CustomerData = CustomerWithRecommendations;
 
-export default function CustomerInput({ error }: { error?: string }) {
-  // State for user's typing, suggestions, and dropdown visibility
-  const [internalQuery, setInternalQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
+// --- NEW PROP TYPE ---
+interface CustomerInputProps {
+  error?: string;
+  initialValue?: string; // Optional initial value
+  onCustomerSelect?: (customer: CustomerData | null) => void; // Callback prop
+}
+
+export default function CustomerInput({
+  error,
+  initialValue = "", // Default to empty string
+  onCustomerSelect, // Destructure the new prop
+}: CustomerInputProps) {
+  // Use initialValue for the initial state
+  const [internalQuery, setInternalQuery] = useState(initialValue);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialValue);
   const [searchResults, setSearchResults] = useState<CustomerData[] | null>(
     null,
   );
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
-
-  // State to track focus (safe for SSR/client)
   const [isInputFocused, setIsInputFocused] = useState(false);
 
-  const dispatch = useDispatch<AppDispatch>();
-  // Get name from Redux, primarily for initial value or external updates
-  const reduxNameState = useSelector((state: RootState) => state.cashier.name);
+  // Removed Redux state references
+  // const dispatch = useDispatch<AppDispatch>();
+  // const reduxNameState = useSelector((state: RootState) => state.cashier.name);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Effect 0: Sync internalQuery with reduxNameState on mount or external change
+  // Effect 0: Sync internalQuery with initialValue if it changes externally (less common without Redux)
   useEffect(() => {
-    // If redux has a value and internal is different (or empty), update internal.
-    // This handles initial load or external resets. Check focus to avoid overwriting while typing.
-    if (reduxNameState !== internalQuery && !isInputFocused) {
-      setInternalQuery(reduxNameState || ""); // Use redux value or empty string
-      // Clear debounce/results if redux state became empty
-      if (!reduxNameState) {
+    if (initialValue !== internalQuery && !isInputFocused) {
+      setInternalQuery(initialValue || "");
+      if (!initialValue) {
         setDebouncedQuery("");
         setSearchResults(null);
         setIsDropdownVisible(false);
+        // Call callback with null when cleared externally
+        onCustomerSelect?.(null);
       }
     }
-    // Only trigger when reduxNameState changes or on initial mount if needed.
-    // Avoid depending on internalQuery here to prevent potential loops.
-  }, [reduxNameState, isInputFocused]); // Rerun if focus changes to potentially sync
+  }, [initialValue, isInputFocused, onCustomerSelect, internalQuery]);
 
-  // Effect 1: Debounce input changes
+  // Effect 1: Debounce input changes (No changes needed)
   useEffect(() => {
     if (internalQuery.trim() === "") {
       setDebouncedQuery("");
@@ -56,7 +61,6 @@ export default function CustomerInput({ error }: { error?: string }) {
       return;
     }
     const handler = setTimeout(() => {
-      // Ensure the current input value still matches the debounced target
       if (internalQuery === inputRef.current?.value) {
         setDebouncedQuery(internalQuery.trim());
       }
@@ -64,14 +68,15 @@ export default function CustomerInput({ error }: { error?: string }) {
     return () => clearTimeout(handler);
   }, [internalQuery]);
 
-  // Effect 2: Fetch data when debouncedQuery changes
+  // Effect 2: Fetch data when debouncedQuery changes (No changes needed in fetch logic)
   useEffect(() => {
     async function fetchData() {
       if (debouncedQuery) {
         try {
           const response = await fetchCustomers(debouncedQuery);
-          const results = response ?? [];
+          const results = response ?? []; // Ensure results is an array
           setSearchResults(results);
+          // Show dropdown only if focused and results exist
           if (results.length > 0 && isInputFocused) {
             setIsDropdownVisible(true);
           } else {
@@ -85,38 +90,42 @@ export default function CustomerInput({ error }: { error?: string }) {
       } else {
         setSearchResults(null);
         setIsDropdownVisible(false);
+        // If query is cleared, notify parent via callback
+        onCustomerSelect?.(null);
       }
     }
     fetchData();
-    // Depend on debounced query and focus state
-  }, [debouncedQuery, isInputFocused]);
+    // Use onCustomerSelect in dependency array if needed, but likely stable
+  }, [debouncedQuery, isInputFocused, onCustomerSelect]);
 
   // Handle direct input changes
   function handleInputChanges(e: ChangeEvent<HTMLInputElement>) {
     const value = e.target.value;
     setInternalQuery(value); // Update local state immediately
-    dispatch(cashierActions.setCustomerName(value)); // Update Redux immediately
+    // When user is typing, signal that no specific customer is selected
+    onCustomerSelect?.(null);
   }
 
   // Handle selecting a suggestion
-  function handleSelecting(name: string, email: string | null) {
-    dispatch(cashierActions.setCustomerName(name));
-    dispatch(cashierActions.setEmail(email ?? ""));
-    setInternalQuery(name); // Sync input field value
+  function handleSelecting(customer: CustomerData) {
+    // --- MODIFIED: Call the callback prop ---
+    onCustomerSelect?.(customer);
+    // --- END MODIFIED ---
+    setInternalQuery(customer.name); // Sync input field value
     setIsDropdownVisible(false);
-    setSearchResults(null);
+    setSearchResults(null); // Clear search results after selection
     inputRef.current?.blur(); // Remove focus after selection
   }
 
   // --- Focus and Blur Handlers ---
   const handleFocus = () => {
     setIsInputFocused(true);
-    // Show existing results on focus if query matches results
+    // Show dropdown on focus if there are already matching results for the current query
     if (
       debouncedQuery &&
       searchResults &&
       searchResults.length > 0 &&
-      debouncedQuery === internalQuery.trim()
+      debouncedQuery === internalQuery.trim() // Ensure results match current input
     ) {
       setIsDropdownVisible(true);
     }
@@ -125,58 +134,56 @@ export default function CustomerInput({ error }: { error?: string }) {
   const handleBlur = () => {
     // Use timeout to allow click on suggestion before hiding
     setTimeout(() => {
-      // Check activeElement *within* timeout - safe on client
+      // Check if focus is still within the component or dropdown (more robust check needed if dropdown isn't direct child)
       if (document.activeElement !== inputRef.current) {
         setIsInputFocused(false);
-        setIsDropdownVisible(false); // Hide dropdown if focus truly moved away
+        setIsDropdownVisible(false);
+        // If the user blurs and the text doesn't exactly match a selected customer's name,
+        // assume no specific customer is selected. The parent component should handle this logic based on its state.
+        // The onCustomerSelect(null) call in handleInputChanges handles the clearing during typing.
+        // If the text matches the selected customer name, the callback won't be called again, preserving the selection.
       }
-    }, 150);
+    }, 150); // Adjust delay if needed
   };
 
-  // --- Styling ---
-  // Determine colors based on error and focus state
+  // --- Styling --- (No changes needed)
   let borderColor = error
     ? "border-red-500"
     : isInputFocused
-      ? "border-customDarkPink" // Focused border
-      : "border-gray-300"; // Default border
+      ? "border-customDarkPink"
+      : "border-gray-300";
 
   let labelColor = error
     ? "text-red-600"
     : isInputFocused
-      ? "text-customDarkPink" // Focused label
-      : "text-gray-500"; // Default label
+      ? "text-customDarkPink"
+      : "text-gray-500";
 
   return (
-    <div className="relative my-8 flex w-full flex-col items-center">
+    <div className="relative w-full">
       {" "}
-      {/* Adjusted margin */}
+      {/* Removed outer flex container */}
       <div className="relative w-full">
         <input
           ref={inputRef}
-          name="customer"
+          name="customer_display" // Changed name to avoid conflict if used in form directly
           id="customer-input"
           value={internalQuery} // Controlled by local state
           onChange={handleInputChanges}
           onFocus={handleFocus}
           onBlur={handleBlur}
           autoComplete="off"
-          required
-          placeholder=" " // Crucial for :placeholder-shown selector
-          // Apply dynamic border color, ensure peer class is present
+          // Removed 'required' as the parent component will manage validation based on selection
+          placeholder=" "
           className={`peer relative z-0 h-[50px] w-full rounded-md border-2 bg-white ${borderColor} px-2 shadow-custom outline-none transition-colors duration-150`}
           aria-invalid={!!error}
           aria-describedby={error ? "customer-error" : undefined}
         />
-        {/*
-          Label Styling using PEER variants for position/size,
-          and component STATE for color.
-        */}
         <label
           htmlFor="customer-input"
-          className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 cursor-text bg-white px-1 text-base font-medium transition-all duration-150 ${labelColor} /* Base styles and dynamic color */ /* Positioning/size based on PEER state (via CSS) */ /* Color override when PEER is focused (matches state-based color) */ peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-sm peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-sm peer-focus:${error ? "text-red-600" : "text-customDarkPink"} `}
+          className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 cursor-text bg-white px-1 text-base font-medium transition-all duration-150 ${labelColor} peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-sm peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-sm peer-focus:${error ? "text-red-600" : "text-customDarkPink"} `}
         >
-          Customer Name *
+          Recipient Customer * {/* Changed Label */}
         </label>
 
         {/* Suggestions Dropdown */}
@@ -186,10 +193,10 @@ export default function CustomerInput({ error }: { error?: string }) {
               <div
                 key={customer.id}
                 className="cursor-pointer px-3 py-2 text-sm hover:bg-gray-100"
+                // Use onMouseDown to handle click before blur hides dropdown
                 onMouseDown={(e) => {
-                  // Use onMouseDown
-                  e.preventDefault();
-                  handleSelecting(customer.name, customer.email);
+                  e.preventDefault(); // Prevent input blur
+                  handleSelecting(customer); // Pass the whole customer object
                 }}
               >
                 <span className="font-medium text-gray-900">

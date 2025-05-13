@@ -1,4 +1,3 @@
-// src/app/(app)/attendance/_components/ManageAttendance.tsx
 "use client";
 
 import React, {
@@ -11,157 +10,281 @@ import React, {
 import {
   getEmployeesForAttendanceAction,
   markAttendanceAction,
-  getBranchesForSelectAction, // For filtering
-} from "@/lib/ServerAction"; // Adjust path if needed
-import Button from "@/components/Buttons/Button"; // Use your Button component
-import { EmployeeForAttendance, BranchForSelect } from "@/lib/Types";
+  getBranchesForSelectAction,
+} from "@/lib/ServerAction"; // Adjust path as needed
+import {
+  EmployeeForAttendance,
+  BranchForSelect,
+  OptimisticUpdateAttendanceRecord,
+  ServerTodaysAttendance, // Make sure this is defined in Types.ts
+} from "@/lib/Types"; // Adjust path as needed
 
-import { ParamValue } from "next/dist/server/request/params";
+const TARGET_TIMEZONE = "Asia/Manila";
 
-// Assume you get the current user's ID from auth context or session
-// Replace this with your actual method of getting the logged-in user's ID
+const getStartOfTodayTargetTimezoneUtc = () => {
+  const nowUtc = new Date();
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TARGET_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const targetDateString = formatter.format(nowUtc);
+  const [yearStr, monthStr, dayStr] = targetDateString.split("-");
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10) - 1;
+  const day = parseInt(dayStr, 10);
+  return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+};
 
 export default function ManageAttendance({
-  currentUserId,
+  viewedAccountId,
+  checkerId,
 }: {
-  currentUserId: ParamValue;
+  viewedAccountId: string | undefined;
+  checkerId: string;
 }) {
   const [employees, setEmployees] = useState<EmployeeForAttendance[]>([]);
   const [branches, setBranches] = useState<BranchForSelect[]>([]);
-  const [selectedBranchId, setSelectedBranchId] = useState<string>(""); // '' means All
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("");
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [processingEmployeeIds, setProcessingEmployeeIds] = useState<
+    Set<string>
+  >(new Set());
 
-  // --- Load Data ---
-  const loadData = useCallback(async () => {
-    console.log("Client: loadData (Attendance) called");
-    setIsLoading(true);
-    setError(null);
+  const startOfTodayTargetZoneUtc = useMemo(
+    () => getStartOfTodayTargetTimezoneUtc(),
+    [],
+  );
+
+  const loadData = useCallback(async (isInitialLoad = false) => {
+    if (isInitialLoad) {
+      console.log("Client: loadData called for INITIAL data load.");
+      setIsLoading(true);
+    } else {
+      console.log("Client: loadData called for data refresh.");
+    }
+
     try {
-      console.log("Client: Calling attendance/branch actions...");
-      // Pass filters to action if implemented server-side later
       const [fetchedEmployees, fetchedBranches] = await Promise.all([
-        getEmployeesForAttendanceAction(/* Pass checker/filter details if needed */),
+        getEmployeesForAttendanceAction(),
         getBranchesForSelectAction(),
       ]);
-      console.log("Client: Data received", {
-        fetchedEmployees,
-        fetchedBranches,
-      });
       setEmployees(fetchedEmployees);
       setBranches(fetchedBranches);
+      setError(null);
     } catch (err: any) {
-      console.error("Client: Failed to load attendance data:", err);
+      console.error(
+        `Client: Failed to load attendance data (initial: ${isInitialLoad}):`,
+        err,
+      );
       setError(err.message || "Failed to load data. Please refresh.");
     } finally {
-      setIsLoading(false);
-      console.log("Client: loadData (Attendance) finished.");
+      if (isInitialLoad) {
+        setIsLoading(false);
+      }
+      console.log(`Client: loadData (initial: ${isInitialLoad}) finished.`);
     }
   }, []);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  // --- Filter Employees Client-Side ---
-  const filteredEmployees = useMemo(() => {
-    if (!selectedBranchId) {
-      return employees; // Show all if no branch selected
+    if (!checkerId) {
+      console.error("ManageAttendance: checkerId prop is missing!");
+      setError("Authentication error: Checker ID not provided.");
+      setIsLoading(false);
+      return;
     }
-    // Find the title of the selected branch ID
-    const selectedBranchTitle = branches.find(
-      (b) => b.id === selectedBranchId,
-    )?.title;
-    if (!selectedBranchTitle) return employees; // Should not happen if selection is valid
+    loadData(true);
+  }, [checkerId, loadData]);
 
-    return employees.filter((emp) => emp.branchTitle === selectedBranchTitle);
+  const filteredEmployees = useMemo(() => {
+    if (!selectedBranchId) return employees;
+    const selectedBranch = branches.find((b) => b.id === selectedBranchId);
+    if (selectedBranchId !== "" && !selectedBranch) return [];
+
+    return employees.filter((emp) => {
+      if (selectedBranchId !== "" && emp.branchTitle === null) return false;
+      return (
+        selectedBranchId === "" || emp.branchTitle === selectedBranch?.title
+      );
+    });
   }, [employees, selectedBranchId, branches]);
 
-  // --- Action Handler ---
-  const handleMarkAttendance = (
-    accountId: string,
-    isPresent: boolean,
-    currentStatus?: boolean | null, // Pass current status to avoid redundant calls if needed
-  ) => {
-    // Optional: Check if status is already the desired one
-    // if (currentStatus === isPresent) {
-    //     console.log(`Attendance already marked as ${isPresent} for ${accountId}`);
-    //     return; // Or show feedback
-    // }
-
-    startTransition(async () => {
-      setError(null); // Clear previous errors
-      console.log(
-        `Client: Calling markAttendanceAction for ${accountId}, present: ${isPresent}`,
-      );
-      try {
-        const result = await markAttendanceAction(
-          accountId,
-          isPresent,
-          null, // Add notes input later if needed
-          currentUserId, // Pass the actual checker ID
-        );
-        console.log("Client: Mark attendance result:", result);
-        if (result.success) {
-          // Reload data to show updated status and potentially salary elsewhere
-          await loadData();
-          // Or update state optimistically (more complex)
-        } else {
-          setError(result.message); // Show error message
-        }
-      } catch (err: any) {
-        console.error("Client: Error calling markAttendanceAction:", err);
-        setError(err.message || "An unexpected error occurred.");
+  const handleMarkAttendance = useCallback(
+    (accountId: string, newIsPresentStatus: boolean) => {
+      if (!checkerId) {
+        setError("Authentication error: Cannot perform action.");
+        return;
       }
-    });
-  };
 
-  // --- Today's Date String ---
+      setEmployees((prevEmployees) =>
+        prevEmployees.map((emp) => {
+          if (emp.id === accountId) {
+            let dateForOptimisticRecord: string;
+            if (
+              emp.todaysAttendance &&
+              "date" in emp.todaysAttendance &&
+              emp.todaysAttendance.date
+            ) {
+              try {
+                const dateObj =
+                  typeof emp.todaysAttendance.date === "string"
+                    ? new Date(emp.todaysAttendance.date)
+                    : emp.todaysAttendance.date;
+                dateForOptimisticRecord = !isNaN(dateObj.getTime())
+                  ? dateObj.toISOString().split("T")[0]
+                  : new Date().toISOString().split("T")[0];
+              } catch {
+                dateForOptimisticRecord = new Date()
+                  .toISOString()
+                  .split("T")[0];
+              }
+            } else {
+              dateForOptimisticRecord = new Date().toISOString().split("T")[0];
+            }
+
+            const optimisticRecordForUpdate: OptimisticUpdateAttendanceRecord =
+              {
+                id:
+                  emp.todaysAttendance?.id ||
+                  `optimistic-${emp.id}-${Date.now()}`,
+                date: dateForOptimisticRecord,
+                isPresent: newIsPresentStatus,
+                notes: emp.todaysAttendance?.notes ?? undefined,
+              };
+            return { ...emp, todaysAttendance: optimisticRecordForUpdate };
+          }
+          return emp;
+        }),
+      );
+
+      setProcessingEmployeeIds((prev) => new Set(prev).add(accountId));
+      setError(null);
+
+      startTransition(async () => {
+        let actionSuccess = false;
+        try {
+          const result = await markAttendanceAction(
+            accountId,
+            newIsPresentStatus,
+            // For now, pass null for notes. UI can be added later to edit notes.
+            employees.find((e) => e.id === accountId)?.todaysAttendance
+              ?.notes ?? null,
+            checkerId,
+          );
+          if (result.success) {
+            actionSuccess = true;
+            console.log(
+              `Client: Mark attendance successful for ${accountId}. ${result.message}`,
+            );
+            if (result.updatedAttendance) {
+              setEmployees((prevEmps) =>
+                prevEmps.map((emp) =>
+                  emp.id === accountId
+                    ? {
+                        ...emp,
+                        todaysAttendance: {
+                          id: result.updatedAttendance!.id,
+                          isPresent: result.updatedAttendance!.isPresent,
+                          notes: result.updatedAttendance!.notes,
+                        } as ServerTodaysAttendance, // Cast to ServerTodaysAttendance or a compatible type
+                        // Optionally update salary if it's displayed and returned
+                        // salary: result.updatedSalary !== undefined ? result.updatedSalary : emp.salary,
+                      }
+                    : emp,
+                ),
+              );
+            }
+          } else {
+            console.error(
+              `Client: Mark attendance failed for ${accountId}. ${result.message}`,
+            );
+            setError(result.message || "Failed to mark attendance.");
+          }
+        } catch (err: any) {
+          console.error(
+            `Client: Unexpected error marking attendance for ${accountId}.`,
+            err,
+          );
+          setError(
+            err.message ||
+              "An unexpected error occurred while marking attendance.",
+          );
+        } finally {
+          if (!actionSuccess) {
+            console.log(
+              `Client: Action failed for ${accountId}. Reloading data to revert.`,
+            );
+            await loadData(false);
+          }
+          setProcessingEmployeeIds((prev) => {
+            const next = new Set(prev);
+            next.delete(accountId);
+            return next;
+          });
+          console.log(`Client: Finished processing for ${accountId}.`);
+        }
+      });
+    },
+    [checkerId, loadData, employees], // Added employees to dependency array because we read notes from it
+  );
+
   const todayString = useMemo(() => {
-    return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD format
+    return new Date().toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: TARGET_TIMEZONE,
+    });
   }, []);
 
-  // --- Styles (reuse or adapt from ManageAccounts) ---
   const thStyle =
     "px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider";
   const tdStyle =
-    "px-4 py-3 whitespace-nowrap text-sm text-gray-600 align-middle"; // Align middle
+    "px-4 py-3 whitespace-nowrap text-sm text-gray-600 align-middle";
   const tdFirstChildStyle = `${tdStyle} font-medium text-gray-900`;
   const errorStyle =
     "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
-  const buttonStylePresent =
-    "px-2 py-1 text-xs font-medium rounded bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed";
-  const buttonStyleAbsent =
-    "px-2 py-1 text-xs font-medium rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 disabled:cursor-not-allowed ml-2";
+
+  const buttonBaseShared =
+    "font-medium rounded disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-opacity-50 transition-colors duration-150";
+  const buttonBaseTable = `${buttonBaseShared} px-2 py-1 text-xs`;
+  const buttonStylePresentTable = `${buttonBaseTable} bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500`;
+  const buttonStyleAbsentTable = `${buttonBaseTable} bg-red-100 text-red-700 hover:bg-red-200 ml-2 focus:ring-red-500`;
+
+  const buttonBaseMobile = `${buttonBaseShared} px-3 py-1.5 text-sm flex-grow text-center`;
+  const buttonStylePresentMobile = `${buttonBaseMobile} bg-green-100 text-green-700 hover:bg-green-200 focus:ring-green-500`;
+  const buttonStyleAbsentMobile = `${buttonBaseMobile} bg-red-100 text-red-700 hover:bg-red-200 focus:ring-red-500`;
+
   const statusBadgeBase =
     "px-2.5 py-0.5 rounded-full text-xs font-medium inline-block";
   const statusBadgePresent = `${statusBadgeBase} bg-green-100 text-green-800`;
   const statusBadgeAbsent = `${statusBadgeBase} bg-red-100 text-red-800`;
   const statusBadgeNotMarked = `${statusBadgeBase} bg-gray-100 text-gray-800`;
+  const processingButtonStyle = "opacity-70 cursor-wait";
 
   return (
-    <div className="p-4">
-      {/* Header */}
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+    <div className="bg-customOffWhite p-2 sm:p-4">
+      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-xl font-semibold text-customBlack">
           Daily Attendance ({todayString})
         </h2>
-        {/* Branch Filter Dropdown */}
-        <div>
+        <div className="w-full sm:w-auto">
           <label
-            htmlFor="branchFilter"
-            className="mr-2 text-sm font-medium text-customBlack"
+            htmlFor="branchFilterAttendance"
+            className="mb-1 block text-xs font-medium text-customBlack sm:mb-0 sm:mr-2 sm:inline"
           >
             Filter by Branch:
           </label>
           <select
-            id="branchFilter"
-            name="branchFilter"
+            id="branchFilterAttendance"
+            name="branchFilterAttendance"
             value={selectedBranchId}
             onChange={(e) => setSelectedBranchId(e.target.value)}
-            className="rounded border border-customGray p-2 text-sm shadow-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink"
-            disabled={isLoading}
+            className="w-full rounded border border-customGray p-2 text-sm shadow-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:w-auto"
+            disabled={isLoading || isPending}
           >
             <option value="">-- All Branches --</option>
             {branches.map((branch) => (
@@ -172,11 +295,7 @@ export default function ManageAttendance({
           </select>
         </div>
       </div>
-
-      {/* Error Display */}
       {error && <p className={errorStyle}>{error}</p>}
-
-      {/* Table Display */}
       {isLoading ? (
         <div className="py-10 text-center text-customBlack/70">
           Loading employees...
@@ -186,41 +305,155 @@ export default function ManageAttendance({
           No employees found{selectedBranchId ? " for this branch" : ""}.
         </div>
       ) : (
-        <div className="overflow-x-auto rounded border border-customGray/50 bg-white bg-opacity-60 shadow-md">
-          <table className="min-w-full divide-y divide-customGray/30">
-            <thead className="bg-customGray/10">
-              <tr>
-                <th className={thStyle}>Employee Name</th>
-                <th className={thStyle}>Branch</th>
-                <th className={thStyle}>Status Today</th>
-                {/* <th className={thStyle}>Notes</th> */}
-                <th className={`${thStyle} text-center`}>Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-customGray/30">
-              {filteredEmployees.map((employee) => {
-                const attendance = employee.todaysAttendance;
-                const isPresent = attendance?.isPresent;
-                const isMarked = attendance !== null;
+        <>
+          <div className="hidden max-h-[300px] overflow-x-auto overflow-y-auto rounded border border-customGray/50 bg-opacity-60 shadow-md sm:block">
+            <table className="min-w-full divide-y divide-customGray/30">
+              <thead className="sticky top-0 z-10 bg-customGray/10 backdrop-blur-sm">
+                <tr>
+                  <th className={thStyle}>Employee Name</th>
+                  <th className={thStyle}>Branch</th>
+                  <th className={thStyle}>Status Today</th>
+                  <th className={`${thStyle} text-center`}>Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-customGray/30">
+                {filteredEmployees.map((employee) => {
+                  const attendance = employee.todaysAttendance;
+                  const isPresent = attendance?.isPresent;
+                  const isMarked = attendance !== null;
+                  const isCurrentlyProcessing = processingEmployeeIds.has(
+                    employee.id,
+                  );
 
-                return (
-                  <tr key={employee.id} className="hover:bg-customLightBlue/20">
-                    <td className={tdFirstChildStyle}>{employee.name}</td>
-                    <td className={tdStyle}>
-                      {employee.branchTitle ?? (
-                        <span className="italic text-gray-400">N/A</span>
-                      )}
-                    </td>
-                    <td className={tdStyle}>
-                      {/* Status Badge */}
+                  const isTodayInLastPayslip =
+                    employee.lastPayslipEndDate !== null &&
+                    startOfTodayTargetZoneUtc.getTime() <=
+                      new Date(employee.lastPayslipEndDate).getTime();
+
+                  const isAbsentDisabled =
+                    isCurrentlyProcessing ||
+                    isPresent === false ||
+                    isTodayInLastPayslip;
+                  const isPresentDisabled =
+                    isCurrentlyProcessing || isPresent === true;
+
+                  return (
+                    <tr
+                      key={employee.id}
+                      className="hover:bg-customLightBlue/20"
+                    >
+                      <td className={tdFirstChildStyle}>{employee.name}</td>
+                      <td className={tdStyle}>
+                        {employee.branchTitle ?? (
+                          <span className="italic text-gray-400">N/A</span>
+                        )}
+                      </td>
+                      <td className={tdStyle}>
+                        <span
+                          className={
+                            isMarked
+                              ? isPresent
+                                ? statusBadgePresent
+                                : statusBadgeAbsent
+                              : statusBadgeNotMarked
+                          }
+                        >
+                          {isMarked
+                            ? isPresent
+                              ? "Present"
+                              : "Absent"
+                            : "Not Marked"}
+                        </span>
+                      </td>
+                      <td className={`${tdStyle} text-center`}>
+                        <button
+                          onClick={() =>
+                            handleMarkAttendance(employee.id, true)
+                          }
+                          disabled={isPresentDisabled}
+                          className={`${buttonStylePresentTable} ${isPresentDisabled ? "cursor-not-allowed !bg-green-50 !text-green-400" : ""} ${isCurrentlyProcessing ? processingButtonStyle : ""}`}
+                          title={
+                            isCurrentlyProcessing
+                              ? "Processing..."
+                              : isPresent === true
+                                ? "Already marked present"
+                                : "Mark as Present"
+                          }
+                        >
+                          {isCurrentlyProcessing && !isPresentDisabled
+                            ? "..."
+                            : "Present"}
+                        </button>
+                        <button
+                          onClick={() =>
+                            handleMarkAttendance(employee.id, false)
+                          }
+                          disabled={isAbsentDisabled}
+                          className={`${buttonStyleAbsentTable} ${isAbsentDisabled ? "cursor-not-allowed !bg-red-50 !text-red-400" : ""} ${isCurrentlyProcessing ? processingButtonStyle : ""}`}
+                          title={
+                            isCurrentlyProcessing
+                              ? "Processing..."
+                              : isPresent === false
+                                ? "Already marked absent"
+                                : isTodayInLastPayslip
+                                  ? "Cannot mark absent - day included in last payslip"
+                                  : "Mark as Absent"
+                          }
+                        >
+                          {isCurrentlyProcessing && !isAbsentDisabled
+                            ? "..."
+                            : "Absent"}
+                          {isTodayInLastPayslip &&
+                            !isCurrentlyProcessing &&
+                            !isPresent &&
+                            " 🔒"}
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div className="block max-h-[calc(100vh-400px)] space-y-3 overflow-y-auto pr-1 sm:hidden">
+            {filteredEmployees.map((employee) => {
+              const attendance = employee.todaysAttendance;
+              const isPresent = attendance?.isPresent;
+              const isMarked = attendance !== null;
+              const isCurrentlyProcessing = processingEmployeeIds.has(
+                employee.id,
+              );
+
+              const isTodayInLastPayslip =
+                employee.lastPayslipEndDate !== null &&
+                startOfTodayTargetZoneUtc.getTime() <=
+                  new Date(employee.lastPayslipEndDate).getTime();
+
+              const isAbsentDisabled =
+                isCurrentlyProcessing ||
+                isPresent === false ||
+                isTodayInLastPayslip;
+              const isPresentDisabled =
+                isCurrentlyProcessing || isPresent === true;
+
+              return (
+                <div
+                  key={employee.id}
+                  className="rounded border border-customGray/40 bg-white bg-opacity-70 p-3.5 shadow-sm"
+                >
+                  <div className="mb-2.5 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between">
+                      <p className="text-md font-semibold text-customBlack">
+                        {employee.name}
+                      </p>
                       <span
-                        className={
+                        className={`whitespace-nowrap ${
                           isMarked
                             ? isPresent
                               ? statusBadgePresent
                               : statusBadgeAbsent
                             : statusBadgeNotMarked
-                        }
+                        }`}
                       >
                         {isMarked
                           ? isPresent
@@ -228,46 +461,59 @@ export default function ManageAttendance({
                             : "Absent"
                           : "Not Marked"}
                       </span>
-                    </td>
-                    {/* Notes Column (Optional) */}
-                    {/* <td className={tdStyle}>{attendance?.notes ?? '-'}</td> */}
-                    <td className={`${tdStyle} text-center`}>
-                      {/* Action Buttons */}
-                      <button
-                        onClick={() =>
-                          handleMarkAttendance(employee.id, true, isPresent)
-                        }
-                        disabled={isPending || isPresent === true} // Disable if pending or already present
-                        className={`${buttonStylePresent} ${isPresent === true ? "cursor-not-allowed opacity-50" : ""}`}
-                        title={
-                          isPresent === true
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Branch:{" "}
+                      {employee.branchTitle ?? (
+                        <span className="italic">N/A</span>
+                      )}
+                    </p>
+                  </div>
+                  <div className="flex space-x-2 border-t border-customGray/20 pt-2.5">
+                    <button
+                      onClick={() => handleMarkAttendance(employee.id, true)}
+                      disabled={isPresentDisabled}
+                      className={`${buttonStylePresentMobile} ${isPresentDisabled ? "cursor-not-allowed !bg-green-50 !text-green-400" : ""} ${isCurrentlyProcessing ? processingButtonStyle : ""}`}
+                      title={
+                        isCurrentlyProcessing
+                          ? "Processing..."
+                          : isPresent === true
                             ? "Already marked present"
                             : "Mark as Present"
-                        }
-                      >
-                        Present
-                      </button>
-                      <button
-                        onClick={() =>
-                          handleMarkAttendance(employee.id, false, isPresent)
-                        }
-                        disabled={isPending || isPresent === false} // Disable if pending or already absent
-                        className={`${buttonStyleAbsent} ${isPresent === false ? "cursor-not-allowed opacity-50" : ""}`}
-                        title={
-                          isPresent === false
+                      }
+                    >
+                      {isCurrentlyProcessing && !isPresentDisabled
+                        ? "..."
+                        : "Present"}
+                    </button>
+                    <button
+                      onClick={() => handleMarkAttendance(employee.id, false)}
+                      disabled={isAbsentDisabled}
+                      className={`${buttonStyleAbsentMobile} ${isAbsentDisabled ? "cursor-not-allowed !bg-red-50 !text-red-400" : ""} ${isCurrentlyProcessing ? processingButtonStyle : ""}`}
+                      title={
+                        isCurrentlyProcessing
+                          ? "Processing..."
+                          : isPresent === false
                             ? "Already marked absent"
-                            : "Mark as Absent"
-                        }
-                      >
-                        Absent
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                            : isTodayInLastPayslip
+                              ? "Cannot mark absent - day included in last payslip"
+                              : "Mark as Absent"
+                      }
+                    >
+                      {isCurrentlyProcessing && !isAbsentDisabled
+                        ? "..."
+                        : "Absent"}
+                      {isTodayInLastPayslip &&
+                        !isCurrentlyProcessing &&
+                        !isPresent &&
+                        " 🔒"}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

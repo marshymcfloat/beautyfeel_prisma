@@ -1,4 +1,3 @@
-// src/app/(logged)/[accountID]/ClientLayout.tsx
 "use client";
 
 import React, { useState } from "react";

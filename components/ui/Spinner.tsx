@@ -1,7 +1,61 @@
-export default function Spinner() {
+// components/ui/Spinner.tsx
+import React from "react";
+import clsx from "clsx"; // Assuming you have clsx installed
+
+interface SpinnerProps {
+  /**
+   * Tailwind class for the size of the spinner element itself (e.g., 'size-8', 'h-5 w-5').
+   * @default 'size-8'
+   */
+  size?: string;
+  /**
+   * Tailwind class for the height of the container wrapping the spinner and text (e.g., 'h-screen', 'h-auto').
+   * Useful for centering the spinner within a specific area.
+   * @default 'h-auto'
+   */
+  height?: string;
+  /**
+   * Optional text to display below the spinner.
+   */
+  text?: string;
+  /**
+   * Additional Tailwind classes for the container div.
+   */
+  className?: string;
+  /**
+   * Tailwind class for the color of the spinner's text.
+   * @default 'text-gray-600'
+   */
+  textColor?: string;
+}
+
+export default function Spinner({
+  size = "size-8", // Default spinner size
+  height = "h-auto", // Default container height
+  text,
+  className,
+  textColor = "text-gray-600", // Default text color
+}: SpinnerProps) {
   return (
-    <div className="flex justify-center items-center h-screen">
-      <div className="size-8 border-4 border-t-4 border-customDarkPink border-t-white rounded-full animate-spin"></div>
+    // Outer container: handles height, centering, and general classNames
+    <div
+      className={clsx(
+        "flex flex-col items-center justify-center",
+        height,
+        className,
+      )}
+    >
+      {/* Inner spinner element: handles size and spinner animation/colors */}
+      <div
+        className={clsx(
+          "animate-spin rounded-full border-4 border-t-4 border-customDarkPink border-t-white",
+          size,
+        )}
+      ></div>
+      {/* Optional text below the spinner */}
+      {text && (
+        <p className={clsx("mt-2 text-sm font-medium", textColor)}>{text}</p>
+      )}
     </div>
   );
 }

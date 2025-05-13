@@ -1,4 +1,3 @@
-// src/app/dashboard/[accountID]/manage/page.tsx
 "use client";
 
 import React, { useState } from "react";
@@ -10,8 +9,8 @@ import {
   Percent,
   MapPin,
   Gift,
-  Receipt, // Payslip icon
-  ListOrdered, // Transaction icon
+  Receipt,
+  ListOrdered,
 } from "lucide-react";
 
 import ManageServices from "@/components/ui/customize/ManageServices";
@@ -25,16 +24,13 @@ import ManagePayslip from "@/components/ui/customize/ManagePaySlip";
 import ManageTransactions from "@/components/ui/customize/ManageTransactions";
 import { TabConfig, ActiveTab } from "@/lib/Types";
 
-// Define extended ActiveTab type if needed, or ensure Transaction is included
-// For simplicity, adding 'transactions' here directly. Ensure ActiveTab in Types.ts is updated if separate.
 type ExtendedActiveTab = ActiveTab | "transactions";
 
 const TABS: TabConfig[] = [
-  // Use TabConfig consistently
   { id: "services", label: "Services", icon: Settings },
   { id: "serviceSets", label: "Service Sets", icon: Layers },
   { id: "accounts", label: "Accounts", icon: Users },
-  { id: "transactions", label: "Transactions", icon: ListOrdered }, // <-- ADD NEW TAB
+  { id: "transactions", label: "Transactions", icon: ListOrdered },
   { id: "payslips", label: "Payslips", icon: Receipt },
   { id: "vouchers", label: "Vouchers", icon: Ticket },
   { id: "giftCertificate", label: "Gift Certificates", icon: Gift },
@@ -43,7 +39,6 @@ const TABS: TabConfig[] = [
 ];
 
 export default function CustomizePage() {
-  // Use the extended type for state, default to 'services' or another valid tab
   const [activeTab, setActiveTab] = useState<ExtendedActiveTab>("services");
 
   const renderActiveComponent = () => {
@@ -54,7 +49,7 @@ export default function CustomizePage() {
         return <ManageServiceSets />;
       case "accounts":
         return <ManageAccounts />;
-      case "transactions": // <-- RENDER NEW COMPONENT
+      case "transactions":
         return <ManageTransactions />;
       case "payslips":
         return <ManagePayslip />;
@@ -67,7 +62,7 @@ export default function CustomizePage() {
       case "branches":
         return <ManageBranches />;
       default:
-        return <ManageServices />; // Fallback
+        return <ManageServices />;
     }
   };
 
@@ -93,12 +88,10 @@ export default function CustomizePage() {
           id="tabs-select"
           name="tabs-select"
           className={selectStyle}
-          // Cast the value to ExtendedActiveTab on change
           onChange={(e) => setActiveTab(e.target.value as ExtendedActiveTab)}
           value={activeTab}
         >
           {TABS.map((tab) => (
-            // Cast tab.id to string as option value must be string
             <option key={tab.id} value={String(tab.id)}>
               {tab.label}
             </option>
@@ -115,7 +108,6 @@ export default function CustomizePage() {
           {TABS.map((tab) => (
             <button
               key={tab.id}
-              // Cast tab.id to ExtendedActiveTab on click
               onClick={() => setActiveTab(tab.id as ExtendedActiveTab)}
               className={`flex items-center gap-1.5 whitespace-nowrap rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors duration-150 focus:outline-none focus:ring-1 focus:ring-customDarkPink/60 focus:ring-offset-1 ${
                 activeTab === tab.id

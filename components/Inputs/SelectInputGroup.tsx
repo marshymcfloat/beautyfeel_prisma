@@ -1,7 +1,8 @@
 // components/Inputs/SelectInputGroup.tsx
 "use client";
 
-import React, { memo } from "react"; // Import memo
+import React, { memo } from "react";
+import Spinner from "@/components/ui/Spinner"; // <-- Import Spinner
 
 type SelectInputGroupProps<T extends { [key: string]: any }> = {
   label: string;
@@ -10,15 +11,19 @@ type SelectInputGroupProps<T extends { [key: string]: any }> = {
   labelKey?: keyof T;
   name: string;
   id?: string;
-  // Change this line: Allow string, null, or undefined
-  value?: string | null | undefined;
+  value?: string | number | null | undefined;
   onChange: (key: string, value: string) => void;
   placeholder?: string;
-  error?: string;
+  error?: string | null | undefined;
   required?: boolean;
+  isLoading?: boolean;
+  // --- ADD disabled prop ---
+  disabled?: boolean;
+  // --- END ADD disabled prop ---
+  className?: string;
 };
 
-// No changes needed within the component function itself
+// Use React.memo for performance optimization
 const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   label,
   options,
@@ -26,68 +31,93 @@ const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   labelKey = "title" as keyof T,
   name,
   id,
-  value, // This 'value' can now be string | null | undefined
+  value,
   onChange,
   placeholder = "Select...",
   error,
   required = false,
+  isLoading = false,
+  disabled = false, // --- Default disabled to false ---
+  className, // Accept className prop
 }: SelectInputGroupProps<T>) => {
   const hasError = !!error;
-  const inputHeight = "h-[50px]"; // Consistent height
-  const labelStyle = "mb-1 block text-sm font-medium text-customBlack/80"; // Consistent Label
+  const inputHeight = "h-[50px]";
+  const labelStyle = "block text-sm font-medium text-customBlack/80";
+
+  // Convert the possibly number/null/undefined value prop to string for the <select> element's value attribute
+  const selectValue = value != null ? String(value) : "";
 
   return (
-    <div className="relative flex w-full flex-col">
+    <div className={`relative flex w-full flex-col ${className}`}>
       <label htmlFor={id || name} className={labelStyle}>
         {label} {required && <span className="text-red-500">*</span>}
       </label>
-      <select
-        name={name}
-        id={id || name}
-        required={required}
-        // value ?? "" correctly handles string, null, or undefined
-        value={value ?? ""}
-        onChange={(e) => onChange(name, e.target.value)}
-        className={`${inputHeight} w-full appearance-none rounded-md border-2 ${hasError ? "border-red-500" : "border-customDarkPink/60"} bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${!value || value === "" ? "text-gray-500" : "text-customBlack"}`} // Added appearance-none, padding right for arrow
-        aria-invalid={hasError}
-        aria-describedby={hasError ? `${id || name}-error` : undefined}
-      >
-        <option value="" disabled>
-          {placeholder}
-        </option>
-        {options && options.length > 0 ? (
-          options.map((option, index) => {
-            const keyVal = option[valueKey];
-            const labelVal = option[labelKey];
-            const optionValue = keyVal != null ? String(keyVal) : "";
-            const optionLabel =
-              labelVal != null ? String(labelVal) : `Option ${index + 1}`;
-            if (optionValue === "") return null;
-            return (
-              <option key={optionValue + "-" + index} value={optionValue}>
-                {optionLabel}
-              </option>
-            );
-          })
-        ) : (
-          <option value="" disabled>
-            No options
-          </option>
-        )}
-      </select>
-      {/* Arrow Icon */}
-      <div className="pointer-events-none absolute inset-y-0 right-0 top-[calc(0.625rem+1.5rem)] flex items-center px-2 text-gray-500">
-        {" "}
-        {/* Adjust top based on label height + margin */}
-        <svg
-          className="h-4 w-4 fill-current"
-          xmlns="http://www.w3.org/2000/svg"
-          viewBox="0 0 20 20"
+
+      {isLoading ? (
+        <div
+          className={`flex ${inputHeight} items-center justify-center rounded-md border-2 border-customGray bg-gray-50`}
         >
-          <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
-        </svg>
-      </div>
-      {error && (
+          {/* Spinner component assumed to accept 'size' prop directly */}
+          {/* Make sure Spinner component accepts 'size' prop, if not, adjust */}
+          <Spinner />
+        </div>
+      ) : (
+        <select
+          name={name}
+          id={id || name}
+          required={required}
+          value={selectValue}
+          onChange={(e) => onChange(name, e.target.value)}
+          // --- ADD disabled attribute ---
+          disabled={disabled}
+          // --- END ADD disabled attribute ---
+          className={`${inputHeight} w-full appearance-none rounded-md border-2 ${hasError ? "border-red-500" : "border-gray-300"} bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${!selectValue ? "text-gray-500" : "text-customBlack"} disabled:cursor-not-allowed disabled:bg-gray-100`} // Add disabled styles here
+          aria-invalid={hasError}
+          aria-describedby={hasError ? `${id || name}-error` : undefined}
+        >
+          <option value="" disabled>
+            {placeholder}
+          </option>
+
+          {options && options.length > 0
+            ? options.map((option, index) => {
+                const keyVal = option[valueKey];
+                const labelVal = option[labelKey];
+                const optionValue = keyVal != null ? String(keyVal) : "";
+                const optionLabel =
+                  labelVal != null ? String(labelVal) : `Option ${index + 1}`;
+
+                if (optionValue === "" && placeholder) {
+                  return null;
+                }
+
+                return (
+                  <option key={`${optionValue}-${index}`} value={optionValue}>
+                    {optionLabel}
+                  </option>
+                );
+              })
+            : !isLoading && (
+                <option value="" disabled>
+                  No options
+                </option>
+              )}
+        </select>
+      )}
+
+      {!isLoading && (
+        <div className="pointer-events-none absolute inset-y-0 bottom-0 right-0 top-0 flex items-center px-2 text-gray-500">
+          <svg
+            className="h-4 w-4 fill-current"
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 20 20"
+          >
+            <path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" />
+          </svg>
+        </div>
+      )}
+
+      {hasError && (
         <p
           id={`${id || name}-error`}
           className="mt-1 pl-1 text-xs text-red-600"
@@ -99,6 +129,10 @@ const SelectInputGroupInternal = <T extends { [key: string]: any }>({
   );
 };
 
-const SelectInputGroup = memo(SelectInputGroupInternal);
-SelectInputGroup.displayName = "SelectInputGroup";
+const SelectInputGroup = memo(SelectInputGroupInternal) as <
+  T extends { [key: string]: any },
+>(
+  props: SelectInputGroupProps<T>,
+) => React.JSX.Element;
+
 export default SelectInputGroup;

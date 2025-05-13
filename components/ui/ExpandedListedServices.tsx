@@ -260,7 +260,6 @@ export default function ExpandedListedServices({
                     </span>
                   </div>
                 </div>
-                {/* Actions */}
                 <div className="flex flex-shrink-0 flex-col items-stretch gap-2 pt-2 sm:ml-4 sm:w-auto sm:items-end sm:pt-0">
                   {canMark && (
                     <Button

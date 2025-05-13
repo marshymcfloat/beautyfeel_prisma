@@ -1,11 +1,10 @@
-// app/(marketing)/layout.tsx
-import React from "react";
+import React, { Suspense } from "react";
 import Link from "next/link";
 import Footer from "@/components/Navigations/Footer";
 
 export default function MarketingLayout({
-  children,
-  loginModal,
+  children, // This prop receives the content of the regular pages (like app/(marketing)/login/page.tsx)
+  loginModal, // This prop receives the content from the @loginModal parallel route (the intercepted modal)
 }: {
   children: React.ReactNode;
   loginModal: React.ReactNode;
@@ -18,11 +17,10 @@ export default function MarketingLayout({
             login
           </a>
         </Link>
-
-        {children}
-
-        {loginModal}
+        <Suspense fallback={null}>{children}</Suspense>
+        <Suspense fallback={null}>{loginModal}</Suspense>{" "}
       </div>
+
       <Footer />
     </div>
   );

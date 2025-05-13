@@ -1,76 +1,74 @@
 // lib/Slices/CashierSlice.ts
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
-// Import Prisma types needed
 import {
-  DiscountRule as PrismaDiscountRule, // Optional if not directly used
   DiscountType,
-  PaymentMethod as PrismaPaymentMethod, // Use Prisma enum if needed
+  PaymentMethod as PrismaPaymentMethod,
+  FollowUpPolicy,
 } from "@prisma/client";
-// Import necessary types from your central types file
-// Ensure these types are correctly defined in ../Types (or adjust path)
 import type {
-  FetchedItem, // Assumes this has { id, title, price, type }
-  UIDiscountRuleWithServices, // Assumes this has string dates
-} from "../Types"; // Adjust path as needed
+  FetchedItem,
+  UIDiscountRuleWithServices,
+  RecommendedAppointmentData,
+  AvailedItem,
+} from "../Types";
 
-// Type for items added to the cashier state (cart)
-// Ensure this type exists and matches the required structure
-export type AvailedItem = {
-  id: string; // Can be Service ID or ServiceSet ID
-  name: string; // Title of the service or set
-  price: number; // Price used for display/calculation (should typically be original)
-  quantity: number;
-  type: "service" | "set"; // <<< Type discriminator
-  originalPrice: number; // <<< Explicit original price storage
-  discountApplied: number; // Discount calculated for this specific item line
-};
-
-// Define the main state shape using imported types
+// --- Define the main state shape ---
 export interface CashierState {
   name: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM
+  date: string;
+  time: string;
   email: string | null;
-  servicesAvailed: AvailedItem[]; // <<< Use the correct item type
+  servicesAvailed: AvailedItem[];
   serviceType: "single" | "set";
   voucherCode: string;
   voucherDiscountValue: number;
   serveTime: "now" | "later";
-  paymentMethod: PrismaPaymentMethod | null; // <<< Use Prisma enum, allow null initially
+  paymentMethod: PrismaPaymentMethod | null;
   subTotal: number;
   grandTotal: number;
   totalDiscount: number;
   appliedDiscountRules: UIDiscountRuleWithServices[];
+  customerRecommendations: RecommendedAppointmentData[];
+  selectedRecommendedAppointmentId: string | null;
+  generateNewFollowUpForFulfilledRA: boolean;
+  // Add customerId to store the ID if a customer is selected
+  customerId: string | null;
 }
 
 // --- Define Payload Action Types ---
-// Payload when selecting an item from the list
 type SelectItemPayload = {
   id: string;
   title: string;
-  price: number; // The original price of the service/set
-  type: "service" | "set"; // The type of the item
+  price: number;
+  type: "service" | "set";
 };
-// Payload for updating quantity (increment/decrement)
 type UpdateQuantityPayload = {
-  id: string; // ID of the item to update
-  type: "service" | "set"; // Type to ensure uniqueness if IDs overlap
+  id: string;
+  type: "service" | "set";
   identifier: "inc" | "dec";
 };
-// Payload for applying discount rules fetched from server
 type ApplyDiscountsPayload = {
-  rules: UIDiscountRuleWithServices[]; // Expects rules with string dates
+  rules: UIDiscountRuleWithServices[];
 };
-// Payload for applying/removing a simple voucher
 type SetVoucherPayload = {
-  isValid: boolean; // Changed from 'status' for clarity
+  isValid: boolean;
   code: string;
-  value: number; // The monetary value of the voucher discount
+  value: number;
 };
+// Corrected SetCustomerDataPayload to allow customer to be null
+export interface SetCustomerDataPayload {
+  customer: {
+    id: string;
+    name: string;
+    email: string | null;
+  } | null; // Customer object itself can be null
+  recommendations: RecommendedAppointmentData[];
+}
 
 // --- Initial State ---
 const initialState: CashierState = {
   name: "",
+  customerId: null, // Initialize customerId
   serviceType: "single",
   serveTime: "now",
   date: "",
@@ -79,103 +77,93 @@ const initialState: CashierState = {
   servicesAvailed: [],
   voucherCode: "",
   voucherDiscountValue: 0,
-  paymentMethod: null, // Start with no payment method selected
+  paymentMethod: null,
   subTotal: 0,
   grandTotal: 0,
   totalDiscount: 0,
   appliedDiscountRules: [],
+  customerRecommendations: [],
+  selectedRecommendedAppointmentId: null,
+  generateNewFollowUpForFulfilledRA: false,
 };
 
+// Helper function for calculating totals
 const calculateAllTotalsHelper = (state: CashierState): void => {
   let currentSubTotal = 0;
-  let rulesDiscountTotal = 0;
-  const now = new Date(); // For checking rule validity dates
+  let rulesDiscountAmount = 0;
+  const now = new Date();
 
-  // 1. Calculate SubTotal and Apply Item-Level Discounts from Rules
   const updatedAvailedItems = state.servicesAvailed.map((item) => {
-    // Use originalPrice for subtotal calculation consistency
-    const originalItemTotal = item.originalPrice * item.quantity;
-    currentSubTotal += originalItemTotal;
-    let itemDiscount = 0; // Reset discount for this item line
+    const originalItemTotalValue = item.originalPrice * item.quantity;
+    currentSubTotal += originalItemTotalValue;
+    let currentItemDiscount = 0;
 
-    // Find the first applicable ACTIVE discount rule from the state's rules
     const applicableRule = state.appliedDiscountRules.find((rule) => {
       try {
-        // Convert rule's string dates to Date objects for comparison
         const ruleStartDate = new Date(rule.startDate);
-        const ruleEndDate = new Date(rule.endDate);
-        if (isNaN(ruleStartDate.getTime()) || isNaN(ruleEndDate.getTime()))
-          return false; // Invalid date format in rule
+        const ruleEndDateInclusive = new Date(rule.endDate);
+        ruleEndDateInclusive.setHours(23, 59, 59, 999);
 
-        // Check if rule is active and current date falls within its range
-        // Adjust end date to be end of day for inclusive check if needed: ruleEndDate.setHours(23, 59, 59, 999);
-        const ruleActive =
-          rule.isActive && ruleStartDate <= now && ruleEndDate >= now;
-        if (!ruleActive) return false;
+        if (
+          isNaN(ruleStartDate.getTime()) ||
+          isNaN(ruleEndDateInclusive.getTime())
+        )
+          return false;
 
-        // Check if rule applies to this item
-        const appliesToSpecific =
+        const isRuleCurrentlyActive =
+          rule.isActive && ruleStartDate <= now && ruleEndDateInclusive >= now;
+        if (!isRuleCurrentlyActive) return false;
+
+        const appliesToThisSpecificServiceItem =
           !rule.applyToAll &&
-          !!rule.services &&
-          rule.services.some(
+          rule.services?.some(
             (s) => s.id === item.id && item.type === "service",
-          ); // Only apply specific rules to 'service' types
-
-        return rule.applyToAll || appliesToSpecific;
+          );
+        return rule.applyToAll || appliesToThisSpecificServiceItem;
       } catch (e) {
-        console.error("Error processing rule date:", rule, e);
-        return false; // Skip rule if date parsing fails
+        console.error(
+          "Error processing rule date in calculateAllTotalsHelper:",
+          rule,
+          e,
+        );
+        return false;
       }
     });
 
     if (applicableRule) {
-      console.log(
-        `Applying rule "${applicableRule.description || applicableRule.id}" to item "${item.name}"`,
-      );
       if (applicableRule.discountType === DiscountType.PERCENTAGE) {
-        itemDiscount =
-          originalItemTotal * (Number(applicableRule.discountValue) / 100);
+        currentItemDiscount =
+          originalItemTotalValue * (Number(applicableRule.discountValue) / 100);
       } else {
-        // FIXED_AMOUNT
-        itemDiscount = Number(applicableRule.discountValue) * item.quantity;
-        itemDiscount = Math.min(itemDiscount, originalItemTotal); // Cap discount
+        currentItemDiscount =
+          Number(applicableRule.discountValue) * item.quantity;
+        currentItemDiscount = Math.min(
+          currentItemDiscount,
+          originalItemTotalValue,
+        );
       }
     }
-
-    rulesDiscountTotal += itemDiscount;
-    return { ...item, discountApplied: itemDiscount }; // Return updated item with discount
+    rulesDiscountAmount += currentItemDiscount;
+    return { ...item, discountApplied: currentItemDiscount };
   });
-  state.servicesAvailed = updatedAvailedItems; // Update the array in state
+  state.servicesAvailed = updatedAvailedItems;
 
-  // 2. Calculate Subtotal After Rules Discount
-  const subTotalAfterRules = currentSubTotal - rulesDiscountTotal;
-
-  // 3. Apply Simple Voucher Discount
-  let currentVoucherDiscount = 0;
+  let currentVoucherDiscountAmount = 0;
   if (state.voucherCode && state.voucherDiscountValue > 0) {
-    currentVoucherDiscount = Math.min(
+    const totalAfterItemRules = currentSubTotal - rulesDiscountAmount;
+    currentVoucherDiscountAmount = Math.min(
       state.voucherDiscountValue,
-      Math.max(0, subTotalAfterRules),
-    );
-    console.log(
-      `Applying voucher "${state.voucherCode}" value: ${currentVoucherDiscount}`,
+      Math.max(0, totalAfterItemRules),
     );
   }
 
-  // 4. Calculate Final Combined Discount and Grand Total
-  const finalTotalDiscount = rulesDiscountTotal + currentVoucherDiscount;
-  const finalGrandTotal = currentSubTotal - finalTotalDiscount;
+  const finalTotalDiscountApplied =
+    rulesDiscountAmount + currentVoucherDiscountAmount;
+  const finalGrandTotalValue = currentSubTotal - finalTotalDiscountApplied;
 
-  // 5. Final State Update
-  state.subTotal = currentSubTotal; // Subtotal is always the sum of original prices * quantity
-  state.totalDiscount = finalTotalDiscount;
-  state.grandTotal = Math.max(0, finalGrandTotal); // Prevent negative total
-
-  console.log("Totals Calculated:", {
-    subTotal: state.subTotal,
-    totalDiscount: state.totalDiscount,
-    grandTotal: state.grandTotal,
-  });
+  state.subTotal = currentSubTotal;
+  state.totalDiscount = finalTotalDiscountApplied;
+  state.grandTotal = Math.max(0, finalGrandTotalValue);
 };
 
 // --- Create the Slice ---
@@ -183,120 +171,165 @@ export const CashierSlice = createSlice({
   name: "cashier",
   initialState,
   reducers: {
-    // --- Customer & Transaction Settings Reducers ---
     setCustomerName(state, action: PayloadAction<string>) {
       state.name = action.payload;
+      if (!action.payload) {
+        state.customerId = null; // Clear customerId if name is cleared
+        state.email = null;
+        state.customerRecommendations = [];
+        state.selectedRecommendedAppointmentId = null;
+        state.generateNewFollowUpForFulfilledRA = false;
+      }
+      // If a name is set, but there's no customerId, it means it's a new customer being typed
+      // We might not want to clear recommendations if a customer was previously selected
+      // and then the cashier types a new name. This logic might need refinement based on exact UX.
     },
     setEmail(state, action: PayloadAction<string | null>) {
       state.email = action.payload;
     },
+    setCustomerData(state, action: PayloadAction<SetCustomerDataPayload>) {
+      // This is the corrected part
+      if (action.payload.customer) {
+        // If a customer object is provided
+        state.customerId = action.payload.customer.id;
+        state.name = action.payload.customer.name;
+        state.email = action.payload.customer.email;
+      } else {
+        // If action.payload.customer is null (customer cleared)
+        state.customerId = null;
+        state.name = ""; // Reset name to empty or initial
+        state.email = null; // Reset email
+      }
+      state.customerRecommendations = action.payload.recommendations || [];
+      state.selectedRecommendedAppointmentId = null;
+      state.generateNewFollowUpForFulfilledRA = false;
+    },
     setServiceType(state, action: PayloadAction<"single" | "set">) {
       if (state.serviceType !== action.payload) {
         state.serviceType = action.payload;
-        // Optional: Clear items when switching type? Decided against for now.
-        // state.servicesAvailed = [];
-        // calculateAllTotalsHelper(state);
       }
     },
     setServeTime(state, action: PayloadAction<"now" | "later">) {
       state.serveTime = action.payload;
+      if (action.payload === "now") {
+        state.date = "";
+        state.time = "";
+      }
     },
-    setPaymentMethod(state, action: PayloadAction<PrismaPaymentMethod>) {
-      // Use Prisma enum
+    setPaymentMethod(state, action: PayloadAction<PrismaPaymentMethod | null>) {
       state.paymentMethod = action.payload;
     },
     setDateTime(state, action: PayloadAction<{ date: string; time: string }>) {
       state.date = action.payload.date;
       state.time = action.payload.time;
     },
-
-    // --- Service/Set Manipulation Reducers ---
+    setSelectedRecommendedAppointmentId(
+      state,
+      action: PayloadAction<string | null>,
+    ) {
+      state.selectedRecommendedAppointmentId = action.payload;
+      if (action.payload) {
+        const selectedRec = state.customerRecommendations.find(
+          (r) => r.id === action.payload,
+        );
+        if (selectedRec && selectedRec.originatingService) {
+          const policy = selectedRec.originatingService.followUpPolicy;
+          if (policy === FollowUpPolicy.NONE) {
+            state.generateNewFollowUpForFulfilledRA = false;
+          } else if (policy === FollowUpPolicy.ONCE) {
+            state.generateNewFollowUpForFulfilledRA = false;
+          } else if (policy === FollowUpPolicy.EVERY_TIME) {
+            state.generateNewFollowUpForFulfilledRA = true;
+          } else {
+            state.generateNewFollowUpForFulfilledRA = false;
+          }
+        } else {
+          state.generateNewFollowUpForFulfilledRA = false;
+        }
+      } else {
+        state.generateNewFollowUpForFulfilledRA = false;
+      }
+    },
     selectItem(state, action: PayloadAction<SelectItemPayload>) {
       const { id, title, price, type } = action.payload;
-      // Check using both id and type to handle potential overlaps if needed
       const existingIndex = state.servicesAvailed.findIndex(
         (item) => item.id === id && item.type === type,
       );
-
       if (existingIndex === -1) {
-        // *** CORRECTED: Add item with type and originalPrice ***
         state.servicesAvailed.push({
-          id: id,
+          id,
           name: title,
-          price: price, // Assume payload price is the one to use/display
           quantity: 1,
-          type: type, // <<< Assign type from payload
-          originalPrice: price, // <<< Assign originalPrice from payload price
-          discountApplied: 0, // Initialize discount for this item
+          type,
+          originalPrice: price,
+          discountApplied: 0,
         });
       } else {
-        // Item exists, remove it (toggle behavior)
         state.servicesAvailed.splice(existingIndex, 1);
       }
-      calculateAllTotalsHelper(state); // Recalculate after adding/removing
+      calculateAllTotalsHelper(state);
     },
-
     handleItemQuantity(state, action: PayloadAction<UpdateQuantityPayload>) {
       const { id, type, identifier } = action.payload;
+      if (type === "set") return;
+
       const itemIndex = state.servicesAvailed.findIndex(
-        (s) => s.id === id && s.type === type, // Find by ID and Type
+        (s) => s.id === id && s.type === type,
       );
-
-      // Only allow quantity change for 'service' type items
-      if (itemIndex === -1 || state.servicesAvailed[itemIndex].type === "set") {
-        console.warn("Cannot change quantity for sets or item not found.");
-        return;
-      }
-
-      if (identifier === "inc") {
-        state.servicesAvailed[itemIndex].quantity += 1;
-      } else if (identifier === "dec") {
-        state.servicesAvailed[itemIndex].quantity -= 1;
-        // Remove item if quantity drops to 0 or less
-        if (state.servicesAvailed[itemIndex].quantity <= 0) {
-          state.servicesAvailed.splice(itemIndex, 1);
+      if (itemIndex !== -1) {
+        if (identifier === "inc") {
+          state.servicesAvailed[itemIndex].quantity += 1;
+        } else if (identifier === "dec") {
+          state.servicesAvailed[itemIndex].quantity = Math.max(
+            0,
+            state.servicesAvailed[itemIndex].quantity - 1,
+          );
+          if (state.servicesAvailed[itemIndex].quantity === 0) {
+            state.servicesAvailed.splice(itemIndex, 1);
+          }
         }
+        calculateAllTotalsHelper(state);
       }
-      calculateAllTotalsHelper(state); // Recalculate after quantity change
     },
-
     clearItems(state) {
       state.servicesAvailed = [];
       calculateAllTotalsHelper(state);
     },
-
-    // --- Discount Rule Reducers ---
     applyDiscounts(state, action: PayloadAction<ApplyDiscountsPayload>) {
       state.appliedDiscountRules = action.payload.rules;
-      console.log("Applying discount rules:", action.payload.rules.length);
       calculateAllTotalsHelper(state);
     },
     clearDiscounts(state) {
       state.appliedDiscountRules = [];
       calculateAllTotalsHelper(state);
     },
-
-    // --- Simple Voucher Reducer ---
-    // Renamed payload property 'status' to 'isValid' for clarity
     setVoucher(state, action: PayloadAction<SetVoucherPayload>) {
       if (action.payload.isValid) {
         state.voucherCode = action.payload.code;
         state.voucherDiscountValue = action.payload.value;
-        console.log(
-          `Applied Voucher: ${action.payload.code}, Value: ${action.payload.value}`,
-        );
       } else {
         state.voucherCode = "";
         state.voucherDiscountValue = 0;
-        console.log("Removed Voucher");
       }
-      calculateAllTotalsHelper(state); // Recalculate after voucher change
+      calculateAllTotalsHelper(state);
     },
-
-    // --- Reset Reducer ---
+    removeRecommendation(state, action: PayloadAction<string>) {
+      const idToRemove = action.payload;
+      state.customerRecommendations = state.customerRecommendations.filter(
+        (rec) => rec.id !== idToRemove,
+      );
+      if (state.selectedRecommendedAppointmentId === idToRemove) {
+        state.selectedRecommendedAppointmentId = null;
+        state.generateNewFollowUpForFulfilledRA = false;
+      }
+    },
+    setGenerateNewFollowUpForFulfilledRA(
+      state,
+      action: PayloadAction<boolean>,
+    ) {
+      state.generateNewFollowUpForFulfilledRA = action.payload;
+    },
     reset(): CashierState {
-      // Return initialState to reset the state completely
-      console.log("Resetting cashier state");
       return initialState;
     },
   },

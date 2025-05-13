@@ -1,52 +1,69 @@
-// src/components/cashier/CashierInterceptedModal.tsx
+// app/(logged)/[accountID]/@modal/(.)cashier/page.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useParams, useRouter } from "next/navigation";
 
-// --- Component Imports ---
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
-import DateTimePicker from "@/components/Inputs/DateTimePicker";
-import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
-import ServicesSelect from "@/components/Inputs/ServicesSelect";
-import SelectedItem from "@/components/ui/cashier/SelectedItem";
-import CustomerInput from "@/components/Inputs/CustomerInput";
-import Button from "@/components/Buttons/Button";
-import VoucherInput from "@/components/Inputs/VoucherInput";
-
-// --- Actions and State ---
+import Modal from "@/components/Dialog/Modal"; // Adjust path
+import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
+import Spinner from "@/components/ui/Spinner"; // Adjust path
+import DateTimePicker from "@/components/Inputs/DateTimePicker"; // Adjust path
+import SelectInputGroup from "@/components/Inputs/SelectInputGroup"; // Adjust path
+import ServicesSelect from "@/components/Inputs/ServicesSelect"; // Adjust path
+import CustomerInput from "@/components/Inputs/CustomerInput"; // Adjust path
+import VoucherInput from "@/components/Inputs/VoucherInput"; // Adjust path
+import SelectedItem from "@/components/ui/cashier/SelectedItem"; // Adjust path
+import Button from "@/components/Buttons/Button"; // Adjust path
+import { AlertCircle, Tag, XCircle, HelpCircle } from "lucide-react";
 import {
   transactionSubmission,
   getActiveDiscountRules,
-} from "@/lib/ServerAction";
-import { RootState, AppDispatch } from "@/lib/reduxStore";
-import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice";
-import { fetchServices, fetchServiceSets } from "@/lib/Slices/DataSlice";
-
-import { PaymentMethod } from "@prisma/client";
-// --- Types ---
+  getAllBranches,
+  cancelRecommendedAppointmentAction,
+} from "@/lib/ServerAction"; // Adjust path
+import { RootState, AppDispatch } from "@/lib/reduxStore"; // Adjust path
+import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice"; // Adjust path
+import { fetchServices, fetchServiceSets } from "@/lib/Slices/DataSlice"; // Adjust path
 import {
+  PaymentMethod as PrismaPaymentMethod, // Renamed to avoid conflict
+  Branch,
+  FollowUpPolicy,
+  RecommendedAppointmentStatus,
+  Status,
+} from "@prisma/client";
+import type {
+  RecommendedAppointmentData,
   FetchedItem,
   UIDiscountRuleWithServices,
   TransactionSubmissionResponse,
-} from "@/lib/Types";
+  CustomerWithRecommendations as CustomerData, // Import the type for the callback
+} from "@/lib/Types"; // Adjust path
 
-// --- Options ---
+// --- Options for Select Inputs ---
 const serviceTypeOptions = [
-  { id: "single", title: "Single Service" },
-  { id: "set", title: "Service Set" },
+  { id: "single" as const, title: "Single Service" },
+  { id: "set" as const, title: "Service Set" },
 ];
 const serveTimeOptions = [
-  { id: "now", title: "Now" },
-  { id: "later", title: "Later" },
+  { id: "now" as const, title: "Now" },
+  { id: "later" as const, title: "Later" },
 ];
-const paymentMethodOptions = [
-  { id: "cash", title: "Cash" },
-  { id: "ewallet", title: "E-wallet" },
-  { id: "bank", title: "Bank" },
-];
+const paymentMethodOptions = Object.values(PrismaPaymentMethod).map((pm) => ({
+  id: pm,
+  title: pm.charAt(0).toUpperCase() + pm.slice(1), // Simple title case
+}));
+
+// --- Styling Classes (as previously defined) ---
+const inputErrorClass = "mt-1 text-xs text-red-500 px-1";
+const selectedItemsContainerClass =
+  "relative mt-4 max-h-[200px] min-h-[80px] w-full overflow-y-auto rounded-md border border-customGray/50 bg-white p-2 shadow-sm";
+const noItemsMessageClass =
+  "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform whitespace-nowrap text-sm italic text-gray-400";
+const totalsContainerClass = "mt-4 flex w-full flex-col text-sm";
+const grandTotalClass = "mt-1 text-base font-semibold";
+const actionButtonsClass =
+  "mt-6 flex w-full justify-around border-t border-customGray/30 pt-4";
 
 export default function CashierInterceptedModal() {
   const router = useRouter();
@@ -54,13 +71,24 @@ export default function CashierInterceptedModal() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [branches, setBranches] = useState<Branch[]>([]);
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
+  const [isLoadingBranches, setIsLoadingBranches] = useState(true);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  const [isCancellingRa, setIsCancellingRa] = useState<string | null>(null);
+  const [cancellationError, setCancellationError] = useState<string | null>(
+    null,
+  );
 
+  // Data from Redux 'data' slice
   const { services, serviceSets, itemsLoading, itemsError } = useSelector(
     (state: RootState) => state.data,
   );
+
+  // Data from Redux 'cashier' slice
   const cashierForm = useSelector((state: RootState) => state.cashier);
   const {
-    name,
+    name, // Use this name for the initialValue prop of CustomerInput
     email,
     servicesAvailed,
     grandTotal,
@@ -68,154 +96,273 @@ export default function CashierInterceptedModal() {
     subTotal,
     serviceType,
     serveTime,
+    date,
+    time,
     paymentMethod,
+    customerRecommendations,
+    selectedRecommendedAppointmentId,
+    generateNewFollowUpForFulfilledRA,
   } = cashierForm;
 
-  // --- Effects ---
+  const isOverallLoading = itemsLoading || isLoadingBranches;
+
+  // Effect for initial data fetching and cleanup
   useEffect(() => {
     dispatch(fetchServices());
     dispatch(fetchServiceSets());
     getActiveDiscountRules()
-      .then((rules) => {
+      .then((rules) =>
         dispatch(
           cashierActions.applyDiscounts({
-            rules: rules as UIDiscountRuleWithServices[],
+            rules: Array.isArray(rules)
+              ? (rules as UIDiscountRuleWithServices[])
+              : [],
           }),
-        );
+        ),
+      )
+      .catch(() => dispatch(cashierActions.applyDiscounts({ rules: [] })));
+    setIsLoadingBranches(true);
+    setBranchError(null);
+    getAllBranches()
+      .then((fetchedBranches) => {
+        setBranches(fetchedBranches);
+        setIsLoadingBranches(false);
       })
-      .catch((err) => {
-        console.error("Failed fetch discounts:", err);
-        setFormErrors((prev) => ({
-          ...prev,
-          general: "Failed load discounts.",
-        }));
+      .catch(() => {
+        setBranchError("Could not load branches.");
+        setBranches([]);
+        setIsLoadingBranches(false);
       });
+
+    return () => {
+      dispatch(cashierActions.reset());
+    };
   }, [dispatch]);
 
-  // --- Callbacks ---
+  // --- Callbacks for UI interactions ---
+
+  // --- NEW: Callback for CustomerInput ---
+  const handleCustomerSelectedFromInput = useCallback(
+    (customer: CustomerData | null) => {
+      if (customer) {
+        dispatch(
+          cashierActions.setCustomerData({
+            customer: {
+              id: customer.id,
+              name: customer.name,
+              email: customer.email,
+            },
+            recommendations: customer.recommendedAppointments || [], // Ensure array
+          }),
+        );
+      } else {
+        dispatch(
+          cashierActions.setCustomerData({
+            customer: null, // Pass null for the entire customer object
+            recommendations: [],
+          }),
+        );
+      }
+    },
+    [dispatch],
+  );
+  // --- END NEW ---
+
+  const handleSelectRecommendation = useCallback(
+    (recommendationId: string) => {
+      dispatch(
+        cashierActions.setSelectedRecommendedAppointmentId(recommendationId),
+      );
+    },
+    [dispatch],
+  );
+
+  const selectedRecommendation = useMemo(() => {
+    return customerRecommendations.find(
+      (rec) => rec.id === selectedRecommendedAppointmentId,
+    );
+  }, [customerRecommendations, selectedRecommendedAppointmentId]);
+
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
-      // Type predicate for Service Type (already correct as CashierState['serviceType'] is not nullable)
-      const isST = (v: string): v is CashierState["serviceType"] =>
-        v === "single" || v === "set";
+      if (key === "serviceType")
+        dispatch(
+          cashierActions.setServiceType(value as CashierState["serviceType"]),
+        );
+      else if (key === "serveTime")
+        dispatch(
+          cashierActions.setServeTime(value as CashierState["serveTime"]),
+        );
+      else if (key === "paymentMethod")
+        dispatch(
+          cashierActions.setPaymentMethod(value as PrismaPaymentMethod | null),
+        );
+      else if (key === "branchFilter") setSelectedBranchId(value);
+    },
+    [dispatch],
+  );
 
-      // Type predicate for Serve Time (already correct as CashierState['serveTime'] is not nullable)
-      const isServeT = (v: string): v is CashierState["serveTime"] =>
-        v === "now" || v === "later";
+  const branchOptions = useMemo(() => {
+    const options = [{ id: "all", title: "All Branches" }];
+    if (branches?.length)
+      options.push(...branches.map((b) => ({ id: b.id, title: b.title })));
+    return options;
+  }, [branches]);
 
-      const isPM = (v: string): v is PaymentMethod =>
-        v === PaymentMethod.cash ||
-        v === PaymentMethod.ewallet ||
-        v === PaymentMethod.bank;
+  const itemsToDisplay = useMemo((): FetchedItem[] => {
+    if (itemsLoading || !services || !serviceSets) return [];
+    let displayItems: FetchedItem[] = [];
+    if (serviceType === "single") {
+      const filteredServices =
+        selectedBranchId === "all"
+          ? services
+          : services.filter((s) => s.branchId === selectedBranchId);
+      displayItems = filteredServices.map((s) => ({
+        id: s.id,
+        title: s.title,
+        price: s.price,
+        type: "service",
+      }));
+    } else if (serviceType === "set") {
+      displayItems = serviceSets.map((set) => ({
+        id: set.id,
+        title: set.title,
+        price: set.price,
+        type: "set",
+      }));
+    }
+    return displayItems.sort((a, b) => a.title.localeCompare(b.title));
+  }, [services, serviceSets, serviceType, selectedBranchId, itemsLoading]);
 
-      if (key === "serviceType" && isST(value)) {
-        dispatch(cashierActions.setServiceType(value));
-      } else if (key === "serveTime" && isServeT(value)) {
-        dispatch(cashierActions.setServeTime(value));
-      } else if (key === "paymentMethod" && isPM(value)) {
-        // Now 'value' is correctly narrowed to PrismaPaymentMethod type
-        dispatch(cashierActions.setPaymentMethod(value));
-      } else {
-        console.warn(`Unhandled select: "${key}" with value: "${value}"`);
+  const handleAddRecommendedServiceToCart = useCallback(() => {
+    if (
+      itemsLoading ||
+      !services ||
+      !selectedRecommendation?.originatingService
+    )
+      return;
+    const serviceData = services.find(
+      (s) => s.id === selectedRecommendation.originatingService!.id,
+    );
+    if (serviceData) {
+      dispatch(
+        cashierActions.selectItem({
+          id: serviceData.id,
+          title: serviceData.title,
+          price: serviceData.price,
+          type: "service",
+        }),
+      );
+    }
+  }, [dispatch, selectedRecommendation, services, itemsLoading]);
+
+  const handleCancelRecommendation = useCallback(
+    async (recommendationId: string) => {
+      if (
+        !window.confirm(
+          "Are you sure you want to cancel this recommended appointment?",
+        )
+      )
+        return;
+      setIsCancellingRa(recommendationId);
+      setCancellationError(null);
+      try {
+        const result =
+          await cancelRecommendedAppointmentAction(recommendationId);
+        if (result.success)
+          dispatch(cashierActions.removeRecommendation(recommendationId));
+        else setCancellationError(result.message || "Failed to cancel.");
+      } catch (e: any) {
+        setCancellationError(e.message || "Error cancelling.");
+      } finally {
+        setIsCancellingRa(null);
       }
     },
     [dispatch],
   );
 
-  async function handleConfirmClick() {
+  const handleConfirmClick = async () => {
     setIsSubmitting(true);
     setFormErrors({});
-    let errors: Record<string, string> = {};
-    if (!name?.trim()) errors.name = "Customer name required.";
-    if (!servicesAvailed || servicesAvailed.length === 0)
-      errors.servicesAvailed = "Select service(s).";
-    if (!paymentMethod) errors.paymentMethod = "Payment method required.";
-    if (serveTime === "later" && (!cashierForm.date || !cashierForm.time))
-      errors.serveTime = "Date/Time required.";
-    if (Object.keys(errors).length > 0) {
-      setFormErrors(errors);
+    let localErrors: Record<string, string> = {};
+    // Read directly from cashierForm state for validation
+    if (!cashierForm.name.trim()) localErrors.name = "Customer name required.";
+    if (!servicesAvailed.length)
+      localErrors.servicesAvailed = "Select at least one service.";
+    if (!paymentMethod) localErrors.paymentMethod = "Payment method required.";
+    if (serveTime === "later" && (!date || !time))
+      localErrors.serveTime = "Date/Time required for later.";
+    if (
+      email &&
+      email.trim() &&
+      !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(email.trim())
+    )
+      localErrors.email = "Invalid email format.";
+
+    if (Object.keys(localErrors).length > 0) {
+      setFormErrors({ general: "Please correct the errors.", ...localErrors });
       setIsSubmitting(false);
       return;
     }
-    const response: TransactionSubmissionResponse = await transactionSubmission(
-      { ...cashierForm },
-    );
-    setIsSubmitting(false);
-    if (response.success) {
-      dispatch(cashierActions.reset());
-      router.back();
-    } else {
-      if (response.errors) {
-        const clientErrors: Record<string, string> = {};
-        for (const key in response.errors) {
-          clientErrors[key] = Array.isArray(response.errors[key])
-            ? response.errors[key].join("; ")
-            : String(response.errors[key]);
-        }
-        setFormErrors(clientErrors);
-      } else {
-        setFormErrors({
-          general: response.message ?? "An unknown error occurred.",
-        });
-      }
-      console.error("Submit failed:", response.message, response.errors);
-    }
-  }
 
-  const handleCancel = () => {
-    dispatch(cashierActions.reset());
-    router.back();
+    try {
+      // Pass the whole state object from Redux
+      const response = await transactionSubmission(cashierForm);
+      if (response.success) router.back();
+      else
+        setFormErrors({
+          general: response.message || "Submission failed.",
+          ...(response.errors || {}),
+        });
+    } catch (e: any) {
+      setFormErrors({ general: e.message || "Unexpected error." });
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const itemsToDisplay = useMemo((): FetchedItem[] => {
-    if (serviceType === "single")
-      return (
-        services?.map((s) => ({
-          id: s.id,
-          title: s.title,
-          price: s.price,
-          type: "service" as const,
-        })) ?? []
-      );
-    if (serviceType === "set")
-      return (
-        serviceSets?.map((set) => ({
-          id: set.id,
-          title: set.title,
-          price: set.price,
-          type: "set" as const,
-        })) ?? []
-      );
-    return [];
-  }, [services, serviceSets, serviceType]);
+  const handleCancel = () => router.back();
 
-  // --- Standard Classes ---
-  const inputErrorClass = "mt-1 text-xs text-red-500";
-  const generalErrorClass =
-    "my-2 w-full rounded border border-red-300 bg-red-100 p-2 text-center text-sm font-medium text-red-600"; // Use w-full
-  const selectedItemsContainerClass =
-    "relative mt-4 max-h-[200px] min-h-[80px] w-full overflow-y-auto rounded-md border border-customGray/50 bg-white p-2 shadow-sm"; // Use w-full
-  const noItemsMessageClass =
-    "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 transform whitespace-nowrap text-sm italic text-gray-400";
-  const totalsContainerClass = "mt-4 flex w-full flex-col text-sm"; // Use w-full
-  const grandTotalClass = "mt-1 text-base font-semibold";
-  const actionButtonsClass =
-    "mt-6 flex w-full justify-around border-t border-customGray/30 pt-4";
-
+  // --- JSX Structure ---
   return (
     <Modal
       isOpen={true}
       onClose={handleCancel}
       title={<DialogTitle>Beautyfeel Transaction</DialogTitle>}
-      containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col" // Maybe max-w-xl for more space
+      containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col"
     >
+      {/* Modal Content */}
       <div className="flex-grow space-y-5 overflow-y-auto p-4 sm:p-6">
-        {formErrors.general && (
-          <p className={generalErrorClass}>{formErrors.general}</p>
+        {isOverallLoading && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-customOffWhite/70 backdrop-blur-sm">
+            <Spinner text="Loading..." />
+          </div>
         )}
+        {formErrors.general && (
+          <div className="flex items-center gap-2 rounded border border-red-300 bg-red-100 p-2 text-sm font-medium text-red-600">
+            <AlertCircle size={16} />
+            <span>{formErrors.general}</span>
+          </div>
+        )}
+        {cancellationError && (
+          <div className="flex items-center gap-2 rounded border border-red-300 bg-red-100 p-2 text-sm font-medium text-red-600">
+            <AlertCircle size={16} />
+            <span>{cancellationError}</span>
+          </div>
+        )}
+
+        {/* Customer Input */}
         <div className="w-full">
-          <CustomerInput error={formErrors.name} />
+          {/* --- MODIFIED: Pass props to CustomerInput --- */}
+          <CustomerInput
+            error={formErrors.name}
+            initialValue={name} // Pass current name from Redux state
+            onCustomerSelect={handleCustomerSelectedFromInput} // Pass the handler
+          />
+          {/* --- END MODIFIED --- */}
         </div>
+
+        {/* Email Input */}
         <div className="w-full">
           <div className="relative w-full">
             <input
@@ -226,21 +373,195 @@ export default function CashierInterceptedModal() {
               placeholder=" "
               type="email"
               id="email-input"
-              className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${
-                formErrors.email ? "border-red-500" : "border-customDarkPink" // Default pink border when no error
-              } px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink`} // Removed focus ring, rely on border color
+              className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-gray-300"} px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink`}
             />
             <label
               htmlFor="email-input"
-              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 px-1 text-base font-medium transition-all duration-150 ${formErrors.email ? "text-red-600" : "text-gray-500"} peer-focus:top-[-10px] peer-focus:z-10 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-[-10px] peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:bg-customOffWhite peer-[:not(:placeholder-shown)]:text-xs peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} peer-[:not(:placeholder-shown)]:${formErrors.email ? "text-red-600" : ""} `}
+              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-customOffWhite px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"}`}
             >
               E-mail (Optional)
             </label>
           </div>
           {formErrors.email && (
-            <p className={`${inputErrorClass} px-1`}>{formErrors.email}</p>
+            <p className={inputErrorClass}>{formErrors.email}</p>
           )}
         </div>
+
+        {/* Recommended Appointments Section - Fully Restored */}
+        {name.trim() && customerRecommendations.length > 0 && (
+          <div className="w-full rounded-md border border-customLightBlue bg-customWhiteBlue p-3">
+            <h3 className="mb-3 flex items-center text-sm font-semibold text-customDarkPink">
+              <Tag size={16} className="mr-1" /> Potential Follow-up
+              Recommendations for {name.split(" ")[0]}:
+            </h3>
+            {selectedRecommendation ? (
+              <div className="rounded-md border border-customLightBlue bg-white p-3 text-sm text-customBlack shadow-inner">
+                <div className="flex items-center justify-between">
+                  <span className="mr-2 flex-grow">
+                    Selected:{" "}
+                    <span className="font-medium">
+                      {selectedRecommendation.originatingService?.title ||
+                        "Service"}{" "}
+                      on{" "}
+                      {new Date(
+                        selectedRecommendation.recommendedDate,
+                      ).toLocaleDateString()}
+                    </span>
+                    {selectedRecommendation.originatingService
+                      ?.followUpPolicy && (
+                      <span className="ml-2 rounded-full bg-customLightBlue px-2 py-0.5 text-xs text-customBlack">
+                        Policy:{" "}
+                        {
+                          selectedRecommendation.originatingService
+                            .followUpPolicy
+                        }
+                      </span>
+                    )}
+                  </span>
+                  <div className="flex items-center space-x-2">
+                    {selectedRecommendation.originatingService &&
+                      !itemsLoading && (
+                        <button
+                          onClick={handleAddRecommendedServiceToCart}
+                          disabled={
+                            isSubmitting || itemsLoading || !!isCancellingRa
+                          }
+                          className="flex-shrink-0 rounded bg-customDarkPink px-3 py-1 text-xs font-semibold text-white hover:bg-customDarkPink/90 disabled:opacity-50"
+                        >
+                          Add Service
+                        </button>
+                      )}
+                    {itemsLoading &&
+                      selectedRecommendation.originatingService &&
+                      !isCancellingRa && <Spinner size="sm" />}
+                    <button
+                      onClick={() =>
+                        dispatch(
+                          cashierActions.setSelectedRecommendedAppointmentId(
+                            null,
+                          ),
+                        )
+                      }
+                      disabled={isSubmitting || !!isCancellingRa}
+                      className="flex-shrink-0 rounded border border-customDarkPink px-3 py-1 text-xs font-semibold text-customDarkPink hover:bg-customDarkPink hover:text-white disabled:opacity-50"
+                      title="Change selected recommendation"
+                    >
+                      Change
+                    </button>
+                    <button
+                      onClick={() =>
+                        handleCancelRecommendation(selectedRecommendation.id)
+                      }
+                      disabled={isSubmitting || !!isCancellingRa}
+                      className="rounded-full p-1 text-red-600 hover:bg-red-700 disabled:opacity-50"
+                      title="Cancel this recommendation"
+                    >
+                      <XCircle size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                {selectedRecommendation.originatingService && (
+                  <div className="mt-3 border-t border-customLightBlue pt-3">
+                    <label
+                      htmlFor="generateNewFollowUp"
+                      className="group flex cursor-pointer items-center text-xs text-customBlack"
+                    >
+                      <input
+                        type="checkbox"
+                        id="generateNewFollowUp"
+                        checked={generateNewFollowUpForFulfilledRA}
+                        onChange={(e) =>
+                          dispatch(
+                            cashierActions.setGenerateNewFollowUpForFulfilledRA(
+                              e.target.checked,
+                            ),
+                          )
+                        }
+                        disabled={
+                          isSubmitting ||
+                          !!isCancellingRa ||
+                          selectedRecommendation.originatingService
+                            .followUpPolicy === FollowUpPolicy.NONE
+                        }
+                        className="mr-2 h-4 w-4 rounded border-customLightBlue text-customDarkPink focus:ring-customDarkPink disabled:cursor-not-allowed disabled:opacity-50"
+                      />
+                      Generate a new follow-up for{" "}
+                      <span className="mx-1 font-semibold">
+                        {selectedRecommendation.originatingService.title}
+                      </span>
+                      ?
+                      <span className="relative ml-1">
+                        <HelpCircle
+                          size={14}
+                          className="text-customLightBlue group-hover:text-customDarkPink"
+                        />
+                        <span className="absolute bottom-full left-1/2 z-10 mb-2 w-max -translate-x-1/2 transform whitespace-nowrap rounded-md bg-customBlack px-2 py-1 text-xs text-white opacity-0 transition-opacity group-hover:opacity-100">
+                          {selectedRecommendation.originatingService
+                            .followUpPolicy === FollowUpPolicy.NONE
+                            ? "Policy: NONE (No new follow-up)"
+                            : selectedRecommendation.originatingService
+                                  .followUpPolicy === FollowUpPolicy.ONCE
+                              ? "Policy: ONCE (Check to generate)"
+                              : "Policy: EVERY_TIME (Uncheck to skip this time)"}
+                        </span>
+                      </span>
+                    </label>
+                    {selectedRecommendation.originatingService
+                      .followUpPolicy === FollowUpPolicy.NONE && (
+                      <p className="text-xxs mt-1 pl-6 italic text-customBlack/70">
+                        (Service policy is NONE, no new follow-up will be
+                        generated.)
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <ul className="space-y-2">
+                {customerRecommendations.map((rec) => (
+                  <li
+                    key={rec.id}
+                    onClick={() => handleSelectRecommendation(rec.id)}
+                    className="flex cursor-pointer items-center justify-between rounded-md border border-customGray bg-white p-2 text-sm text-customBlack shadow-sm hover:border-customLightBlue hover:bg-customWhiteBlue"
+                  >
+                    <span>
+                      Recommended:{" "}
+                      <span className="font-medium">
+                        {rec.originatingService?.title || "Service"} on{" "}
+                        {new Date(rec.recommendedDate).toLocaleDateString()}
+                      </span>
+                      {rec.originatingService?.followUpPolicy && (
+                        <span className="ml-2 rounded-full bg-customLightBlue px-2 py-0.5 text-xs text-customBlack">
+                          Policy: {rec.originatingService.followUpPolicy}
+                        </span>
+                      )}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCancelRecommendation(rec.id);
+                      }}
+                      disabled={isSubmitting || !!isCancellingRa}
+                      className="ml-2 rounded-full p-1 text-red-600 hover:bg-red-700 disabled:opacity-50"
+                      title="Cancel"
+                    >
+                      <XCircle size={16} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {!selectedRecommendation && (
+              <p className="mt-2 text-xs italic text-customBlack/70">
+                Select a recommendation if this transaction fulfills it. You can
+                also cancel recommendations.
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Service Type & Branch Filter */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <SelectInputGroup
             label="Service Type"
@@ -253,6 +574,28 @@ export default function CashierInterceptedModal() {
             value={serviceType}
             required
           />
+          {serviceType === "single" &&
+            (isLoadingBranches || branches?.length > 0 || branchError) && (
+              <SelectInputGroup
+                label="Filter by Branch"
+                name="branchFilter"
+                id="branchFilter"
+                onChange={handleSelectChanges}
+                options={branchOptions}
+                valueKey="id"
+                labelKey="title"
+                value={selectedBranchId}
+                isLoading={isLoadingBranches}
+                error={formErrors.branchFilter || branchError || undefined}
+              />
+            )}
+        </div>
+        {formErrors.branchFilter && (
+          <p className={inputErrorClass}>{formErrors.branchFilter}</p>
+        )}
+
+        {/* Serve Time & DateTimePicker */}
+        <div className="w-full">
           <SelectInputGroup
             label="Serve Time"
             name="serveTime"
@@ -265,15 +608,13 @@ export default function CashierInterceptedModal() {
             error={formErrors.serveTime}
             required
           />
+          {serveTime === "later" && (
+            <DateTimePicker
+              error={formErrors.date || formErrors.time || formErrors.serveTime}
+            />
+          )}
         </div>
-        {serveTime === "later" && (
-          <DateTimePicker
-            error={formErrors.serveTime || formErrors.date || formErrors.time}
-          />
-        )}
-        {formErrors.serveTime && serveTime !== "later" && (
-          <p className={`${inputErrorClass} px-1`}>{formErrors.serveTime}</p>
-        )}
+
         {/* Services/Sets Select */}
         <div className="w-full">
           <ServicesSelect
@@ -281,7 +622,12 @@ export default function CashierInterceptedModal() {
             data={itemsToDisplay}
             error={formErrors.servicesAvailed || itemsError || undefined}
           />
+          {formErrors.servicesAvailed && (
+            <p className={inputErrorClass}>{formErrors.servicesAvailed}</p>
+          )}
         </div>
+
+        {/* Voucher & Payment Method */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <VoucherInput />
           <SelectInputGroup
@@ -292,37 +638,23 @@ export default function CashierInterceptedModal() {
             options={paymentMethodOptions}
             valueKey="id"
             labelKey="title"
-            value={paymentMethod}
+            value={paymentMethod ?? ""}
             error={formErrors.paymentMethod}
             required
           />
         </div>
-        {formErrors.voucherCode && (
-          <p className={`${inputErrorClass} px-1`}>{formErrors.voucherCode}</p>
-        )}
-        {formErrors.paymentMethod && (
-          <p className={`${inputErrorClass} px-1`}>
-            {formErrors.paymentMethod}
-          </p>
-        )}
+
         {/* Selected Items Display */}
         <div className={selectedItemsContainerClass}>
-          {servicesAvailed.length !== 0 ? (
+          {servicesAvailed.length > 0 ? (
             servicesAvailed.map((item) => (
-              <SelectedItem
-                key={item.id}
-                id={item.id}
-                name={item.name}
-                quantity={item.quantity}
-                originalPrice={item.originalPrice}
-                discountApplied={item.discountApplied}
-                type={item.type}
-              />
+              <SelectedItem key={item.id + item.type} {...item} />
             ))
           ) : (
             <p className={noItemsMessageClass}>No Selected Items Yet</p>
           )}
         </div>
+
         {/* Totals Display */}
         <div className={totalsContainerClass}>
           <div className="flex justify-between text-customBlack/80">
@@ -347,26 +679,28 @@ export default function CashierInterceptedModal() {
           </p>
         </div>
       </div>{" "}
-      {/* End Scrollable Content Area */}
-      {/* Action Buttons (Footer) */}
+      {/* End Modal Content Scrollable Area */}
+      {/* Action Buttons (Modal Footer) */}
       <div className={`flex-shrink-0 ${actionButtonsClass}`}>
         <Button
           onClick={handleCancel}
-          disabled={isSubmitting}
+          // Restore original disabled logic
+          disabled={isSubmitting || isOverallLoading || !!isCancellingRa}
           type="button"
           invert
         >
-          {" "}
-          Cancel{" "}
+          Cancel
         </Button>
         <Button
           onClick={handleConfirmClick}
           type="button"
+          // Restore original disabled logic, checking Redux name state
           disabled={
             isSubmitting ||
-            itemsLoading ||
-            servicesAvailed.length === 0 ||
-            !name?.trim() ||
+            isOverallLoading ||
+            !!isCancellingRa ||
+            !name.trim() || // Check name from Redux state
+            !servicesAvailed.length ||
             !paymentMethod
           }
         >

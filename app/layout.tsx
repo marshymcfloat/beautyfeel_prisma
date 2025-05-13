@@ -1,8 +1,8 @@
-// app/layout.tsx
 import React from "react";
-import "./globals.css"; // Import global styles here
+import "./globals.css";
 
-import { Lora, Montserrat } from "next/font/google";
+import { Lora, Montserrat, Lato } from "next/font/google";
+import AuthProvider from "@/components/Providers/SessionProvider";
 
 export const metadata = {
   title: "BeautyFeel",
@@ -32,15 +32,26 @@ const montserrat = Montserrat({
   weight: ["300", "400", "500", "700"],
 });
 
+const lato = Lato({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-lato",
+  weight: ["300", "400", "700"],
+});
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en" className={`${lora.variable} ${montserrat.variable}`}>
-      <body className="flex min-h-screen w-full flex-col overflow-x-hidden font-sans">
-        {children}
+    <html
+      lang="en"
+      className={`${lora.variable} ${montserrat.variable} ${lato.variable}`}
+    >
+      <body className="flex min-h-screen w-full flex-col overflow-x-hidden">
+        <AuthProvider>{children}</AuthProvider>
+
         <div id="modal-root"></div>
       </body>
     </html>
