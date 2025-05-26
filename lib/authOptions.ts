@@ -1,101 +1,143 @@
 // lib/authOptions.ts
-import NextAuth, { type NextAuthOptions } from "next-auth";
+import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-// Remove PrismaAdapter import if not using Database Sessions
-// import { PrismaAdapter } from "@next-auth/prisma-adapter";
-import { PrismaClient, Role } from "@prisma/client";
+import { PrismaClient, Role } from "@prisma/client"; // Assuming Role enum is from Prisma
 import { compare } from "bcryptjs";
 
-// Instantiate Prisma Client here or import if you have a central instance
 const prisma = new PrismaClient();
 
 export const authOptions: NextAuthOptions = {
-  // adapter: PrismaAdapter(prisma), // Uncomment if using DB sessions
-
-  secret: process.env.NEXTAUTH_SECRET,
+  secret: process.env.NEXTAUTH_SECRET, // Essential: Set this in your .env
 
   providers: [
     CredentialsProvider({
       name: "Credentials",
       credentials: {
-        username: { label: "Username", type: "text" },
+        username: { label: "Username", type: "text", placeholder: "jsmith" },
         password: { label: "Password", type: "password" },
       },
-      async authorize(credentials, req) {
-        const username = credentials?.username;
-        const password = credentials?.password;
+      async authorize(credentials) {
+        if (!credentials?.username || !credentials.password) {
+          console.error("[AUTH_AUTHORIZE] Missing username or password.");
+          return null; // Or throw an error that NextAuth can display
+        }
 
-        if (!username || !password) return null;
+        const { username, password } = credentials;
 
         try {
           const user = await prisma.account.findUnique({
             where: { username: username },
           });
 
-          if (user && (await compare(password, user.password))) {
-            console.log(`Auth Success: User ${user.username} authorized.`);
-            // Return object matching the User interface in next-auth.d.ts
-            // Ensure all properties needed in token/session are returned
-            return {
-              id: user.id,
-              name: user.name,
-              email: user.email, // Return email if needed
-              role: user.role,
-              branchId: user.branchId,
-            };
-          } else {
-            console.warn(
-              `Auth Failure: ${
-                user ? "Invalid password" : "User not found"
-              } for ${username}`,
-            );
-            return null; // Indicate failure
+          if (!user) {
+            console.warn(`[AUTH_AUTHORIZE] User not found: ${username}`);
+            return null;
           }
+
+          const isValidPassword = await compare(password, user.password);
+
+          if (!isValidPassword) {
+            console.warn(
+              `[AUTH_AUTHORIZE] Invalid password for user: ${username}`,
+            );
+            return null;
+          }
+
+          console.log(
+            `[AUTH_AUTHORIZE] Auth Success: User ${user.username} authorized.`,
+          );
+          // This object MUST match the 'User' interface in your next-auth.d.ts
+          const authorizedUser = {
+            id: user.id,
+            name: user.name,
+            email: user.email, // Ensure your Account model has email
+            username: user.username, // Adding username to the user object
+            role: user.role,
+            branchId: user.branchId,
+            mustChangePassword: user.mustChangePassword,
+          };
+          console.log(
+            "[AUTH_AUTHORIZE] Returning user object:",
+            JSON.stringify(authorizedUser, null, 2),
+          );
+          return authorizedUser;
         } catch (error) {
-          console.error("Error during authorization:", error);
-          return null; // Indicate failure
+          console.error("[AUTH_AUTHORIZE] Error during authorization:", error);
+          return null;
         }
       },
     }),
   ],
 
   session: {
-    strategy: "jwt", // JWT is required for getToken in middleware
+    strategy: "jwt", // Using JWT strategy is crucial for getToken in middleware
   },
 
   callbacks: {
-    // Ensure JWT callback includes all necessary user data
-    async jwt({ token, user }) {
+    async jwt({ token, user, trigger, session: sessionUpdateData }) {
+      // The 'user' object is available only on initial sign-in.
+      // It's the object returned by the 'authorize' callback.
       if (user) {
-        token.id = user.id;
-        // Type assertion needed as 'user' object from authorize might not perfectly match JWT type initially
-        token.role = (user as any).role as Role[];
-        token.branchId = (user as any).branchId as string | null;
-        token.name = user.name ?? null;
-        token.email = user.email ?? null;
+        console.log(
+          '[AUTH_JWT] Initial sign-in, "user" object:',
+          JSON.stringify(user, null, 2),
+        );
+        const typedUser = user as import("next-auth").User; // Use the augmented User type
+
+        token.id = typedUser.id;
+        token.name = typedUser.name;
+        token.email = typedUser.email;
+        token.username = (typedUser as any).username; // If username added in authorize
+        token.role = typedUser.role;
+        token.branchId = typedUser.branchId;
+        token.mustChangePassword = typedUser.mustChangePassword;
       }
+
+      // Handle session updates, e.g., after password change via client-side updateSession()
+      if (
+        trigger === "update" &&
+        typeof sessionUpdateData?.mustChangePassword === "boolean"
+      ) {
+        console.log(
+          "[AUTH_JWT] Session update triggered. New mustChangePassword:",
+          sessionUpdateData.mustChangePassword,
+        );
+        token.mustChangePassword = sessionUpdateData.mustChangePassword;
+      }
+      console.log(
+        "[AUTH_JWT] Returning token:",
+        JSON.stringify(token, null, 2),
+      );
       return token;
     },
 
-    // Ensure Session callback correctly maps from token to session.user
     async session({ session, token }) {
+      // The 'token' object is the JWT payload from the 'jwt' callback.
+      console.log(
+        '[AUTH_SESSION] "token" object for session:',
+        JSON.stringify(token, null, 2),
+      );
       if (token && session.user) {
         session.user.id = token.id as string;
+        session.user.name = token.name as string | null;
+        session.user.email = token.email as string | null;
+        session.user.username = token.username as string | null;
         session.user.role = token.role as Role[];
         session.user.branchId = token.branchId as string | null;
-        session.user.name = token.name ?? null;
-        session.user.email = token.email ?? null;
+        session.user.mustChangePassword = token.mustChangePassword as boolean;
       }
+      console.log(
+        "[AUTH_SESSION] Returning session:",
+        JSON.stringify(session, null, 2),
+      );
       return session;
     },
   },
 
   pages: {
-    signIn: "/login", // Redirects happen here if middleware detects no token
-    // error: '/auth/error', // Optional: Custom error page for auth errors
-    // signOut: '/auth/signout', // Optional
+    signIn: "/login", // Your designated login page/modal trigger route
+    // error: "/auth/error", // Optional: custom error page for auth errors
   },
 
-  // Optional: Debugging
-  // debug: process.env.NODE_ENV === 'development',
+  // debug: process.env.NODE_ENV === "development", // Useful for verbose logging from NextAuth
 };

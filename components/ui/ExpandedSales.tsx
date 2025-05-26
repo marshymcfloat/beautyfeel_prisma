@@ -483,9 +483,7 @@ export default function ExpandedSales({
               </div>
             )}
 
-            {/* Expense Form */}
             <div className="mb-4">
-              {/* Date Input */}
               <label
                 htmlFor="expenseDate"
                 className="mb-1 block text-sm font-medium text-customBlack/70"

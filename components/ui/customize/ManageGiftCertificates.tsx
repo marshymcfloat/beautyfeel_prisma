@@ -1,4 +1,3 @@
-// components/ui/customize/ManageGiftCertificates.tsx
 "use client";
 
 import React, {
@@ -10,37 +9,44 @@ import React, {
 } from "react";
 import {
   createGiftCertificateAction,
-  // --- Need new/modified server actions ---
-  // getAllServices, // Replace this
-  getServicesAndSetsForGC, // New action to get filtered services/sets
+  getServicesAndSetsForGC,
   getActiveGiftCertificates,
-  getAllBranches, // New action to get branches
-  // --- End ---
-} from "@/lib/ServerAction"; // Assuming path is correct
+  getAllBranches,
+} from "@/lib/ServerAction";
 import type {
   GiftCertificate as PrismaGC,
   Service as PrismaService,
-  ServiceSet as PrismaServiceSet, // Import ServiceSet type if needed
-  Branch as PrismaBranch, // Import Branch type
+  ServiceSet as PrismaServiceSet,
+  Branch as PrismaBranch,
 } from "@prisma/client";
 import Button from "@/components/Buttons/Button";
 import Select, { MultiValue, ActionMeta, SingleValue } from "react-select";
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, RotateCcw as RefreshIcon } from "lucide-react"; // Added RefreshIcon
 
-// --- Import the modified CustomerInput ---
 import CustomerInput from "@/components/Inputs/CustomerInput";
-import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types"; // Type for customer data
+import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types";
+
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache";
+
+// --- Cache Keys ---
+const GC_BRANCHES_CACHE_KEY: CacheKey = "branches_ManageGiftCertificates";
+const GC_ITEMS_CACHE_KEY: CacheKey = "items_ManageGiftCertificates";
+const GC_ACTIVE_LIST_CACHE_KEY: CacheKey = "activeGCs_ManageGiftCertificates";
 
 // --- Types ---
-type ServiceTypeFilter = "service" | "set"; // For filtering
-// value/label for react-select, add 'type' if needed
+type ServiceTypeFilter = "service" | "set";
 type SelectOption = { value: string; label: string; type?: ServiceTypeFilter };
-type ActiveGiftCertificate = PrismaGC; // Use full Prisma type for list
+type ActiveGiftCertificate = PrismaGC;
 type BranchOption = { value: string; label: string };
 
-// --- Helper Function --- (Keep as is)
+// --- Helper Function ---
 function generateRandomCode(length: number = 5): string {
-  const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789"; // Removed O
+  const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789";
   let result = "";
   const charactersLength = characters.length;
   for (let i = 0; i < length; i++) {
@@ -49,7 +55,7 @@ function generateRandomCode(length: number = 5): string {
   return result;
 }
 
-// --- Reusable MultiSelect Component --- (Assuming definition exists or copy from above)
+// --- Reusable MultiSelect Component ---
 interface MultiSelectPropsGC {
   name: string;
   options: SelectOption[];
@@ -69,7 +75,6 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
   value,
   onChange,
 }) => {
-  // Definition copied from original prompt for completeness
   return (
     <div>
       {value.map((option) => (
@@ -122,27 +127,22 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
     </div>
   );
 };
-// --- End MultiSelect ---
 
 // --- Main Component ---
 export default function ManageGiftCertificates() {
-  // --- State for Filters ---
   const [serviceType, setServiceType] = useState<ServiceTypeFilter>("service");
-  const [selectedBranchId, setSelectedBranchId] = useState<string>("all"); // 'all' or branch ID
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
   const [branches, setBranches] = useState<BranchOption[]>([]);
   const [isLoadingBranches, setIsLoadingBranches] = useState(true);
 
-  // --- State for Services/Sets based on filters ---
   const [availableItems, setAvailableItems] = useState<SelectOption[]>([]);
-  const [isLoadingItems, setIsLoadingItems] = useState(true); // Renamed from isLoadingServices
+  const [isLoadingItems, setIsLoadingItems] = useState(true);
 
-  // --- State for Customer Input ---
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerData | null>(
     null,
   );
-  const [recipientEmail, setRecipientEmail] = useState(""); // State for email input
+  const [recipientEmail, setRecipientEmail] = useState("");
 
-  // --- Existing State ---
   const [activeGCs, setActiveGCs] = useState<ActiveGiftCertificate[]>([]);
   const [isLoadingGCs, setIsLoadingGCs] = useState(true);
   const [formError, setFormError] = useState<Record<string, string[]>>({});
@@ -152,18 +152,33 @@ export default function ManageGiftCertificates() {
   const codeInputRef = useRef<HTMLInputElement>(null);
   const [selectedServicesOrSets, setSelectedServicesOrSets] = useState<
     MultiValue<SelectOption>
-  >([]); // Use SelectOption
+  >([]);
 
-  // --- Fetch Branches (Once on Mount) ---
-  const loadBranches = useCallback(async () => {
+  const loadBranches = useCallback(async (forceRefresh = false) => {
     setIsLoadingBranches(true);
+    if (!forceRefresh) {
+      const cached = getCachedData<PrismaBranch[]>(GC_BRANCHES_CACHE_KEY);
+      if (cached) {
+        const branchOptions = cached.map((b: PrismaBranch) => ({
+          value: b.id,
+          label: b.title,
+        }));
+        setBranches([
+          { value: "all", label: "All Branches" },
+          ...branchOptions,
+        ]);
+        setIsLoadingBranches(false);
+        return;
+      }
+    }
     try {
-      const branchesData = await getAllBranches(); // Assumes this action exists
+      const branchesData = await getAllBranches();
       const branchOptions = branchesData.map((b: PrismaBranch) => ({
         value: b.id,
         label: b.title,
       }));
-      setBranches([{ value: "all", label: "All Branches" }, ...branchOptions]); // Add 'All' option
+      setBranches([{ value: "all", label: "All Branches" }, ...branchOptions]);
+      setCachedData(GC_BRANCHES_CACHE_KEY, branchesData);
     } catch (err) {
       console.error("Failed to load branches:", err);
       setFormError((prev) => ({
@@ -175,47 +190,66 @@ export default function ManageGiftCertificates() {
     }
   }, []);
 
-  useEffect(() => {
-    loadBranches();
-  }, [loadBranches]);
+  const loadItems = useCallback(
+    async (forceRefresh = false) => {
+      setIsLoadingItems(true);
+      const cacheParams = { serviceType, selectedBranchId };
+      if (!forceRefresh) {
+        const cached = getCachedData<SelectOption[]>(
+          GC_ITEMS_CACHE_KEY,
+          cacheParams,
+        );
+        if (cached) {
+          setAvailableItems(cached);
+          setIsLoadingItems(false);
+          // Note: Do not clear selectedServicesOrSets here if loading from cache
+          // unless the intention is to always reset selection on filter change.
+          // Current behavior: if filter changes, loadItems is called, clears selection,
+          // then if data is cached, it uses cached items.
+          return;
+        }
+      }
+      setAvailableItems([]); // Clear previous items if fetching new
+      setSelectedServicesOrSets([]); // Clear selection when filters change AND fetching new
+      try {
+        const itemsData = await getServicesAndSetsForGC(
+          serviceType,
+          selectedBranchId,
+        );
+        setAvailableItems(itemsData);
+        setCachedData(GC_ITEMS_CACHE_KEY, itemsData, cacheParams);
+      } catch (err: any) {
+        console.error("Failed to load services/sets:", err);
+        setFormError((prev) => ({
+          ...prev,
+          general: [
+            ...(prev.general || []),
+            "Failed to load services/sets for selection.",
+          ],
+        }));
+      } finally {
+        setIsLoadingItems(false);
+      }
+    },
+    [serviceType, selectedBranchId],
+  );
 
-  // --- Fetch Services/Sets based on Filters ---
-  const loadItems = useCallback(async () => {
-    setIsLoadingItems(true);
-    setAvailableItems([]); // Clear previous items
-    setSelectedServicesOrSets([]); // Clear selection when filters change
-    try {
-      // Call the new action with filters
-      const itemsData = await getServicesAndSetsForGC(
-        serviceType,
-        selectedBranchId,
-      );
-      // Assume itemsData is already in { value, label } format from server action
-      setAvailableItems(itemsData);
-    } catch (err: any) {
-      console.error("Failed to load services/sets:", err);
-      setFormError((prev) => ({
-        ...prev,
-        general: [
-          ...(prev.general || []),
-          "Failed to load services/sets for selection.",
-        ],
-      }));
-    } finally {
-      setIsLoadingItems(false);
-    }
-  }, [serviceType, selectedBranchId]); // Re-run when filters change
-
-  useEffect(() => {
-    loadItems();
-  }, [loadItems]); // Fetch items whenever loadItems changes (i.e., filters change)
-
-  // --- Fetch Active GCs (Once on Mount or on demand) ---
-  const loadActiveGCs = useCallback(async () => {
+  const loadActiveGCs = useCallback(async (forceRefresh = false) => {
     setIsLoadingGCs(true);
+    if (!forceRefresh) {
+      const cached = getCachedData<ActiveGiftCertificate[]>(
+        GC_ACTIVE_LIST_CACHE_KEY,
+      );
+      if (cached) {
+        setActiveGCs(cached);
+        setIsLoadingGCs(false);
+        return;
+      }
+    }
     try {
       const gcs = await getActiveGiftCertificates();
       setActiveGCs(gcs);
+      setCachedData(GC_ACTIVE_LIST_CACHE_KEY, gcs);
     } catch (err: any) {
       console.error("Failed to load active GCs:", err);
       setFormError((prev) => ({
@@ -225,38 +259,49 @@ export default function ManageGiftCertificates() {
           "Failed to load active gift certificates.",
         ],
       }));
+      setActiveGCs([]); // Clear on error
     } finally {
       setIsLoadingGCs(false);
     }
   }, []);
 
   useEffect(() => {
+    loadBranches();
     loadActiveGCs();
-  }, [loadActiveGCs]);
+  }, [loadBranches, loadActiveGCs]);
 
-  // --- Handle Customer Selection ---
+  useEffect(() => {
+    loadItems();
+  }, [loadItems]);
+
+  const handleRefreshAll = () => {
+    invalidateCache([
+      GC_BRANCHES_CACHE_KEY,
+      GC_ITEMS_CACHE_KEY,
+      GC_ACTIVE_LIST_CACHE_KEY,
+    ]);
+    loadBranches(true);
+    loadItems(true); // This will use current filters
+    loadActiveGCs(true);
+  };
+
   const handleCustomerSelected = useCallback(
     (customer: CustomerData | null) => {
       setSelectedCustomer(customer);
-      setRecipientEmail(customer?.email || ""); // Auto-fill email, allow override later
-      // Clear any previous customer-related errors if needed
+      setRecipientEmail(customer?.email || "");
       setFormError((prev) => {
-        const { recipientName, recipientEmail, ...rest } = prev; // Remove specific errors
+        const { recipientName, recipientEmail, ...rest } = prev;
         return rest;
       });
     },
     [],
   );
 
-  // --- Generate Code --- (No changes needed)
   const handleGenerateCode = () => {
     const newCode = generateRandomCode(5);
-    if (codeInputRef.current) {
-      codeInputRef.current.value = newCode;
-    }
+    if (codeInputRef.current) codeInputRef.current.value = newCode;
   };
 
-  // --- Form Submission Handler ---
   const handleSaveClick = () => {
     if (!formRef.current) {
       setFormError({ general: ["Form reference error."] });
@@ -265,21 +310,15 @@ export default function ManageGiftCertificates() {
     setFormError({});
     setSuccessMessage(null);
 
-    // --- Manually construct data instead of FormData ---
     const codeValue = codeInputRef.current?.value.trim() || "";
     const expiresValue = formRef.current.expiresAt.value;
     const itemIds = selectedServicesOrSets.map((option) => option.value);
-    // recipientEmail state holds the potentially edited email
-    // selectedCustomer state holds the customer object (ID, name etc.)
 
-    // Client-side validation
     let errors: Record<string, string[]> = {};
-    if (itemIds.length === 0) {
+    if (itemIds.length === 0)
       errors.serviceIds = ["Please select at least one service or set."];
-    }
-    if (!codeValue || codeValue.length < 4) {
+    if (!codeValue || codeValue.length < 4)
       errors.code = ["Code is required (min 4 chars)."];
-    }
     if (
       recipientEmail &&
       !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(recipientEmail)
@@ -292,44 +331,56 @@ export default function ManageGiftCertificates() {
     ) {
       errors.expiresAt = ["Expiry date cannot be in the past."];
     }
-    // Add validation for customer selection if needed (e.g., require selection)
-    // if (!selectedCustomer) {
-    //   errors.recipientName = ["Please select a recipient customer."];
-    // }
 
     if (Object.keys(errors).length > 0) {
       setFormError(errors);
       return;
     }
 
-    // --- Prepare data for the server action ---
     const gcData = {
-      code: codeValue.toUpperCase(), // Send uppercase code
-      itemIds: itemIds, // Send array of IDs
-      itemType: serviceType, // Send the type ('service' or 'set') - Action needs to handle this
-      recipientCustomerId: selectedCustomer?.id || null, // Send customer ID or null
-      recipientName: selectedCustomer?.name || null, // Optional: Send name if action needs it
-      recipientEmail: recipientEmail || null, // Send potentially edited email
-      expiresAt: expiresValue || null, // Send date string or null
+      code: codeValue.toUpperCase(),
+      itemIds: itemIds,
+      itemType: serviceType,
+      purchaserCustomerId: selectedCustomer?.id || null, // <--- ADD THIS LINE
+      recipientCustomerId: selectedCustomer?.id || null, // This might be redundant based on your schema/server logic, but keep it for now if type expects it
+      recipientName: selectedCustomer?.name || null,
+      recipientEmail: recipientEmail || null,
+      expiresAt: expiresValue || null,
     };
 
     startTransition(async () => {
-      // Assume createGiftCertificateAction accepts an object now, not FormData
-      const result = await createGiftCertificateAction(gcData); // Pass structured data
+      const result = await createGiftCertificateAction(gcData);
       if (result.success) {
         setSuccessMessage(
           result.message || "Gift certificate created successfully!",
         );
-        formRef.current?.reset(); // Reset form fields
-        setSelectedServicesOrSets([]); // Clear multi-select state
-        setSelectedCustomer(null); // Clear selected customer
-        setRecipientEmail(""); // Clear email state
-        setServiceType("service"); // Reset filters
-        setSelectedBranchId("all"); // Reset filters
-        if (codeInputRef.current) codeInputRef.current.value = ""; // Clear code input
-        // Reload GCs, and items (which will happen due to filter reset)
-        await loadActiveGCs();
-        // loadItems(); // This will be triggered by filter state changes
+        formRef.current?.reset();
+        setSelectedServicesOrSets([]);
+        setSelectedCustomer(null);
+        setRecipientEmail("");
+        if (codeInputRef.current) codeInputRef.current.value = "";
+
+        // Reset filters to defaults (might trigger loadItems via useEffect if values change)
+        const defaultServiceType = "service";
+        const defaultBranchId = "all";
+        let filtersChanged = false;
+        if (serviceType !== defaultServiceType) {
+          setServiceType(defaultServiceType);
+          filtersChanged = true;
+        }
+        if (selectedBranchId !== defaultBranchId) {
+          setSelectedBranchId(defaultBranchId);
+          filtersChanged = true;
+        }
+
+        invalidateCache([GC_ACTIVE_LIST_CACHE_KEY, GC_ITEMS_CACHE_KEY]); // Invalidate GCs and potentially items
+        await loadActiveGCs(true); // Force reload GCs
+        if (!filtersChanged) {
+          // If filters didn't change, items cache for current filters is still valid but might need refresh from server if data for those filters changed
+          await loadItems(true); // So explicitly reload items if filters didn't change
+        }
+        // If filters *did* change, useEffect for loadItems will trigger with new filters
+
         setTimeout(() => setSuccessMessage(null), 5000);
       } else {
         setSuccessMessage(null);
@@ -343,11 +394,11 @@ export default function ManageGiftCertificates() {
   };
 
   const isSaving = isPending;
+  const isAnyLoading = isLoadingBranches || isLoadingItems || isLoadingGCs;
 
-  // --- Style constants --- (Keep as defined in original prompt)
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
-  const selectStyle = // Style for regular select dropdowns
+  const selectStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
   const labelStyle = "block text-sm font-medium text-customBlack/80";
   const errorTextStyle = "mt-1 text-xs text-red-500";
@@ -361,13 +412,29 @@ export default function ManageGiftCertificates() {
 
   return (
     <div className="space-y-6 p-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-lg font-semibold text-customBlack">
+          Manage Gift Certificates
+        </h2>
+        <Button
+          onClick={handleRefreshAll}
+          size="sm"
+          variant="outline"
+          className="flex w-full items-center justify-center gap-1.5 sm:w-auto"
+          disabled={isAnyLoading || isSaving}
+          title="Refresh All Data"
+        >
+          <RefreshIcon size={16} />
+          Refresh Data
+        </Button>
+      </div>
+
       {/* --- Create GC Form Section --- */}
       <div className={formSectionStyle}>
         <h2 className="mb-4 text-lg font-semibold text-customBlack">
           Create Gift Certificate
         </h2>
 
-        {/* General Feedback Messages */}
         {formError.general && (
           <p className="mb-4 rounded border border-red-300 bg-red-100 p-2 text-sm text-red-600">
             {formError.general.join(", ")}
@@ -384,7 +451,6 @@ export default function ManageGiftCertificates() {
           className="space-y-4"
           onSubmit={(e) => e.preventDefault()}
         >
-          {/* --- Row 1: Code --- */}
           <div>
             <label htmlFor="code" className={labelStyle}>
               Certificate Code <span className="text-red-500">*</span>
@@ -416,19 +482,21 @@ export default function ManageGiftCertificates() {
             </div>
             {formError.code && (
               <p id="code-error" className={errorTextStyle}>
-                {formError.code.join(", ")}
+                {" "}
+                {formError.code.join(", ")}{" "}
               </p>
             )}
             <p className="mt-1 text-xs text-gray-500">
-              Min 4 chars. Uppercase. Must be unique.
+              {" "}
+              Min 4 chars. Uppercase. Must be unique.{" "}
             </p>
           </div>
 
-          {/* --- Row 2: Filters for Services/Sets --- */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="serviceTypeFilter" className={labelStyle}>
-                Item Type <span className="text-red-500">*</span>
+                {" "}
+                Item Type <span className="text-red-500">*</span>{" "}
               </label>
               <select
                 id="serviceTypeFilter"
@@ -437,7 +505,7 @@ export default function ManageGiftCertificates() {
                 onChange={(e) =>
                   setServiceType(e.target.value as ServiceTypeFilter)
                 }
-                className={selectStyle} // Use consistent select style
+                className={selectStyle}
                 disabled={isSaving || isLoadingItems || isLoadingBranches}
               >
                 <option value="service">Single Service</option>
@@ -446,14 +514,15 @@ export default function ManageGiftCertificates() {
             </div>
             <div>
               <label htmlFor="branchFilter" className={labelStyle}>
-                Filter by Branch
+                {" "}
+                Filter by Branch{" "}
               </label>
               <select
                 id="branchFilter"
                 name="branchFilter"
                 value={selectedBranchId}
                 onChange={(e) => setSelectedBranchId(e.target.value)}
-                className={selectStyle} // Use consistent select style
+                className={selectStyle}
                 disabled={isLoadingBranches || isSaving || isLoadingItems}
               >
                 {isLoadingBranches ? (
@@ -461,7 +530,8 @@ export default function ManageGiftCertificates() {
                 ) : (
                   branches.map((branch) => (
                     <option key={branch.value} value={branch.value}>
-                      {branch.label}
+                      {" "}
+                      {branch.label}{" "}
                     </option>
                   ))
                 )}
@@ -469,23 +539,23 @@ export default function ManageGiftCertificates() {
             </div>
           </div>
 
-          {/* --- Row 3: Service/Set Selection --- */}
           <div>
             <label htmlFor="serviceIds" className={labelStyle}>
               Included {serviceType === "service" ? "Services" : "Sets"}
               <span className="text-red-500">*</span>
             </label>
             <ServiceMultiSelectGC
-              name="serviceIds" // Keep name consistent, value extracted manually
-              options={availableItems} // Use state with filtered items
+              name="serviceIds"
+              options={availableItems}
               isLoading={isLoadingItems}
               placeholder={`Select one or more ${serviceType === "service" ? "services" : "sets"}...`}
               value={selectedServicesOrSets}
-              onChange={setSelectedServicesOrSets} // Directly use the setter
+              onChange={setSelectedServicesOrSets}
             />
             {formError.serviceIds && (
               <p className={errorTextStyle}>
-                {formError.serviceIds.join(", ")}
+                {" "}
+                {formError.serviceIds.join(", ")}{" "}
               </p>
             )}
           </div>
@@ -494,23 +564,22 @@ export default function ManageGiftCertificates() {
             <div className="relative flex flex-col items-center pt-2">
               <CustomerInput
                 onCustomerSelect={handleCustomerSelected}
-                error={formError.recipientName?.join(", ")} // Pass potential error
-                initialValue={selectedCustomer?.name || ""} // Set initial value if customer selected
+                error={formError.recipientName?.join(", ")}
+                initialValue={selectedCustomer?.name || ""}
               />
             </div>
-
-            {/* Recipient Email */}
             <div>
               <label htmlFor="recipientEmail" className={labelStyle}>
-                Recipient Email (Auto-filled, Editable)
+                {" "}
+                Recipient Email (Auto-filled, Editable){" "}
               </label>
               <input
                 type="email"
                 name="recipientEmail"
                 id="recipientEmail"
-                value={recipientEmail} // Controlled input
-                onChange={(e) => setRecipientEmail(e.target.value)} // Allow editing
-                className={inputStyle} // Use standard input style
+                value={recipientEmail}
+                onChange={(e) => setRecipientEmail(e.target.value)}
+                className={inputStyle}
                 aria-invalid={!!formError.recipientEmail}
                 aria-describedby={
                   formError.recipientEmail ? "email-error" : undefined
@@ -519,23 +588,24 @@ export default function ManageGiftCertificates() {
               />
               {formError.recipientEmail && (
                 <p id="email-error" className={errorTextStyle}>
-                  {formError.recipientEmail.join(", ")}
+                  {" "}
+                  {formError.recipientEmail.join(", ")}{" "}
                 </p>
               )}
             </div>
           </div>
 
-          {/* --- Row 5: Expiry Date --- */}
           <div>
             <label htmlFor="expiresAt" className={labelStyle}>
-              Expires At (Optional)
+              {" "}
+              Expires At (Optional){" "}
             </label>
             <input
               type="date"
               name="expiresAt"
               id="expiresAt"
               className={inputStyle}
-              min={new Date().toISOString().split("T")[0]} // Prevent past dates
+              min={new Date().toISOString().split("T")[0]}
               aria-invalid={!!formError.expiresAt}
               aria-describedby={
                 formError.expiresAt ? "expires-error" : undefined
@@ -543,19 +613,17 @@ export default function ManageGiftCertificates() {
             />
             {formError.expiresAt && (
               <p id="expires-error" className={errorTextStyle}>
-                {formError.expiresAt.join(", ")}
+                {" "}
+                {formError.expiresAt.join(", ")}{" "}
               </p>
             )}
           </div>
 
-          {/* --- Submit Button --- */}
           <div className="flex justify-end pt-2">
             <Button
               type="button"
               onClick={handleSaveClick}
-              disabled={
-                isSaving || isLoadingItems || isLoadingGCs || isLoadingBranches
-              } // Disable if loading anything
+              disabled={isSaving || isAnyLoading}
             >
               {isSaving ? "Creating..." : "Create Certificate"}
             </Button>
@@ -563,7 +631,6 @@ export default function ManageGiftCertificates() {
         </form>
       </div>
 
-      {/* --- Active GC List Section --- */}
       <div className={listSectionStyle}>
         <h3 className="border-b border-customGray/30 bg-customGray/10 p-3 text-base font-semibold text-gray-700">
           Active Gift Certificates
@@ -571,12 +638,14 @@ export default function ManageGiftCertificates() {
         <div className="min-w-full overflow-x-auto">
           {isLoadingGCs ? (
             <p className="py-10 text-center text-customBlack/70">
-              Loading certificates...
+              {" "}
+              Loading certificates...{" "}
             </p>
-          ) : !formError.general?.some((e) => e.includes("active gift cert")) && // Check specific general error
+          ) : !formError.general?.some((e) => e.includes("active gift cert")) &&
             activeGCs.length === 0 ? (
             <p className="py-10 text-center text-customBlack/60">
-              No active gift certificates found.
+              {" "}
+              No active gift certificates found.{" "}
             </p>
           ) : (
             <table className="min-w-full divide-y divide-customGray/30">
@@ -584,13 +653,16 @@ export default function ManageGiftCertificates() {
                 <tr>
                   <th className={thStyleBase}>Code</th>
                   <th className={`${thStyleBase} hidden sm:table-cell`}>
-                    Recipient
+                    {" "}
+                    Recipient{" "}
                   </th>
                   <th className={`${thStyleBase} hidden md:table-cell`}>
-                    Expires
+                    {" "}
+                    Expires{" "}
                   </th>
                   <th className={`${thStyleBase} hidden lg:table-cell`}>
-                    Issued
+                    {" "}
+                    Issued{" "}
                   </th>
                 </tr>
               </thead>
@@ -600,15 +672,18 @@ export default function ManageGiftCertificates() {
                     <td
                       className={`${tdStyleBase} whitespace-nowrap font-mono uppercase`}
                     >
+                      {" "}
                       {gc.code}
                       <div className="text-xs text-gray-500 sm:hidden">
-                        Recipient: {gc.recipientName || "N/A"}
+                        {" "}
+                        Recipient: {gc.recipientName || "N/A"}{" "}
                       </div>
                       <div className="text-xs text-gray-500 sm:hidden">
+                        {" "}
                         Expires:{" "}
                         {gc.expiresAt
                           ? new Date(gc.expiresAt).toLocaleDateString()
-                          : "Never"}
+                          : "Never"}{" "}
                       </div>
                     </td>
                     <td className={`${tdStyleBase} hidden sm:table-cell`}>
@@ -617,7 +692,8 @@ export default function ManageGiftCertificates() {
                       )}
                       {gc.recipientEmail && (
                         <div className="max-w-[150px] truncate text-[10px] text-gray-400">
-                          {gc.recipientEmail}
+                          {" "}
+                          {gc.recipientEmail}{" "}
                         </div>
                       )}
                     </td>

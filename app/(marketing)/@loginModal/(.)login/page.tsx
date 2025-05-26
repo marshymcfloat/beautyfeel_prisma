@@ -1,24 +1,24 @@
-// src/app/@authModal/(.)login/page.tsx (or your specific path)
+// app/@authModal/(.)login/page.tsx
 "use client";
 
-import { X, Loader2 } from "lucide-react"; // Import Loader2 for loading state
+import { X, Loader2 } from "lucide-react";
 import {
   ChangeEvent,
   useState,
   useCallback,
-  FormEvent, // Import FormEvent for form onSubmit
+  FormEvent,
+  useEffect,
 } from "react";
-import Button from "@/components/Buttons/Button";
+import Button from "@/components/Buttons/Button"; // Ensure this path is correct
 import { signIn } from "next-auth/react";
-import { useRouter, useSearchParams } from "next/navigation"; // Import useSearchParams
+import { useRouter, useSearchParams } from "next/navigation";
 
 export default function InterceptedLoginPage() {
   const router = useRouter();
-  const searchParams = useSearchParams(); // Hook to get URL query parameters
+  const searchParams = useSearchParams();
 
-  // Get the callbackUrl from the query string (set by middleware)
-  // Default to '/' if not present (though middleware should always add it)
-  const callbackUrl = searchParams.get("callbackUrl") || "/";
+  // State for callbackUrl initialized in useEffect to ensure searchParams is ready
+  const [callbackUrl, setCallbackUrl] = useState("/"); // Default callback URL
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [inputs, setInputs] = useState({
@@ -27,22 +27,29 @@ export default function InterceptedLoginPage() {
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Input change handler remains the same
-  function handleInputChange(
-    identifier: string,
-    e: ChangeEvent<HTMLInputElement>,
-  ) {
-    setInputs((prev) => ({
-      ...prev,
-      [identifier]: e.target.value,
-    }));
-    // Clear error message when user starts typing again
-    if (errorMessage) {
-      setErrorMessage(null);
+  // useEffect to safely access searchParams once the component has mounted
+  useEffect(() => {
+    const cbUrlFromParams = searchParams?.get("callbackUrl");
+    if (cbUrlFromParams) {
+      setCallbackUrl(cbUrlFromParams);
     }
-  }
+    // If no callbackUrl in params, it will stick to the default "/"
+  }, [searchParams]);
 
-  // Form submission handler
+  const handleInputChange = useCallback(
+    (identifier: string, e: ChangeEvent<HTMLInputElement>) => {
+      setInputs((prev) => ({
+        ...prev,
+        [identifier]: e.target.value,
+      }));
+      // Clear error message when user starts typing again
+      if (errorMessage) {
+        setErrorMessage(null);
+      }
+    },
+    [errorMessage], // Dependency array for useCallback
+  );
+
   const handleLoginSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault(); // Prevent default form submission
@@ -57,34 +64,37 @@ export default function InterceptedLoginPage() {
         return;
       }
 
+      // No need for signInSuccessful flag if we always navigate or show error
       try {
         console.log(
-          `Attempting sign in... Callback URL target: ${callbackUrl}`,
+          `[LOGIN_MODAL] Attempting sign in. Target callback for initial navigation: ${callbackUrl}`,
         );
         const result = await signIn("credentials", {
           username: inputs.username,
           password: inputs.password,
           redirect: false, // IMPORTANT: Handle redirect manually
-          // No need to pass callbackUrl here when redirect: false,
-          // we'll use the one from searchParams for manual redirect.
         });
 
-        console.log("signIn result:", result);
+        console.log("[LOGIN_MODAL] signIn result:", result);
 
         if (result?.ok && !result.error) {
-          // Sign-in successful!
-          console.log(`Sign-in successful. Redirecting to: ${callbackUrl}`);
-          // Manually redirect to the callbackUrl provided by middleware (or default '/')
-          router.push(callbackUrl);
-          // IMPORTANT: Refresh the router to ensure the session state is updated
-          // and the destination page reflects the logged-in state correctly.
-          router.refresh();
+          console.log(
+            `[LOGIN_MODAL] Sign-in successful. Navigating via window.location.href to: ${callbackUrl}. Middleware will handle final destination.`,
+          );
+          // CRITICAL CHANGE: Use window.location.href for a "fuller" navigation
+          // that helps clear the intercepted route's modal state when middleware redirects.
+          // Ensure callbackUrl is a relative path like "/" or "/dashboard" or an absolute path for your domain.
+          // If callbackUrl might be an external URL, you'd need more careful handling.
+          // For internal app navigation, this is generally fine.
+          window.location.href = callbackUrl;
 
-          // No need to set isSubmitting false here, as we are navigating away.
-          return; // Exit function after successful redirect push
+          // Since we are navigating away with window.location.href,
+          // the component will unmount. No need to explicitly setIsSubmitting(false).
+          // The 'return' here is mostly for logical flow, as window.location.href will take over.
+          return;
         } else {
           // Handle NextAuth errors (e.g., invalid credentials)
-          console.error("Login failed (NextAuth Response):", result?.error);
+          console.error("[LOGIN_MODAL] Login failed:", result?.error);
           if (result?.error === "CredentialsSignin") {
             setErrorMessage("Invalid username or password.");
           } else {
@@ -94,116 +104,119 @@ export default function InterceptedLoginPage() {
         }
       } catch (error) {
         // Handle unexpected errors during the signIn process (e.g., network issues)
-        console.error("An unexpected error occurred during sign in:", error);
+        console.error("[LOGIN_MODAL] Unexpected error during sign in:", error);
         setErrorMessage(
-          "An unexpected error occurred. Please try again later.",
+          "An unexpected error occurred. Please check your connection and try again.",
         );
-      } finally {
-        // Ensure submission state is reset if we didn't redirect
-        setIsSubmitting(false);
       }
+      // This will only be reached if signIn was not successful or an error occurred.
+      setIsSubmitting(false);
     },
-    [inputs, router, callbackUrl],
-  ); // Include callbackUrl in dependencies
+    [inputs, callbackUrl], // router is not strictly needed here anymore if using window.location.href
+    // but keeping it doesn't harm if other parts of the component might use it.
+    // If only for router.back(), it's fine.
+  );
+
+  const closeModal = () => {
+    router.back(); // Standard way to close an intercepted route modal by user action
+  };
 
   return (
     // Modal backdrop and container
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/35 backdrop-blur-sm">
-      {" "}
-      {/* Increased z-index just in case */}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <dialog
         open // Use `open` attribute for dialog accessibility
-        className="relative w-[95%] max-w-md rounded-lg border border-customDarkPink/50 bg-customOffWhite p-6 shadow-xl"
+        className="relative w-[95%] max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl sm:p-8"
         aria-labelledby="login-dialog-title"
         aria-modal="true"
       >
         {/* Close button */}
         <button
           type="button"
-          onClick={() => router.back()} // Go back in history to close modal
-          className="absolute right-3 top-3 rounded-full p-1 text-customDarkPink/70 transition-colors hover:bg-customGray/50 hover:text-customDarkPink focus:outline-none focus-visible:ring-2 focus-visible:ring-customDarkPink focus-visible:ring-offset-2"
+          onClick={closeModal} // Use the closeModal function
+          className="absolute right-3 top-3 rounded-full p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
           aria-label="Close login dialog"
         >
-          <X size={24} />
+          <X size={22} />
         </button>
 
         {/* Login Form */}
-        {/* Use form element with onSubmit */}
         <form onSubmit={handleLoginSubmit}>
           <h1
             id="login-dialog-title"
-            className="mb-8 text-center text-xl font-semibold uppercase tracking-wider text-customBlack"
+            className="mb-6 text-center text-2xl font-semibold tracking-tight text-gray-900"
           >
-            Login
+            Member Login
           </h1>
 
           {/* Username Input */}
           <div className="relative mb-5">
             <input
-              id="username"
+              id="username-modal"
               type="text"
-              className="peer h-12 w-full rounded-md border border-customDarkPink/70 px-3 pt-3 text-customBlack shadow-sm outline-none transition-colors focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:opacity-50"
-              placeholder=" " // Required for label animation
+              className="peer h-12 w-full rounded-md border border-gray-300 px-3 pt-3 text-gray-900 shadow-sm outline-none transition-colors focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-50"
+              placeholder=" "
               name="username"
               required
               value={inputs.username}
               onChange={(e) => handleInputChange("username", e)}
               disabled={isSubmitting}
               autoComplete="username"
-              aria-describedby={errorMessage ? "error-message" : undefined} // Link error message
+              aria-describedby={
+                errorMessage ? "error-message-modal" : undefined
+              }
             />
             <label
-              htmlFor="username"
-              className="absolute left-3 top-3 z-10 origin-[0] -translate-y-3 scale-75 transform cursor-text text-sm text-customDarkPink/80 duration-150 peer-placeholder-shown:translate-y-0 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-focus:text-customDarkPink"
+              htmlFor="username-modal"
+              className="absolute left-3 top-3.5 z-10 origin-[0] -translate-y-2.5 scale-75 transform cursor-text text-sm text-gray-500 duration-150 peer-placeholder-shown:translate-y-0 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2.5 peer-focus:scale-75 peer-focus:text-indigo-600"
             >
               Username
             </label>
           </div>
 
           {/* Password Input */}
-          <div className="relative mb-8">
+          <div className="relative mb-6">
             <input
-              id="password"
+              id="password-modal"
               type="password"
-              className="peer h-12 w-full rounded-md border border-customDarkPink/70 px-3 pt-3 text-customBlack shadow-sm outline-none transition-colors focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:opacity-50"
-              placeholder=" " // Required for label animation
+              className="peer h-12 w-full rounded-md border border-gray-300 px-3 pt-3 text-gray-900 shadow-sm outline-none transition-colors focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-50"
+              placeholder=" "
               name="password"
               required
               value={inputs.password}
               onChange={(e) => handleInputChange("password", e)}
               disabled={isSubmitting}
               autoComplete="current-password"
-              aria-describedby={errorMessage ? "error-message" : undefined} // Link error message
+              aria-describedby={
+                errorMessage ? "error-message-modal" : undefined
+              }
             />
             <label
-              htmlFor="password"
-              className="absolute left-3 top-3 z-10 origin-[0] -translate-y-3 scale-75 transform cursor-text text-sm text-customDarkPink/80 duration-150 peer-placeholder-shown:translate-y-0 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-focus:text-customDarkPink"
+              htmlFor="password-modal"
+              className="absolute left-3 top-3.5 z-10 origin-[0] -translate-y-2.5 scale-75 transform cursor-text text-sm text-gray-500 duration-150 peer-placeholder-shown:translate-y-0 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2.5 peer-focus:scale-75 peer-focus:text-indigo-600"
             >
               Password
             </label>
           </div>
 
-          {/* Error Message Display Area */}
           {errorMessage && (
             <p
-              id="error-message"
-              className="mb-4 text-center text-sm text-red-600"
+              id="error-message-modal"
+              className="mb-4 rounded-md bg-red-50 p-3 text-center text-sm text-red-600 ring-1 ring-inset ring-red-200"
               role="alert"
             >
               {errorMessage}
             </p>
           )}
 
-          {/* Submit Button */}
-          <div className="mt-8 flex h-[50px] justify-center">
+          <div className="mt-8">
             <Button
-              type="submit" // Changed to type="submit"
+              type="submit"
               disabled={isSubmitting}
-              className="w-full" // Apply width utility directly
-              aria-live="polite" // Announce changes for screen readers
+              className="w-full"
+              aria-live="polite"
             >
               {isSubmitting ? (
-                // Loading indicator with accessible text
                 <span className="flex items-center justify-center">
                   <Loader2 className="mr-2 h-5 w-5 animate-spin" />
                   Logging in...

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { ListChecks, Eye, X, Loader2 } from "lucide-react";
+import { ListChecks, Eye, X, Loader2, AlertCircle } from "lucide-react";
 import { getServedServicesTodayByUser } from "@/lib/ServerAction";
 import { AvailedServicesProps } from "@/lib/Types";
 import Modal from "@/components/Dialog/Modal";
@@ -10,6 +10,7 @@ import Button from "@/components/Buttons/Button";
 
 interface UserServedTodayWidgetProps {
   loggedInUserId: string | undefined;
+  className?: string; // Accept className prop
 }
 
 const formatCompletedAtToPHT = (
@@ -35,6 +36,7 @@ const formatCompletedAtToPHT = (
 
 export default function UserServedTodayWidget({
   loggedInUserId,
+  className, // Destructure className prop
 }: UserServedTodayWidgetProps) {
   const [servedServices, setServedServices] = useState<AvailedServicesProps[]>(
     [],
@@ -73,26 +75,38 @@ export default function UserServedTodayWidget({
 
   const servicesCount = servedServices.length;
 
-  if (!loggedInUserId && isLoading) {
-    return (
-      <div className="mx-auto flex aspect-square w-full max-w-xs flex-col items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 shadow-custom sm:mx-0 sm:max-w-sm lg:size-44">
-        <Loader2 className="h-8 w-8 animate-spin text-customGray" />
-        <p className="mt-2 text-sm text-customGray">Waiting for user...</p>
-      </div>
-    );
-  }
+  // If loggedInUserId is null/undefined and not loading, render nothing or a placeholder
+  if (!loggedInUserId && !isLoading) return null;
+
+  // Apply classes and merge className
+  const widgetClasses = `
+    flex aspect-[4/3] w-full flex-col items-center justify-center
+    rounded-lg border border-customGray/30 bg-customOffWhite/70 p-3 text-center
+    shadow-custom transition-all duration-150 ease-in-out
+    sm:aspect-square sm:p-4 md:max-w-none
+    ${servicesCount > 0 && !isLoading && !error ? "cursor-pointer hover:border-customGray/50 hover:shadow-md active:scale-95" : ""}
+    ${isLoading ? "animate-pulse opacity-60 cursor-wait" : ""}
+    ${className || ""} // Merge the passed className
+  `;
 
   return (
     <>
       <div
-        className="mx-auto flex aspect-square w-full max-w-xs cursor-pointer flex-col items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 shadow-custom transition-all hover:shadow-lg sm:mx-0 sm:max-w-sm lg:size-44"
+        className={widgetClasses}
         onClick={
           servicesCount > 0 && !isLoading && !error ? openModal : undefined
         }
-        role="button"
-        tabIndex={0}
+        role={servicesCount > 0 && !isLoading && !error ? "button" : undefined}
+        tabIndex={servicesCount > 0 && !isLoading && !error ? 0 : undefined}
         onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") openModal();
+          if (
+            servicesCount > 0 &&
+            !isLoading &&
+            !error &&
+            (e.key === "Enter" || e.key === " ")
+          ) {
+            openModal();
+          }
         }}
         title={
           isLoading
@@ -105,27 +119,35 @@ export default function UserServedTodayWidget({
         }
       >
         {isLoading ? (
-          <Loader2 className="h-12 w-12 animate-spin text-customDarkPink" />
+          <div className="flex h-full w-full flex-col items-center justify-center">
+            <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-customBlack/70 sm:text-xs">
+              LOADING
+            </div>
+            <Loader2 className="mb-1 h-7 w-7 animate-spin text-customDarkPink/80 sm:h-8 sm:w-8" />
+            <div className="text-[10px] font-light text-gray-500 sm:text-xs">
+              Please wait...
+            </div>
+          </div>
         ) : error ? (
-          <div className="text-center">
-            <ListChecks className="mx-auto mb-1 h-8 w-8 text-red-500 sm:h-10 sm:w-10" />
-            <p className="text-xs font-medium uppercase tracking-wide text-red-500 sm:text-sm md:text-base">
+          <div className="flex h-full w-full flex-col items-center justify-center text-center text-red-500">
+            <AlertCircle className="mb-1 h-7 w-7 sm:h-8 sm:w-8" />
+            <p className="text-[11px] font-medium uppercase tracking-wide sm:text-xs">
               ERROR
             </p>
-            <p className="text-[10px] text-red-400 sm:text-xs">{error}</p>
+            <p className="mt-1 text-[10px] sm:text-xs">{error}</p>
           </div>
         ) : (
-          <>
-            <p className="mb-1 text-base font-medium uppercase tracking-wide text-customDarkPink sm:text-lg md:mb-1.5 md:text-xl lg:text-2xl">
+          <div className="flex h-full w-full flex-col items-center justify-center">
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-customDarkPink sm:text-xs">
               SERVICES
             </p>
-            <p className="text-7xl font-bold text-customBlack sm:text-5xl md:text-6xl">
+            <p className="mb-1 text-4xl font-bold text-customBlack sm:text-4xl">
               {servicesCount}
             </p>
-            <p className="mt-1 text-xs font-light text-gray-500 sm:text-sm">
+            <p className="text-[10px] font-light text-gray-500 sm:text-xs">
               Served Today
             </p>
-          </>
+          </div>
         )}
       </div>
 

@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageDiscounts.tsx
 "use client";
 
 import React, {
@@ -9,62 +8,59 @@ import React, {
   useRef,
 } from "react";
 import Button from "@/components/Buttons/Button";
-import { DiscountType } from "@prisma/client"; // Import the enum
+import { DiscountType } from "@prisma/client";
 import {
   getAllServices,
   createDiscountRuleAction,
   getDiscountRules,
   toggleDiscountRuleAction,
   deleteDiscountRuleAction,
-} from "@/lib/ServerAction"; // Import server actions
+} from "@/lib/ServerAction";
+import { MultiSelectProps, UIDiscountRuleWithServices } from "@/lib/Types";
+import Select, { MultiValue, ActionMeta, GroupBase } from "react-select";
+import { Power, Trash2, Plus, RotateCcw as RefreshIcon } from "lucide-react"; // Added RefreshIcon
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+
 import {
-  MultiSelectProps, // Uses { value: string; label: string }
-  UIDiscountRuleWithServices,
-} from "@/lib/Types"; // Import custom types
-import Select, { MultiValue, ActionMeta, GroupBase } from "react-select"; // Import react-select types
-import { Power, Trash2, Plus } from "lucide-react"; // Import icons
-import Modal from "@/components/Dialog/Modal"; // Import Modal component
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Import DialogTitle component
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache";
 
-// --- Define the option type based on MultiSelectProps ---
-// This ensures consistency with react-select's expected format here.
-type SelectOption = MultiSelectProps["options"][number]; // { value: string; label: string; }
+// --- Cache Keys ---
+const DISCOUNT_SERVICES_CACHE_KEY: CacheKey = "services_ManageDiscounts";
+const DISCOUNT_RULES_CACHE_KEY: CacheKey = "discountRules_ManageDiscounts";
 
-// --- Reusable MultiSelect Component ---
-// Props are already correctly typed via MultiSelectProps
+type SelectOption = MultiSelectProps["options"][number];
+
 const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
   name,
-  options, // Expects SelectOption[] ({ value, label }[])
+  options,
   isLoading,
   placeholder,
-  value, // Expects MultiValue<SelectOption> ({ value, label })
-  onChange, // Expects (newValue: MultiValue<SelectOption>, ...) => void
+  value,
+  onChange,
   required,
 }) => {
   return (
     <div>
-      {/* Hidden inputs for potential standard form submission compatibility */}
-      {value.map(
-        (
-          o, // o is SelectOption { value, label }
-        ) => (
-          <input key={o.value} type="hidden" name={name} value={o.value} />
-        ),
-      )}
-      {/* Use the correct generic type 'SelectOption' */}
-      <Select<SelectOption, true, GroupBase<SelectOption>> // Use SelectOption ({ value, label }) here
+      {value.map((o) => (
+        <input key={o.value} type="hidden" name={name} value={o.value} />
+      ))}
+      <Select<SelectOption, true, GroupBase<SelectOption>>
         isMulti
         name={`${name}_select`}
-        options={options} // Already expects SelectOption[]
+        options={options}
         className="basic-multi-select"
         classNamePrefix="select"
-        value={value} // Already expects MultiValue<SelectOption>
-        onChange={onChange} // Already expects MultiValue<SelectOption>
+        value={value}
+        onChange={onChange}
         isLoading={isLoading}
         placeholder={placeholder}
         inputId={name}
         styles={{
-          // Consistent styling (copied from previous correct version)
           control: (base, state) => ({
             ...base,
             borderColor: state.isFocused ? "#C28583" : "#D1D5DB",
@@ -101,10 +97,7 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
             color: "#9CA3AF",
             borderTopRightRadius: "4px",
             borderBottomRightRadius: "4px",
-            "&:hover": {
-              backgroundColor: "#EF4444",
-              color: "white",
-            },
+            "&:hover": { backgroundColor: "#EF4444", color: "white" },
             cursor: "pointer",
           }),
           indicatorSeparator: (base) => ({
@@ -114,18 +107,10 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
           dropdownIndicator: (base, state) => ({
             ...base,
             color: state.isFocused ? "#C28583" : "#D1D5DB",
-            "&:hover": {
-              color: "#C28583",
-            },
+            "&:hover": { color: "#C28583" },
           }),
-          loadingIndicator: (base) => ({
-            ...base,
-            color: "#C28583",
-          }),
-          placeholder: (base) => ({
-            ...base,
-            color: "#9CA3AF",
-          }),
+          loadingIndicator: (base) => ({ ...base, color: "#C28583" }),
+          placeholder: (base) => ({ ...base, color: "#9CA3AF" }),
         }}
         aria-label={placeholder || "Select services"}
         required={required}
@@ -136,9 +121,7 @@ const ServiceMultiSelect: React.FC<MultiSelectProps> = ({
   );
 };
 
-// --- Main Component ---
 export default function ManageDiscounts() {
-  // State for services select
   const [availableServices, setAvailableServices] = useState<SelectOption[]>(
     [],
   );
@@ -147,13 +130,11 @@ export default function ManageDiscounts() {
   >([]);
   const [isLoadingServices, setIsLoadingServices] = useState(true);
 
-  // State for form and modal
   const [formError, setFormError] = useState<Record<string, string[]>>({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [applyToSpecific, setApplyToSpecific] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
-  // State for discount rules list
   const [discountRules, setDiscountRules] = useState<
     UIDiscountRuleWithServices[]
   >([]);
@@ -161,50 +142,94 @@ export default function ManageDiscounts() {
   const [listError, setListError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // State for transitions and dates
   const [isPending, startTransition] = useTransition();
   const [minEndDate, setMinEndDate] = useState(
     new Date().toISOString().split("T")[0],
   );
 
-  // --- Load Data ---
-  const loadData = useCallback(async () => {
+  const loadServices = useCallback(async (forceRefresh = false) => {
     setIsLoadingServices(true);
-    setIsLoadingList(true);
-    setListError(null);
+    if (!forceRefresh) {
+      const cached = getCachedData<SelectOption[]>(DISCOUNT_SERVICES_CACHE_KEY);
+      if (cached) {
+        setAvailableServices(cached);
+        setIsLoadingServices(false);
+        return;
+      }
+    }
     try {
-      const [rules, servicesData] = await Promise.all([
-        getDiscountRules(),
-        getAllServices(), // Returns PrismaService[] ({ id, title, ... })
-      ]);
-      setDiscountRules(rules);
+      const servicesData = await getAllServices();
       const serviceOptions: SelectOption[] = servicesData.map((s) => ({
         value: s.id,
         label: s.title,
       }));
       setAvailableServices(serviceOptions);
+      setCachedData(DISCOUNT_SERVICES_CACHE_KEY, serviceOptions);
     } catch (err: any) {
-      console.error("Error loading data:", err); // Add more specific logging
-      setListError(err.message || "Could not load discount rules or services.");
+      console.error("Error loading services:", err);
+      setFormError((prev) => ({
+        ...prev,
+        general: [
+          ...(prev.general || []),
+          "Failed to load services for selection.",
+        ],
+      }));
     } finally {
       setIsLoadingServices(false);
+    }
+  }, []);
+
+  const loadDiscountRules = useCallback(async (forceRefresh = false) => {
+    setIsLoadingList(true);
+    setListError(null);
+    if (!forceRefresh) {
+      const cached = getCachedData<UIDiscountRuleWithServices[]>(
+        DISCOUNT_RULES_CACHE_KEY,
+      );
+      if (cached) {
+        setDiscountRules(cached);
+        setIsLoadingList(false);
+        return;
+      }
+    }
+    try {
+      const rules = await getDiscountRules();
+      setDiscountRules(rules);
+      setCachedData(DISCOUNT_RULES_CACHE_KEY, rules);
+    } catch (err: any) {
+      console.error("Error loading discount rules:", err);
+      setListError(err.message || "Could not load discount rules.");
+      setDiscountRules([]);
+    } finally {
       setIsLoadingList(false);
     }
   }, []);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  const loadAllData = useCallback(
+    (forceRefresh = false) => {
+      loadServices(forceRefresh);
+      loadDiscountRules(forceRefresh);
+    },
+    [loadServices, loadDiscountRules],
+  );
 
-  // --- Handlers ---
+  useEffect(() => {
+    loadAllData();
+  }, [loadAllData]);
+
+  const handleRefreshAll = () => {
+    invalidateCache([DISCOUNT_SERVICES_CACHE_KEY, DISCOUNT_RULES_CACHE_KEY]);
+    loadAllData(true);
+  };
+
   const handleAdd = () => {
     setFormError({});
     setSuccessMessage(null);
-    setMinEndDate(new Date().toISOString().split("T")[0]); // Reset min end date
+    setMinEndDate(new Date().toISOString().split("T")[0]);
     setIsModalOpen(true);
-    formRef.current?.reset(); // Reset form fields
-    setSelectedServices([]); // Reset select state
-    setApplyToSpecific(false); // Reset conditional display
+    formRef.current?.reset();
+    setSelectedServices([]);
+    setApplyToSpecific(false);
   };
 
   const closeModal = () => setIsModalOpen(false);
@@ -214,11 +239,8 @@ export default function ManageDiscounts() {
     setFormError({});
     setSuccessMessage(null);
     const fd = new FormData(formRef.current);
-
-    // Append selected service IDs from state
     selectedServices.forEach((o) => fd.append("serviceIds", o.value));
 
-    // Client-side validation
     let errors: Record<string, string[]> = {};
     const discountType = fd.get("discountType");
     const discountValue = fd.get("discountValue");
@@ -241,18 +263,12 @@ export default function ManageDiscounts() {
     ) {
       errors.discountValue = ["Percentage cannot exceed 100."];
     }
-
     if (!startDate) errors.startDate = ["Start date is required."];
     if (!endDate) errors.endDate = ["End date is required."];
-    if (startDate && endDate && startDate > endDate) {
+    if (startDate && endDate && startDate > endDate)
       errors.endDate = ["End date cannot be before start date."];
-    }
-
-    if (applyTo === "specific" && selectedServices.length === 0) {
-      errors.serviceIds = [
-        "Please select at least one service when applying to specific services.",
-      ];
-    }
+    if (applyTo === "specific" && selectedServices.length === 0)
+      errors.serviceIds = ["Please select at least one service."];
 
     if (Object.keys(errors).length > 0) {
       setFormError(errors);
@@ -271,8 +287,9 @@ export default function ManageDiscounts() {
             result.message || "Discount rule created successfully!",
           );
           closeModal();
-          await loadData(); // Refresh list
-          setTimeout(() => setSuccessMessage(null), 4000); // Clear success message
+          invalidateCache(DISCOUNT_RULES_CACHE_KEY); // Invalidate rules list
+          await loadDiscountRules(true); // Refresh list
+          setTimeout(() => setSuccessMessage(null), 4000);
         } else {
           setFormError(
             result.errors ?? {
@@ -294,7 +311,8 @@ export default function ManageDiscounts() {
       try {
         const res = await toggleDiscountRuleAction(id, currentStatus);
         if (res.success) {
-          await loadData();
+          invalidateCache(DISCOUNT_RULES_CACHE_KEY);
+          await loadDiscountRules(true);
           setSuccessMessage(
             res.message ||
               `Rule ${currentStatus ? "deactivated" : "activated"}.`,
@@ -325,7 +343,8 @@ export default function ManageDiscounts() {
       try {
         const res = await deleteDiscountRuleAction(id);
         if (res.success) {
-          await loadData();
+          invalidateCache(DISCOUNT_RULES_CACHE_KEY);
+          await loadDiscountRules(true);
           setSuccessMessage(res.message || "Rule deleted successfully.");
           setTimeout(() => setSuccessMessage(null), 4000);
         } else {
@@ -340,22 +359,17 @@ export default function ManageDiscounts() {
     });
   };
 
-  // Handler to update minEndDate when startDate changes
   const handleStartDateChange = (
     event: React.ChangeEvent<HTMLInputElement>,
   ) => {
     const newStartDate = event.target.value;
     const today = new Date().toISOString().split("T")[0];
-    // End date minimum should be the start date, but not before today
     setMinEndDate(newStartDate > today ? newStartDate : today);
-
-    // Optional: Clear end date if it becomes invalid? Or let validation handle it.
-    // For now, just update the minimum.
   };
 
   const isProcessing = isPending;
+  const isAnyLoading = isLoadingServices || isLoadingList;
 
-  // --- Styles ---
   const inputSelectClasses =
     "mt-1 block w-full rounded border border-customGray bg-white p-2 shadow-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:cursor-not-allowed disabled:bg-gray-100 sm:text-sm";
   const errorTextClasses = "mt-1 text-xs text-red-500";
@@ -377,16 +391,30 @@ export default function ManageDiscounts() {
     <div className="space-y-6 p-1">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-customBlack">
-          Manage Discounts
+          {" "}
+          Manage Discounts{" "}
         </h2>
-        <Button
-          onClick={handleAdd}
-          disabled={isProcessing || isLoadingServices || isLoadingList}
-          size="sm"
-          className="w-full sm:w-auto"
-        >
-          <Plus size={16} className="mr-1" /> Add Discount Rule
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button
+            onClick={handleRefreshAll}
+            size="sm"
+            variant="outline"
+            className="flex w-full items-center justify-center gap-1.5 sm:w-auto"
+            disabled={isAnyLoading || isProcessing}
+            title="Refresh Data"
+          >
+            <RefreshIcon size={16} />
+            Refresh Data
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={isProcessing || isAnyLoading}
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            <Plus size={16} className="mr-1" /> Add Discount Rule
+          </Button>
+        </div>
       </div>
 
       {listError && <p className={listErrorMessageClasses}>{listError}</p>}
@@ -400,11 +428,14 @@ export default function ManageDiscounts() {
         </h3>
         {isLoadingList ? (
           <p className="py-10 text-center text-customBlack/70">
-            Loading rules...
+            {" "}
+            Loading rules...{" "}
           </p>
         ) : !listError && discountRules.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">
-            No discount rules found. Click "Add Discount Rule" to create one.
+            {" "}
+            No discount rules found. Click "Add Discount Rule" to create
+            one.{" "}
           </p>
         ) : (
           <table className="min-w-full divide-y divide-customGray/30">
@@ -412,11 +443,13 @@ export default function ManageDiscounts() {
               <tr>
                 <th className={thStyleBase}>Description</th>
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
-                  Type / Value
+                  {" "}
+                  Type / Value{" "}
                 </th>
                 <th className={`${thStyleBase} hidden sm:table-cell`}>Dates</th>
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
-                  Applies To
+                  {" "}
+                  Applies To{" "}
                 </th>
                 <th className={thStyleBase}>Status</th>
                 <th className={`${thStyleBase} text-right`}>Actions</th>
@@ -428,7 +461,6 @@ export default function ManageDiscounts() {
                   key={rule.id}
                   className={`hover:bg-customLightBlue/10 ${!rule.isActive ? "opacity-60" : ""}`}
                 >
-                  {/* Description */}
                   <td
                     className={`${tdStyleBase} max-w-[120px] whitespace-normal break-words sm:max-w-[150px]`}
                     title={rule.description || "No description"}
@@ -442,7 +474,7 @@ export default function ManageDiscounts() {
                   >
                     {rule.discountType === DiscountType.PERCENTAGE
                       ? "Percent"
-                      : "Fixed"}
+                      : "Fixed"}{" "}
                     /
                     {rule.discountType === DiscountType.PERCENTAGE
                       ? `${rule.discountValue}%`
@@ -459,18 +491,20 @@ export default function ManageDiscounts() {
                   >
                     {rule.applyToAll ? (
                       <span className="font-medium text-green-700">
-                        All Services
+                        {" "}
+                        All Services{" "}
                       </span>
                     ) : rule.services && rule.services.length > 0 ? (
                       <span
                         title={rule.services.map((s) => s.title).join(", ")}
-                        className="block truncate" // Truncate long lists
+                        className="block truncate"
                       >
                         {rule.services.map((s) => s.title).join(", ")}
                       </span>
                     ) : (
                       <span className="italic text-orange-600">
-                        Specific (None Selected)
+                        {" "}
+                        Specific (None Selected){" "}
                       </span>
                     )}
                   </td>
@@ -520,15 +554,17 @@ export default function ManageDiscounts() {
         {Object.keys(formError).length > 0 && !formError.general && (
           <div className="mb-3 space-y-1 rounded border border-red-300 bg-red-50 p-2 text-xs text-red-600">
             <p className="font-medium text-red-700">
-              Please fix the following issues:
+              {" "}
+              Please fix the following issues:{" "}
             </p>
             {Object.entries(formError).map(
               ([field, errors]) =>
-                field !== "general" && ( // Don't repeat general error here
+                field !== "general" && (
                   <p key={field}>
                     <strong className="capitalize">
-                      {field.replace(/([A-Z])/g, " $1").replace("Ids", " IDs")}:{" "}
-                      {/* Better formatting */}
+                      {" "}
+                      {field.replace(/([A-Z])/g, " $1").replace("Ids", " IDs")}
+                      :{" "}
                     </strong>{" "}
                     {errors.join(", ")}
                   </p>
@@ -540,12 +576,13 @@ export default function ManageDiscounts() {
         <form
           ref={formRef}
           className="space-y-4"
-          onSubmit={(e) => e.preventDefault()} // Prevent default form submission
+          onSubmit={(e) => e.preventDefault()}
         >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="discountType" className={labelClasses}>
-                Type*
+                {" "}
+                Type*{" "}
               </label>
               <select
                 id="discountType"
@@ -556,11 +593,12 @@ export default function ManageDiscounts() {
                 aria-describedby={
                   formError.discountType ? "discountType-error" : undefined
                 }
-                defaultValue={DiscountType.PERCENTAGE} // Sensible default
+                defaultValue={DiscountType.PERCENTAGE}
               >
                 <option value={DiscountType.PERCENTAGE}>Percentage (%)</option>
                 <option value={DiscountType.FIXED_AMOUNT}>
-                  Fixed Amount (PHP)
+                  {" "}
+                  Fixed Amount (PHP){" "}
                 </option>
               </select>
               {formError.discountType && (
@@ -571,7 +609,8 @@ export default function ManageDiscounts() {
             </div>
             <div>
               <label htmlFor="discountValue" className={labelClasses}>
-                Value*
+                {" "}
+                Value*{" "}
               </label>
               <input
                 type="number"
@@ -579,7 +618,7 @@ export default function ManageDiscounts() {
                 name="discountValue"
                 required
                 min="0"
-                step="any" // Allows decimals
+                step="any"
                 className={inputSelectClasses}
                 aria-invalid={!!formError.discountValue}
                 aria-describedby={
@@ -596,7 +635,8 @@ export default function ManageDiscounts() {
 
           <div>
             <label htmlFor="applyTo" className={labelClasses}>
-              Apply To*
+              {" "}
+              Apply To*{" "}
             </label>
             <select
               id="applyTo"
@@ -606,7 +646,7 @@ export default function ManageDiscounts() {
               onChange={(e) =>
                 setApplyToSpecific(e.target.value === "specific")
               }
-              defaultValue="all" // Default to All Services
+              defaultValue="all"
             >
               <option value="all">All Services</option>
               <option value="specific">Specific Services</option>
@@ -616,7 +656,8 @@ export default function ManageDiscounts() {
           {applyToSpecific && (
             <div>
               <label htmlFor="serviceIds" className={labelClasses}>
-                Select Services*
+                {" "}
+                Select Services*{" "}
               </label>
               <ServiceMultiSelect
                 name="serviceIds"
@@ -625,11 +666,12 @@ export default function ManageDiscounts() {
                 placeholder="Choose one or more services..."
                 value={selectedServices}
                 onChange={(newValue) => setSelectedServices(newValue)}
-                required={applyToSpecific} // Make required only when visible
+                required={applyToSpecific}
               />
               {formError.serviceIds && (
                 <p className={errorTextClasses}>
-                  {formError.serviceIds.join(", ")}
+                  {" "}
+                  {formError.serviceIds.join(", ")}{" "}
                 </p>
               )}
             </div>
@@ -638,7 +680,8 @@ export default function ManageDiscounts() {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="startDate" className={labelClasses}>
-                Start Date*
+                {" "}
+                Start Date*{" "}
               </label>
               <input
                 type="date"
@@ -650,18 +693,20 @@ export default function ManageDiscounts() {
                 aria-describedby={
                   formError.startDate ? "startDate-error" : undefined
                 }
-                min={new Date().toISOString().split("T")[0]} // Can't start in the past
-                onChange={handleStartDateChange} // Update end date min
+                min={new Date().toISOString().split("T")[0]}
+                onChange={handleStartDateChange}
               />
               {formError.startDate && (
                 <p id="startDate-error" className={errorTextClasses}>
+                  {" "}
                   {formError.startDate.join(", ")}
                 </p>
               )}
             </div>
             <div>
               <label htmlFor="endDate" className={labelClasses}>
-                End Date*
+                {" "}
+                End Date*{" "}
               </label>
               <input
                 type="date"
@@ -673,7 +718,7 @@ export default function ManageDiscounts() {
                 aria-describedby={
                   formError.endDate ? "endDate-error" : undefined
                 }
-                min={minEndDate} // Use state for dynamic min
+                min={minEndDate}
               />
               {formError.endDate && (
                 <p id="endDate-error" className={errorTextClasses}>
@@ -685,7 +730,8 @@ export default function ManageDiscounts() {
 
           <div>
             <label htmlFor="description" className={labelClasses}>
-              Description (Optional)
+              {" "}
+              Description (Optional){" "}
             </label>
             <input
               type="text"
@@ -696,7 +742,8 @@ export default function ManageDiscounts() {
               className={inputSelectClasses}
             />
             <p className="mt-1 text-xs text-gray-500">
-              A short note for internal reference or display (optional).
+              {" "}
+              A short note for internal reference or display (optional).{" "}
             </p>
           </div>
 
@@ -705,14 +752,15 @@ export default function ManageDiscounts() {
               type="button"
               onClick={closeModal}
               disabled={isProcessing}
-              invert // Use secondary button style
+              invert
             >
-              Cancel
+              {" "}
+              Cancel{" "}
             </Button>
             <Button
               type="button"
               onClick={handleCreateRuleClick}
-              disabled={isProcessing || isLoadingServices} // Disable if loading services too
+              disabled={isProcessing || isLoadingServices}
             >
               {isProcessing ? "Creating..." : "Create Discount Rule"}
             </Button>

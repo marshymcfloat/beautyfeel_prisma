@@ -16,277 +16,205 @@ import {
   getAllServices,
   getBranchesForSelectAction,
 } from "@/lib/ServerAction"; // Adjust paths as needed
-// Import necessary types and enums from Prisma client and your types file
 import type {
   Service as PrismaService,
   Branch as PrismaBranch,
 } from "@prisma/client";
 import { FollowUpPolicy } from "@prisma/client";
-// Assuming PayslipStatus, PayslipStatusOption, etc. are in types file if needed globally
-// Assuming ServerActionResponse is in types file
 import type { ServerActionResponse } from "@/lib/Types"; // Adjust path if needed
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache"; // Adjust path
 
 import Button from "@/components/Buttons/Button"; // Adjust path
 import Modal from "@/components/Dialog/Modal"; // Adjust path
 import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup"; // Adjust path
-import { Plus, Edit3, Trash2 } from "lucide-react"; // Icons
+import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react"; // Icons
 
 // Extend the PrismaService type to include the relations and nullable fields fetched
 type Service = PrismaService & {
   branch?: Pick<PrismaBranch, "id" | "title"> | null;
-  // Assuming these fields are fetched by getAllServices and are part of the Prisma model
   recommendedFollowUpDays: number | null;
-  followUpPolicy: FollowUpPolicy; // Ensure this matches the enum definition
+  followUpPolicy: FollowUpPolicy;
 };
 
-// Type for branch data fetched for the select input
 type Branch = Pick<PrismaBranch, "id" | "title">;
 
-// Options structure for the Follow Up Policy select input
 const followUpPolicyOptions = [
   { id: FollowUpPolicy.NONE, title: "None" },
   { id: FollowUpPolicy.ONCE, title: "Once" },
   { id: FollowUpPolicy.EVERY_TIME, title: "Every Time" },
 ];
 
+const SERVICES_CACHE_KEY: CacheKey = "services_ManageServices";
+const BRANCHES_CACHE_KEY: CacheKey = "branches_ManageServices";
+
 export default function ManageServices() {
   const [services, setServices] = useState<Service[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-
-  // State to hold form validation errors
-  // Keys are field names, values are the error message string, undefined, or null
   const [formErrors, setFormErrors] = useState<
     Record<string, string | undefined | null>
   >({});
-
-  // State for general errors during data loading or deletion
   const [loadError, setLoadError] = useState<string | null>(null);
-
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
-  const [isSaving, startTransition] = useTransition(); // Transition for save/delete actions
-
-  const formRef = useRef<HTMLFormElement>(null); // Ref for accessing form elements
-
-  // State for controlled components in the form (SelectInputGroup)
+  const [isSaving, startTransition] = useTransition();
+  const formRef = useRef<HTMLFormElement>(null);
   const [selectedFollowUpPolicy, setSelectedFollowUpPolicy] =
     useState<FollowUpPolicy>(FollowUpPolicy.NONE);
   const [selectedBranchId, setSelectedBranchId] = useState<string>("");
 
-  // Function to load initial data (services and branches)
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
-    setLoadError(null); // Clear load error before fetching
-    try {
-      const [fetchedServicesData, fetchedBranchesData] = await Promise.all([
-        getAllServices(), // Assuming this returns Promise<Service[]>
-        getBranchesForSelectAction(), // Assuming this returns Promise<Branch[]>
-      ]);
+    setLoadError(null);
 
-      // Update state with fetched data
-      setServices(fetchedServicesData);
-      setBranches(fetchedBranchesData);
-    } catch (err: any) {
-      console.error("ManageServices: Failed to load service/branch data:", err);
-      // Set load error state
-      setLoadError(err.message || "Failed to load data. Please refresh.");
-      setServices([]); // Clear services on error
-      setBranches([]); // Clear branches on error
-    } finally {
-      setIsLoading(false); // Set loading state to false regardless of success/failure
-    }
-  }, []); // No dependencies means this function is created once
+    let servicesData = !forceRefresh
+      ? getCachedData<Service[]>(SERVICES_CACHE_KEY)
+      : null;
+    let branchesData = !forceRefresh
+      ? getCachedData<Branch[]>(BRANCHES_CACHE_KEY)
+      : null;
 
-  // Effect to load data on component mount
-  useEffect(() => {
-    loadData();
-  }, [loadData]); // Depend on loadData function
-
-  // Effect to handle modal state changes (open/close, pre-fill form)
-  useEffect(() => {
-    // Clear form errors whenever the modal open state changes
-    setFormErrors({});
-
-    if (isModalOpen) {
-      // Modal is opening (either add or edit)
-      if (formRef.current) {
-        formRef.current.reset(); // Reset form fields
-
-        if (editingService) {
-          // Editing existing service: pre-fill form fields
-          console.log(
-            "ManageServices: Pre-filling form for editing service:",
-            editingService.id,
-          );
-
-          // Pre-fill standard input values
-          (
-            formRef.current.elements.namedItem("title") as HTMLInputElement
-          ).value = editingService.title;
-          (
-            formRef.current.elements.namedItem(
-              "description",
-            ) as HTMLTextAreaElement
-          ).value = editingService.description ?? "";
-          (
-            formRef.current.elements.namedItem("price") as HTMLInputElement
-          ).value = editingService.price.toString();
-
-          // Set states for controlled components (Branch and Policy)
-          setSelectedBranchId(editingService.branchId || ""); // Set selected branch state
-          setSelectedFollowUpPolicy(editingService.followUpPolicy); // Set the policy state
-
-          // Set the recommended days input value (conditional field)
-          const recommendedDaysInput = formRef.current.elements.namedItem(
-            "recommendedFollowUpDays",
-          ) as HTMLInputElement;
-          if (recommendedDaysInput) {
-            if (editingService.recommendedFollowUpDays != null) {
-              recommendedDaysInput.value =
-                editingService.recommendedFollowUpDays.toString();
-            } else {
-              recommendedDaysInput.value = ""; // Clear input if days is null
-            }
-          }
-        } else {
-          // Adding new service: reset states to defaults
-          console.log("ManageServices: Resetting form for adding new service.");
-          setSelectedBranchId(""); // Reset selected branch state
-          setSelectedFollowUpPolicy(FollowUpPolicy.NONE); // Default policy
-          // recommendedFollowUpDays input will be empty from reset()
-        }
-      }
-    } else {
-      // Modal is closing
-      console.log("ManageServices: Modal is closing.");
-      setEditingService(null); // Clear editing service state
-      // Reset controlled component states to default on close if desired, although useEffect on open handles the defaults for new.
-      // setSelectedBranchId("");
-      // setSelectedFollowUpPolicy(FollowUpPolicy.NONE);
-    }
-  }, [isModalOpen, editingService]); // Depend on modal open state and service being edited
-
-  // Handler for clicking "Add New Service" button
-  const handleAdd = () => {
-    console.log("ManageServices: Add button clicked.");
-    setEditingService(null); // Ensure no service is being edited
-    setIsModalOpen(true); // Open the modal
-  };
-
-  // Handler for clicking "Edit" button on a service row
-  const handleEdit = (service: Service) => {
-    console.log("ManageServices: Edit button clicked for service:", service.id);
-    setEditingService(service); // Set the service to be edited
-    setIsModalOpen(true); // Open the modal
-  };
-
-  // Handler for clicking "Delete" button on a service row
-  const handleDelete = (serviceId: string) => {
-    console.log(
-      "ManageServices: Delete button clicked for service:",
-      serviceId,
-    );
-    // Show confirmation dialog
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this service permanently? This cannot be undone.",
-      )
-    ) {
-      console.log("ManageServices: Delete cancelled by user.");
+    if (servicesData && branchesData && !forceRefresh) {
+      setServices(servicesData);
+      setBranches(branchesData);
+      setIsLoading(false);
       return;
     }
 
-    setLoadError(null); // Clear general load error before deletion attempt
+    try {
+      const promises: [Promise<Service[]>, Promise<Branch[]>] = [
+        // Fetch services if not cached or forceRefresh
+        servicesData && !forceRefresh
+          ? Promise.resolve(servicesData)
+          : getAllServices().then((data) => {
+              setCachedData<Service[]>(SERVICES_CACHE_KEY, data);
+              return data;
+            }),
+        // Fetch branches if not cached or forceRefresh
+        branchesData && !forceRefresh
+          ? Promise.resolve(branchesData)
+          : getBranchesForSelectAction().then((data) => {
+              setCachedData<Branch[]>(BRANCHES_CACHE_KEY, data);
+              return data;
+            }),
+      ];
 
-    // Start a transition for the delete action
+      const [fetchedServices, fetchedBranches] = await Promise.all(promises);
+
+      setServices(fetchedServices);
+      setBranches(fetchedBranches);
+    } catch (err: any) {
+      console.error("ManageServices: Failed to load data:", err);
+      setLoadError(err.message || "Failed to load data. Please try again.");
+      setServices(servicesData || []); // Fallback to cached or empty
+      setBranches(branchesData || []); // Fallback to cached or empty
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  const handleRefresh = useCallback(() => {
+    loadData(true); // Force refresh, will bypass cache read but update cache
+  }, [loadData]);
+
+  useEffect(() => {
+    setFormErrors({});
+    if (isModalOpen) {
+      formRef.current?.reset();
+      if (editingService) {
+        (
+          formRef.current!.elements.namedItem("title") as HTMLInputElement
+        ).value = editingService.title;
+        (
+          formRef.current!.elements.namedItem(
+            "description",
+          ) as HTMLTextAreaElement
+        ).value = editingService.description ?? "";
+        (
+          formRef.current!.elements.namedItem("price") as HTMLInputElement
+        ).value = editingService.price.toString();
+        setSelectedBranchId(editingService.branchId || "");
+        setSelectedFollowUpPolicy(editingService.followUpPolicy);
+        const recommendedDaysInput = formRef.current!.elements.namedItem(
+          "recommendedFollowUpDays",
+        ) as HTMLInputElement;
+        if (recommendedDaysInput) {
+          recommendedDaysInput.value =
+            editingService.recommendedFollowUpDays?.toString() ?? "";
+        }
+      } else {
+        setSelectedBranchId("");
+        setSelectedFollowUpPolicy(FollowUpPolicy.NONE);
+      }
+    } else {
+      setEditingService(null);
+    }
+  }, [isModalOpen, editingService]);
+
+  const handleAdd = () => {
+    setEditingService(null);
+    setIsModalOpen(true);
+  };
+
+  const handleEdit = (service: Service) => {
+    setEditingService(service);
+    setIsModalOpen(true);
+  };
+
+  const handleDelete = (serviceId: string) => {
+    if (!window.confirm("Are you sure you want to delete this service?"))
+      return;
+    setLoadError(null);
     startTransition(async () => {
-      console.log(
-        "ManageServices: Starting delete transition for service:",
-        serviceId,
-      );
       try {
-        // Call the server action to delete the service
-        // Assuming deleteServiceAction returns ServerActionResponse<{ id: string }>
-        const result: ServerActionResponse<{ id: string }> =
-          await deleteServiceAction(serviceId);
-
+        const result = await deleteServiceAction(serviceId);
         if (!result.success) {
-          console.error(
-            "ManageServices: Delete service failed:",
-            result.message,
-          );
-          // Set loadError for display outside the modal
           setLoadError(result.message || "Failed to delete service.");
         } else {
-          console.log("ManageServices: Service deleted successfully.");
-          // Reload data after successful deletion
-          await loadData();
+          invalidateCache(SERVICES_CACHE_KEY); // Invalidate cache
+          await loadData(); // Reload data
         }
       } catch (err: any) {
-        // Catch unexpected errors during the action execution
-        console.error("ManageServices: Error during delete action:", err);
-        // Set loadError for display outside the modal
-        setLoadError(
-          err.message || "An unexpected error occurred during deletion.",
-        );
+        setLoadError(err.message || "Error during deletion.");
       }
     });
   };
 
-  // Handler for clicking the "Save Changes" or "Create Service" button in the modal
   const handleSave = () => {
-    console.log("ManageServices: Save button clicked.");
     if (!formRef.current) {
-      console.error("ManageServices: Form reference is null.");
       setFormErrors({ general: "Form reference error." });
       return;
     }
-
-    // Clear all form errors at the start of validation/save attempt
     setFormErrors({});
-
-    // --- Get and Validate Form Data ---
     const form = formRef.current;
-
     const title = (
       form.elements.namedItem("title") as HTMLInputElement
     )?.value?.trim();
     const description =
       (
         form.elements.namedItem("description") as HTMLTextAreaElement
-      )?.value?.trim() || null; // Use null for empty description
-    const priceInput = form.elements.namedItem("price") as HTMLInputElement;
-    const price = priceInput ? priceInput.value : null;
-
-    // Get branchId from the state (controlled component)
+      )?.value?.trim() || null;
+    const price = (form.elements.namedItem("price") as HTMLInputElement)?.value;
     const branchId = selectedBranchId;
-
-    const recommendedDaysInput = form.elements.namedItem(
-      "recommendedFollowUpDays",
-    ) as HTMLInputElement;
-    const recommendedDays = recommendedDaysInput
-      ? recommendedDaysInput.value
-      : null;
-
-    // Get policy from state (controlled component)
+    const recommendedDays = (
+      form.elements.namedItem("recommendedFollowUpDays") as HTMLInputElement
+    )?.value;
     const followUpPolicy = selectedFollowUpPolicy;
 
-    // Accumulate client-side validation errors in a local object
     let errors: Record<string, string | undefined | null> = {};
-
-    if (!title) {
-      errors.title = "Service Title is required.";
-    }
-
-    // Validate branchId from state
-    if (!branchId) {
-      errors.branchId = "Branch is required.";
-    }
-
+    if (!title) errors.title = "Service Title is required.";
+    if (!branchId) errors.branchId = "Branch is required.";
     const priceValue = Number(price);
-    // Basic price validation: must be a non-negative integer
     if (
       price === null ||
       price === "" ||
@@ -296,12 +224,9 @@ export default function ManageServices() {
     ) {
       errors.price = "Price must be a non-negative integer.";
     }
-
     let recommendedDaysValue: number | null = null;
-    // Check if the selected policy requires recommended days
     if (followUpPolicy !== FollowUpPolicy.NONE) {
       const parsedDays = Number(recommendedDays);
-      // Validate that days is a positive integer if required by policy
       if (
         recommendedDays === null ||
         recommendedDays === "" ||
@@ -312,164 +237,95 @@ export default function ManageServices() {
         errors.recommendedFollowUpDays =
           "Recommended days must be a positive integer if follow-up is recommended.";
       } else {
-        recommendedDaysValue = parsedDays; // Set the validated number value
+        recommendedDaysValue = parsedDays;
       }
     }
 
-    // If there are any client-side validation errors, set state and stop the process
     if (Object.keys(errors).length > 0) {
-      console.warn("ManageServices: Client-side validation failed.", errors);
-      setFormErrors(errors); // Set the errors state
+      setFormErrors(errors);
       return;
     }
 
-    // --- Prepare FormData for Server Action ---
     const dataToSubmit = new FormData();
-
-    // Set validated title, description, price, branchId
     dataToSubmit.set("title", title!);
-    dataToSubmit.set("description", description || ""); // Ensure description is "" if null
+    dataToSubmit.set("description", description || "");
     dataToSubmit.set("price", priceValue.toString());
     dataToSubmit.set("branchId", branchId);
-
-    // Set follow up related fields
-    const recommendFollowUpBoolean = followUpPolicy !== FollowUpPolicy.NONE;
-    dataToSubmit.set("recommendFollowUp", recommendFollowUpBoolean.toString());
+    dataToSubmit.set(
+      "recommendFollowUp",
+      (followUpPolicy !== FollowUpPolicy.NONE).toString(),
+    );
     dataToSubmit.set("followUpPolicy", followUpPolicy.toString());
-
-    // Explicitly set recommendedFollowUpDays if a valid positive integer was entered
     if (recommendedDaysValue != null) {
       dataToSubmit.set(
         "recommendedFollowUpDays",
         recommendedDaysValue.toString(),
       );
     }
-    // If recommendedDaysValue is null (because policy is NONE or validation failed),
-    // do not add it to FormData. The server action should handle its absence or expect it based on recommendFollowUp.
 
-    // --- Call Server Action ---
-    console.log("ManageServices: Starting save transition.");
     startTransition(async () => {
       try {
-        // Determine whether to call create or update action
         const action = editingService
-          ? updateServiceAction(editingService.id, dataToSubmit) // Assuming updateServiceAction takes id and FormData
-          : createServiceAction(dataToSubmit); // Assuming createServiceAction takes FormData
-
-        // Define the expected return type shape for server actions
-        type ServiceSaveResponse = ServerActionResponse<Service>; // Assuming data property holds the Service on success
-
-        const result: ServiceSaveResponse = await action;
+          ? updateServiceAction(editingService.id, dataToSubmit)
+          : createServiceAction(dataToSubmit);
+        const result: ServerActionResponse<Service> = await action;
 
         if (result.success) {
-          console.log("ManageServices: Service saved successfully.");
-          setIsModalOpen(false); // Close modal
-          await loadData(); // Reload the list of services
+          setIsModalOpen(false);
+          invalidateCache(SERVICES_CACHE_KEY); // Invalidate cache
+          await loadData(); // Reload data
         } else {
-          console.error(
-            "ManageServices: Service save failed:",
-            result.message,
-            result.errors,
-          );
-
           if (result.errors) {
-            // --- FIX START: Transform server errors (Record<string, string[]>)
-            // --- to client errors (Record<string, string | undefined | null>) ---
-
-            const serverErrors = result.errors; // This is Record<string, string[]> from the server
-
             const clientErrors: Record<string, string | undefined | null> = {};
-
-            // Iterate through the server errors object by field name
-            for (const fieldName in serverErrors) {
-              // Check if the property is directly on the object (not inherited)
+            for (const fieldName in result.errors) {
               if (
-                Object.prototype.hasOwnProperty.call(serverErrors, fieldName)
+                Object.prototype.hasOwnProperty.call(result.errors, fieldName)
               ) {
-                const errorMessages = serverErrors[fieldName]; // This is an array of strings (string[])
-
-                // Join the array of error messages into a single string
-                // Assign the joined string to the corresponding field in the client errors object
+                const errorMessages = result.errors[fieldName];
                 if (Array.isArray(errorMessages) && errorMessages.length > 0) {
-                  clientErrors[fieldName] = errorMessages.join(". "); // Join with period and space
+                  clientErrors[fieldName] = errorMessages.join(". ");
                 } else if (typeof errorMessages === "string") {
-                  // Handle the less common case where the server might return a single string error directly
                   clientErrors[fieldName] = errorMessages;
-                } else {
-                  // If the value is null, undefined, or an empty array, map it to null or undefined in the state
-                  clientErrors[fieldName] = null; // Or undefined, depending on desired state representation
                 }
               }
             }
-
-            // Set the transformed errors to the formErrors state
             setFormErrors(clientErrors);
-
-            console.warn(
-              "ManageServices: Server-side validation errors received:",
-              serverErrors,
-              "Transformed errors for state:",
-              clientErrors,
-            );
-            // --- FIX END ---
           } else {
-            // If the server action returned success: false but *without* an errors object,
-            // display the general message it provided.
             setFormErrors({
               general: result.message || "Failed to save service.",
             });
-            console.warn(
-              "ManageServices: Server returned a general error message without specific fields.",
-            );
           }
         }
       } catch (err: any) {
-        // Catch unexpected errors during the fetch/action execution
-        console.error(
-          "ManageServices: An unexpected error occurred during save action:",
-          err,
-        );
-        // Set a general error for unexpected issues
         setFormErrors({
-          general: err.message || "An unexpected error occurred during save.",
+          general: err.message || "Unexpected error during save.",
         });
       }
     });
   };
 
-  // Handler for closing the modal
   const closeModal = () => {
-    console.log("ManageServices: Closing modal.");
-    setIsModalOpen(false); // Set modal state to closed
-    setFormErrors({}); // Clear all form errors when closing
-    setEditingService(null); // Also reset editingService state when modal closes
+    setIsModalOpen(false);
   };
 
-  // Memoized options for the Branch SelectInputGroup
   const branchOptions = useMemo(() => {
-    // Ensure "Select branch" option is always first
     const options = [
       {
-        id: "", // Value for the "Select branch" option
+        id: "",
         title:
           branches.length === 0 && isLoading
             ? "Loading branches..."
             : "Select branch",
       },
     ];
-    // Add fetched branches to the options list
     if (branches && branches.length > 0) {
       options.push(
-        ...branches.map((branch) => ({
-          id: branch.id,
-          title: branch.title,
-        })),
+        ...branches.map((branch) => ({ id: branch.id, title: branch.title })),
       );
     }
     return options;
-  }, [branches, isLoading]); // Re-calculate options when branches or initial loading state changes
+  }, [branches, isLoading]);
 
-  // Define style constants here, inside the component function
   const thStyleBase =
     "px-2 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
   const tdStyleBase = "px-2 py-2 text-sm text-customBlack/90 align-top";
@@ -479,42 +335,51 @@ export default function ManageServices() {
   const labelStyle = "block text-sm font-medium text-customBlack/80";
   const listErrorMsgStyle =
     "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
-  const modalErrorStyle = "text-xs text-red-600 mt-1"; // Style for individual field errors or general modal error
+  const modalErrorStyle = "text-xs text-red-600 mt-1";
 
   return (
     <div className="p-1">
-      {/* Header */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Services
         </h2>
-        <Button
-          onClick={handleAdd}
-          disabled={isSaving || isLoading} // Disable button if loading initial data or saving
-          size="sm"
-          className="w-full sm:w-auto"
-        >
-          <Plus size={16} className="mr-1" /> Add New Service
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            onClick={handleRefresh}
+            disabled={isLoading || isSaving}
+            size="sm"
+            variant="outline"
+            className="w-full sm:w-auto"
+          >
+            <RefreshCw
+              size={16}
+              className={`mr-1 ${isLoading ? "animate-spin" : ""}`}
+            />{" "}
+            Refresh
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={isLoading || isSaving}
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            <Plus size={16} className="mr-1" /> Add New Service
+          </Button>
+        </div>
       </div>
 
-      {/* List Error Display */}
       {loadError && <p className={listErrorMsgStyle}>{loadError}</p>}
 
-      {/* Services Table Display */}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
-        {isLoading ? (
-          // Loading state message
+        {isLoading && services.length === 0 ? ( // Show loading only if there's no stale data to display
           <p className="py-10 text-center text-customBlack/70">
             Loading services...
           </p>
         ) : !loadError && services.length === 0 ? (
-          // No services found message (only if not loading and no load error)
           <p className="py-10 text-center text-customBlack/60">
             No services found.
           </p>
         ) : (
-          // Services Table
           <table className="min-w-full divide-y divide-customGray/30">
             <thead>
               <tr>
@@ -561,7 +426,7 @@ export default function ManageServices() {
                   <td
                     className={`${tdStyleBase} hidden whitespace-nowrap md:table-cell`}
                   >
-                    {service.followUpPolicy} {/* Display the enum value */}
+                    {service.followUpPolicy}
                   </td>
                   <td
                     className={`${tdStyleBase} hidden whitespace-nowrap md:table-cell`}
@@ -573,7 +438,6 @@ export default function ManageServices() {
                     )}
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    {/* Edit Button */}
                     <button
                       onClick={() => handleEdit(service)}
                       disabled={isSaving}
@@ -582,7 +446,6 @@ export default function ManageServices() {
                     >
                       <Edit3 size={16} />
                     </button>
-                    {/* Delete Button */}
                     <button
                       onClick={() => handleDelete(service.id)}
                       disabled={isSaving}
@@ -599,7 +462,6 @@ export default function ManageServices() {
         )}
       </div>
 
-      {/* Add/Edit Service Modal */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
@@ -610,18 +472,14 @@ export default function ManageServices() {
         }
         containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl flex flex-col"
       >
-        {/* Display general form error at the top */}
         {formErrors.general && (
           <p className={modalErrorStyle}>{formErrors.general}</p>
         )}
-
-        {/* Form for adding/editing service */}
         <form
           ref={formRef}
-          onSubmit={(e) => e.preventDefault()} // Prevent default browser submission
+          onSubmit={(e) => e.preventDefault()}
           className="space-y-4"
         >
-          {/* Service Title Input */}
           <div>
             <label htmlFor="title" className={labelStyle}>
               Service Title <span className="text-red-500">*</span>
@@ -631,17 +489,13 @@ export default function ManageServices() {
               name="title"
               id="title"
               required
-              // defaultValue is handled by useEffect on isModalOpen change
               className={`${inputStyle} ${formErrors.title ? "border-red-500" : ""}`}
               disabled={isSaving}
             />
-            {/* Display specific field error */}
             {formErrors.title && (
               <p className={modalErrorStyle}>{formErrors.title}</p>
             )}
           </div>
-
-          {/* Description Textarea */}
           <div>
             <label htmlFor="description" className={labelStyle}>
               Description
@@ -650,19 +504,14 @@ export default function ManageServices() {
               name="description"
               id="description"
               rows={3}
-              // defaultValue is handled by useEffect on isModalOpen change
               className={`${inputStyle} ${formErrors.description ? "border-red-500" : ""}`}
               disabled={isSaving}
             ></textarea>
-            {/* Display specific field error */}
             {formErrors.description && (
               <p className={modalErrorStyle}>{formErrors.description}</p>
             )}
           </div>
-
-          {/* Price and Branch Inputs (Grid Layout) */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {/* Price Input */}
             <div>
               <label htmlFor="price" className={labelStyle}>
                 Price (in cents) <span className="text-red-500">*</span>
@@ -674,17 +523,13 @@ export default function ManageServices() {
                 required
                 min="0"
                 step="1"
-                // defaultValue is handled by useEffect on isModalOpen change
                 className={`${inputStyle} ${formErrors.price ? "border-red-500" : ""}`}
                 disabled={isSaving}
               />
-              {/* Display specific field error */}
               {formErrors.price && (
                 <p className={modalErrorStyle}>{formErrors.price}</p>
               )}
             </div>
-
-            {/* Branch SelectInputGroup (Controlled Component) */}
             <div>
               <label htmlFor="branchId" className={labelStyle}>
                 Branch <span className="text-red-500">*</span>
@@ -692,24 +537,21 @@ export default function ManageServices() {
               <SelectInputGroup
                 name="branchId"
                 id="branchId"
-                label="" // Label handled by explicit <label> above
-                value={selectedBranchId} // Controlled by state
-                onChange={(key, value) => setSelectedBranchId(value)} // Update state on change
-                options={branchOptions} // Memoized options
+                label=""
+                value={selectedBranchId}
+                onChange={(key, value) => setSelectedBranchId(value)}
+                options={branchOptions}
                 valueKey="id"
                 labelKey="title"
                 required={true}
-                isLoading={isLoading} // Use the loading state from initial data fetch
-                error={formErrors.branchId} // Pass specific field error for display
-                disabled={isSaving || isLoading}
+                isLoading={isLoading && branches.length === 0} // Show loading for select if branches are specifically loading
+                error={formErrors.branchId}
+                disabled={isSaving || (isLoading && branches.length === 0)}
                 className={`${selectStyle} ${formErrors.branchId ? "border-red-500" : ""}`}
               />
-              {/* Error display for branch handled by SelectInputGroup's internal error prop */}
             </div>
           </div>
-
-          {/* Follow Up Policy SelectInputGroup (Controlled Component) */}
-          <div className="w-full">
+          <div>
             <label htmlFor="followUpPolicy" className={labelStyle}>
               Follow-up Recommendation Policy{" "}
               <span className="text-red-500">*</span>
@@ -717,37 +559,27 @@ export default function ManageServices() {
             <SelectInputGroup
               name="followUpPolicy"
               id="followUpPolicy"
-              label="" // Label handled by explicit <label> above
-              value={selectedFollowUpPolicy} // Controlled by state
+              label=""
+              value={selectedFollowUpPolicy}
               onChange={(key, value) => {
-                // Validate the selected value against the enum before setting state
                 if (
                   Object.values(FollowUpPolicy).includes(
                     value as FollowUpPolicy,
                   )
                 ) {
                   setSelectedFollowUpPolicy(value as FollowUpPolicy);
-                } else {
-                  console.warn(
-                    "ManageServices: Invalid policy value selected:",
-                    value,
-                  );
-                  // Optional: Set a form error here if an invalid value somehow gets selected
                 }
               }}
-              options={followUpPolicyOptions} // Defined options
-              valueKey="id" // Match the 'id' property in followUpPolicyOptions
-              labelKey="title" // Match the 'title' property in followUpPolicyOptions
+              options={followUpPolicyOptions}
+              valueKey="id"
+              labelKey="title"
               required={true}
-              isLoading={false} // This select's options are static
-              error={formErrors.followUpPolicy} // Pass specific field error
+              isLoading={false}
+              error={formErrors.followUpPolicy}
               disabled={isSaving}
               className={`${selectStyle} ${formErrors.followUpPolicy ? "border-red-500" : ""}`}
             />
-            {/* Error display for policy handled by SelectInputGroup's internal error prop */}
           </div>
-
-          {/* Recommended Follow Up Days Input (Conditional) */}
           {selectedFollowUpPolicy !== FollowUpPolicy.NONE && (
             <div>
               <label htmlFor="recommendedFollowUpDays" className={labelStyle}>
@@ -762,9 +594,7 @@ export default function ManageServices() {
                 step="1"
                 className={`${inputStyle} ${formErrors.recommendedFollowUpDays ? "border-red-500" : ""}`}
                 disabled={isSaving}
-                // defaultValue is handled by useEffect on isModalOpen change
               />
-              {/* Display specific field error */}
               {formErrors.recommendedFollowUpDays && (
                 <p className={modalErrorStyle}>
                   {formErrors.recommendedFollowUpDays}
@@ -772,10 +602,7 @@ export default function ManageServices() {
               )}
             </div>
           )}
-
-          {/* Action Buttons */}
           <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
-            {/* Cancel Button */}
             <Button
               type="button"
               onClick={closeModal}
@@ -784,12 +611,7 @@ export default function ManageServices() {
             >
               Cancel
             </Button>
-            {/* Save Button */}
-            <Button
-              type="button" // Use type="button" to prevent default browser submission
-              onClick={handleSave} // Manually trigger save handler
-              disabled={isSaving} // Disable button while saving
-            >
+            <Button type="button" onClick={handleSave} disabled={isSaving}>
               {isSaving
                 ? "Saving..."
                 : editingService

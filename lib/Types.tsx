@@ -18,6 +18,10 @@ import type {
 } from "@prisma/client";
 import { MultiValue, ActionMeta } from "react-select";
 
+type AccountDataBranch = {
+  title?: string;
+};
+
 export type AccountData = {
   id: string;
   name: string;
@@ -27,6 +31,7 @@ export type AccountData = {
   dailyRate: number;
   branchId: string | null; // <-- ADDED THIS FIELD to match select
   canRequestPayslip: boolean; // <-- ADDED THIS FIELD PREVIOUSLY
+  branch?: AccountDataBranch;
 };
 export type SalaryBreakdownItem = {
   id: string; // AvailedService ID
@@ -419,11 +424,14 @@ export type ActiveTab =
   | "serviceSets"
   | "accounts"
   | "payslips"
+  | "customers"
   | "vouchers"
   | "giftCertificate"
   | "discounts"
   | "branches"
-  | "transactions";
+  | "advertisements"
+  | "transactions"
+  | "emailTemplate";
 
 export type ServerActionResponse<T = null> =
   | { success: true; data?: T; message?: string; status?: PayslipStatusOption } // Add status for payslip actions
@@ -550,10 +558,10 @@ export type BranchSalesDataPoint = {
   totalSales: number;
 };
 
-export type CustomerForEmail = {
+/* export type CustomerForEmail = {
   name: string;
   email: string | null;
-};
+}; */
 
 export enum ExpenseCategory {
   RENT = "RENT",
@@ -595,22 +603,25 @@ export interface CurrentSalaryDetailsModalProps {
   currentBreakdownItems: SalaryBreakdownItem[];
   currentAttendanceRecords: AttendanceRecord[];
   accountData: AccountData | null;
-  // ADD or CORRECT these two properties:
-  periodStartDate?: Date | null;
-  periodEndDate?: Date | null;
+  // ADD these two properties to match the component's usage:
+  periodStartDate?: Date | null; // <-- ADDED THIS PROPERTY
+  periodEndDate?: Date | null; // <-- ADDED THIS PROPERTY
   // Keep the existing ones:
   lastReleasedPayslipEndDate?: Date | null;
   lastReleasedTimestamp?: Date | null;
+  // Update the function signature to match the expected arguments (which now include dates)
   onRequestCurrentPayslip: (
     accountId: string,
-    periodStartDate: Date,
-    periodEndDate: Date,
+    // The component passes Date | null, so the prop type should accept that.
+    // Adding 'undefined' as well for maximum safety, though 'null' is what's passed from '?? null'.
+    periodStartDate: Date | null, // <-- UPDATED FUNCTION SIGNATURE to match usage
+    periodEndDate: Date | null, // <-- UPDATED FUNCTION SIGNATURE to match usage
   ) => Promise<{
     success: boolean;
-    message: string;
-    payslipId?: string;
-    status?: PayslipStatus;
+    message?: string;
     error?: string;
+    payslipId?: string;
+    status?: PayslipStatus | "NOT_FOUND" | null;
   }>; // Ensure the handler type matches what's expected
 }
 
@@ -632,3 +643,20 @@ export type MobileWidgetKey =
   | "claimGC"
   | "workQueueLink"
   | "transactionsLink";
+
+/* export type CustomerForEmail = Pick<Customer, "id" | "name" | "email">;
+ */
+export interface CustomerForEmail {
+  id: string;
+  name: string;
+  email: string;
+  // Add any other fields you might want for placeholders
+}
+
+export interface EmailTemplateForSelection {
+  id: string;
+  name: string;
+  subject: string;
+  body: string;
+  placeholders: string[]; // To show available placeholders for this template
+}

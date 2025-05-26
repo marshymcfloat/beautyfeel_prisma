@@ -25,8 +25,16 @@ import {
   FollowUpPolicy,
   PayslipRequestStatus,
   RecommendedAppointmentStatus,
+  EmailTemplate,
   ExpenseCategory,
 } from "@prisma/client";
+
+import {
+  getCachedData,
+  setCachedData,
+  CacheKey,
+  invalidateCache,
+} from "./cache";
 
 import {
   subDays,
@@ -80,6 +88,7 @@ import {
   BasicAccountInfo,
   DetailedTransactionWithBranch,
   CustomerWithRecommendations,
+  CustomerForEmail,
   ServiceInfo,
 } from "./Types";
 import { CashierState } from "./Slices/CashierSlice";
@@ -94,8 +103,27 @@ interface GcCreationData {
   itemType: "service" | "set";
   recipientCustomerId: string | null;
   recipientName: string | null;
+  purchaserCustomerId: string | null;
   recipientEmail: string | null;
   expiresAt: string | null;
+}
+
+interface ActionResult {
+  success: boolean;
+  message: string;
+}
+
+interface ActionResult {
+  success: boolean;
+  message: string;
+  errors?: Record<string, string[] | undefined>; // For field-specific errors
+  account?: {
+    // Return minimal, non-sensitive info
+    id: string;
+    username: string;
+    email: string | null; // email is nullable in schema, but required by this action
+    name: string;
+  };
 }
 
 export type GCValidationDetails = GiftCertificate & {
@@ -110,6 +138,17 @@ interface GCValidationResult {
   gcDetails?: GCValidationDetails;
   errorCode?: "NOT_FOUND" | "USED" | "EXPIRED" | "INVALID_DATA";
 }
+
+interface UpdateTransactionInput {
+  transactionId: string;
+  status?: Status; // Make fields optional for partial updates
+  paymentMethod?: PaymentMethod | null; // Allow setting to null
+  // Add other fields you want to be able to edit here
+}
+
+const CUSTOMERS_CACHE_KEY: CacheKey = "customers_SendEmail";
+const TEMPLATES_CACHE_KEY: CacheKey = "emailTemplates_ManageEmailTemplates";
+const MANAGE_CUSTOMERS_CACHE_KEY: CacheKey = "customers_ManageCustomers";
 
 const getStartOfTodayTargetTimezoneUtc = () => {
   const nowUtc = new Date();
@@ -127,10 +166,48 @@ const getStartOfTodayTargetTimezoneUtc = () => {
   return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
 };
 
+const CustomerSchema = z.object({
+  name: z
+    .string()
+    .min(1, "Name is required.")
+    .max(50, "Name cannot exceed 50 characters."),
+  email: z
+    .string()
+    .email("Invalid email address.")
+    .nullable()
+    .optional()
+    .or(z.literal("")), // Allow null, undefined, or empty string, but validate if present
+});
+
+const isEmailUnique = async (
+  email: string,
+  currentId: string | null = null,
+): Promise<boolean> => {
+  if (!email) return true; // If no email, it's "unique" in this context
+  const whereClause: Prisma.CustomerWhereInput = {
+    email: email,
+  };
+  if (currentId) {
+    whereClause.id = { not: currentId };
+  }
+  const existing = await prisma.customer.findFirst({ where: whereClause });
+  return !existing;
+};
+
+export interface CustomerForDisplay {
+  id: string;
+  name: string;
+  email: string | null;
+  totalPaid: number;
+  nextAppointment: Date | null;
+}
+
 const prisma = new PrismaClient().$extends(withAccelerate());
 
 const PHILIPPINES_TIMEZONE = "Asia/Manila";
 const MANILA_OFFSET_HOURS = 8;
+const PHT_TIMEZONE_OFFSET_HOURS = 8;
+
 const resendApiKeySA =
   process.env.RESEND_API_KEY || "re_2jVrmuDq_ANKBi91TjmsYVj8Gv7VHZfZD";
 const resendInstanceSA = resendApiKeySA ? new Resend(resendApiKeySA) : null;
@@ -151,6 +228,17 @@ function getErrorMessage(error: unknown): string {
   return "An unknown error occurred";
 }
 
+function generateRandomPassword(length: number = 12): string {
+  const charset =
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+";
+  let password = "";
+  for (let i = 0; i < length; i++) {
+    const randomIndex = Math.floor(Math.random() * charset.length);
+    password += charset[randomIndex];
+  }
+  return password;
+}
+
 function convertErrorsToStringArrays(
   errorObj: Record<string, string>,
 ): Record<string, string[]> {
@@ -161,6 +249,18 @@ function convertErrorsToStringArrays(
     }
   }
   return newErrors;
+}
+
+function replacePlaceholders(
+  template: string,
+  customer: CustomerForEmail,
+): string {
+  let result = template;
+  result = result.replace(/{{customerName}}/g, customer.name || "");
+  result = result.replace(/{{customerEmail}}/g, customer.email || "");
+  // Add more placeholder replacements here if needed, e.g.:
+  // result = result.replace(/{{lastVisitDate}}/g, customer.lastVisitDate || 'N/A');
+  return result;
 }
 
 function generateBookingConfirmationBodySA(
@@ -294,6 +394,166 @@ function generateBookingEmailHTMLSA(
     </html>`;
 }
 
+function generateBookingDetailsHtml(
+  bookingDateTimeUTC: Date,
+  services: { name: string }[],
+): string {
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: PHILIPPINES_TIMEZONE,
+  };
+  const formattedDate = new Intl.DateTimeFormat("en-US", dateOptions).format(
+    bookingDateTimeUTC,
+  );
+
+  const timeOptions: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: PHILIPPINES_TIMEZONE,
+  };
+  const formattedTime = new Intl.DateTimeFormat("en-US", timeOptions).format(
+    bookingDateTimeUTC,
+  );
+
+  const serviceListItemsHtml =
+    services.length > 0
+      ? services.map((s) => `<li>${s.name}</li>`).join("")
+      : "<li>Details of services will be confirmed upon arrival.</li>";
+
+  // Returns only the HTML block for these details
+  return `
+<p><strong>Date:</strong> ${formattedDate}<br>
+<strong>Time:</strong> ${formattedTime}</p>
+<p><strong>Services Booked:</strong></p>
+<ul>${serviceListItemsHtml}</ul>
+  `.trim();
+}
+
+// --- Updated Async Function to Send Email using Template ---
+async function sendBookingConfirmationEmail(
+  customerName: string,
+  customerEmail: string,
+  bookingDateTimeUTC: Date,
+  services: { name: string }[],
+  logoUrl: string,
+) {
+  if (!resendInstanceSA) {
+    console.warn(
+      "sendBookingConfirmationEmail: Resend instance not initialized. Skipping email.",
+    );
+    return;
+  }
+
+  if (!customerEmail) {
+    console.warn(
+      `sendBookingConfirmationEmail: Customer "${customerName}" has no email. Skipping email.`,
+    );
+    return;
+  }
+
+  try {
+    // 1. Fetch the email template from the database
+    const emailTemplate = await prisma.emailTemplate.findUnique({
+      where: { name: "Booking Confirmation" },
+    });
+
+    if (!emailTemplate || !emailTemplate.isActive) {
+      console.warn(
+        "sendBookingConfirmationEmail: 'Booking Confirmation' email template not found or is inactive. Skipping email.",
+      );
+      return;
+    }
+
+    // 2. Generate the dynamic HTML block for booking details (Date, Time, Services List)
+    const bookingDetailsHtml = generateBookingDetailsHtml(
+      bookingDateTimeUTC,
+      services,
+    );
+
+    // 3. Replace placeholders in the subject and body
+    // Replace {{customerName}} in the subject string first
+    let processedSubject = emailTemplate.subject.replace(
+      "{{customerName}}",
+      customerName,
+    );
+
+    // Replace placeholders in the HTML body
+    let processedHtmlBody = emailTemplate.body
+      .replace("{{subject}}", processedSubject) // Replace title placeholder in <head>
+      .replace("{{logoUrl}}", logoUrl) // Replace logo placeholder
+      .replace("{{customerName}}", customerName) // Replace customer name placeholder in body
+      .replace("{{bookingDetailsHtml}}", bookingDetailsHtml); // Insert the generated booking details HTML block
+
+    // Optional: Generate plain text fallback
+    const plainTextBody = `
+Hi ${customerName},
+
+Thank you for your booking! Your appointment at BeautyFeel is confirmed for:
+
+Date: ${new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: PHILIPPINES_TIMEZONE,
+    }).format(bookingDateTimeUTC)}
+Time: ${new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: PHILIPPINES_TIMEZONE,
+    }).format(bookingDateTimeUTC)}
+
+Services Booked:
+${services.map((s) => `- ${s.name}`).join("\n")}
+
+Important Reminders:
+To manage your waiting time, we accept pre-booked appointments but walk-ins are also welcome.
+With this, please be on time on your scheduled appointment. A grace period of 15 minutes will be given.
+Afterwards, your appointment will be automatically cancelled and will treat you as walk-in (first come, first serve).
+
+Cancellation/No Show Reminder:
+All Appointment Cancellations less than 3 hours prior to scheduled time, will result to a 50% charge of your service cost.
+All "No Shows" will be charged 100% of your service cost.
+
+We look forward to seeing you! If you need to make any changes to your appointment, please contact us as soon as possible.
+
+Best regards,
+The BeautyFeel Team
+    `.trim();
+
+    // 4. Send the email
+    const { data: emailSentData, error: emailSendError } =
+      await resendInstanceSA.emails.send({
+        from: SENDER_EMAIL_SA,
+        to: [customerEmail],
+        subject: processedSubject, // Use the subject with the customer name replaced
+        html: processedHtmlBody,
+        text: plainTextBody,
+      });
+
+    if (emailSendError) {
+      console.error(
+        "sendBookingConfirmationEmail: Failed to send email:",
+        emailSendError,
+      );
+    } else {
+      console.log(
+        "sendBookingConfirmationEmail: Email sent successfully. ID:",
+        emailSentData?.id,
+      );
+    }
+  } catch (error: any) {
+    console.error(
+      "sendBookingConfirmationEmail: Exception occurred:",
+      error.message,
+      error,
+    );
+  }
+}
+
 function formatGCExpiryDate(date: Date | null): string {
   if (!date) return "Never";
   try {
@@ -387,6 +647,60 @@ function generateGiftCertificateEmailHTMLSA(
     </body>
     </html>`;
 }
+
+function generateDynamicBookingContentHtml(
+  customerName: string,
+  bookingDateTimeUTC: Date,
+  services: { name: string }[],
+): string {
+  const dateOptions: Intl.DateTimeFormatOptions = {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: PHILIPPINES_TIMEZONE,
+  };
+  const formattedDate = new Intl.DateTimeFormat("en-US", dateOptions).format(
+    bookingDateTimeUTC,
+  );
+
+  const timeOptions: Intl.DateTimeFormatOptions = {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    timeZone: PHILIPPINES_TIMEZONE,
+  };
+  const formattedTime = new Intl.DateTimeFormat("en-US", timeOptions).format(
+    bookingDateTimeUTC,
+  );
+
+  const serviceListHtml =
+    services.length > 0
+      ? `<ul>${services.map((s) => `<li>${s.name}</li>`).join("")}</ul>`
+      : "<p>Details of services will be confirmed upon arrival.</p>";
+
+  // Reminder texts are assumed to be part of the template's static HTML structure now,
+  // placed around the {{emailContent}} placeholder.
+  // This function just generates the core booking details block.
+
+  return `
+<p>Hi ${customerName},</p>
+<p>Thank you for your booking! Your appointment at BeautyFeel is confirmed for:</p>
+<p><strong>Date:</strong> ${formattedDate}<br>
+<strong>Time:</strong> ${formattedTime}</p>
+<p><strong>Services Booked:</strong></p>
+${serviceListHtml}
+<p style="margin-top: 30px;">We look forward to seeing you! If you need to make any changes to your appointment, please contact us as soon as possible.</p>
+<p>Best regards,<br>The BeautyFeel Team</p>
+  `.trim();
+}
+
+const EmailTemplateSchema = z.object({
+  name: z.string().min(1, "Name is required."),
+  subject: z.string().min(1, "Subject is required."),
+  body: z.string().min(1, "Body is required."),
+  placeholders: z.array(z.string()).optional().default([]),
+  isActive: z.boolean().default(true),
+});
 
 const baseServiceFormDataSchema = z.object({
   // title: Accept string or null from form, treat empty string as null, trim, then ensure non-empty string after pipe
@@ -1166,42 +1480,40 @@ const GiftCertificateCreateSchema = z.object({
 
 const DiscountRuleSchema = z
   .object({
-    description: z.string().trim().optional().nullable(),
-    discountType: z.enum([DiscountType.PERCENTAGE, DiscountType.FIXED_AMOUNT]),
-    discountValue: z.coerce
-      .number()
-      .positive("Discount value must be positive"),
-    startDate: z.string().date("Invalid start date"),
-    endDate: z.string().date("Invalid end date"),
+    description: z.string().nullable().optional(),
+    discountType: z.nativeEnum(DiscountType),
+    discountValue: z.preprocess(
+      (val) => (typeof val === "string" ? parseFloat(val) : val),
+      z.number().min(0),
+    ),
+    startDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid start date format (YYYY-MM-DD)"), // YYYY-MM-DD
+    endDate: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid end date format (YYYY-MM-DD)"), // YYYY-MM-DD
     applyTo: z.enum(["all", "specific"]),
-    serviceIds: z.array(z.string().uuid()).optional(),
+    serviceIds: z.array(z.string()).optional(), // Optional if applyTo is 'all'
   })
   .refine(
     (data) => {
-      try {
-        return new Date(data.endDate) >= new Date(data.startDate);
-      } catch {
+      // Custom refinement for start/end date logic
+      if (data.startDate && data.endDate && data.startDate > data.endDate) {
         return false;
       }
+      return true;
     },
-    { message: "End date must be on or after start date", path: ["endDate"] },
-  )
-  .refine(
-    (data) =>
-      data.applyTo === "all" || (data.serviceIds && data.serviceIds.length > 0),
     {
-      message:
-        "Please select at least one service when applying to specific services.",
-      path: ["serviceIds"],
+      message: "End date cannot be before start date.",
+      path: ["endDate"], // Path of the error
     },
   );
 
 export async function transactionSubmission(
   transactionForm: CashierState,
 ): Promise<TransactionSubmissionResponse> {
-  // These variables will now be populated from the transaction return value
-  let bookingDateTimeForConfirmationEmail: Date | null = null;
-  let servicesForConfirmationEmail: { name: string }[] = [];
+  let bookingDateTimeForConfirmationEmail: Date | null = null; // Still needed to capture the time
+  let servicesForConfirmationEmail: { name: string }[] = []; // Still needed to capture service names
 
   const transactionProcessingStartTimeUTC = new Date();
 
@@ -1258,16 +1570,22 @@ export async function transactionSubmission(
           const [year, month, day] = dateString.split("-").map(Number);
           const [hours, minutes] = timeString.split(":").map(Number);
 
-          const phtDate = new Date(year, month - 1, day, hours, minutes);
-          const phtOffsetMs = MANILA_OFFSET_HOURS * 60 * 60 * 1000;
-          finalBookingDateTimeUTC = new Date(phtDate.getTime() - phtOffsetMs);
+          // Important: Assume input date/time strings are in the Philippines Timezone
+          const phtDate = new Date(year, month - 1, day, hours, minutes); // This creates a Date object in the server's local time zone
+          // To get a UTC representation of a specific time in a specific timezone without ambiguity:
+          // Use a library like `date-fns-tz` or format carefully.
+          // A simple approach if server is UTC: Create date parts in PHT, calculate UTC timestamp
+          const phtTimestampMs =
+            Date.UTC(year, month - 1, day, hours, minutes) -
+            MANILA_OFFSET_HOURS * 60 * 60 * 1000;
+          finalBookingDateTimeUTC = new Date(phtTimestampMs);
 
           if (isNaN(finalBookingDateTimeUTC.getTime())) {
             throw new Error(
               "Invalid date/time string resulted in an invalid Date object after time zone adjustment.",
             );
           }
-          // Keep this assignment, as it's used inside the transaction callback
+          // Keep this assignment for the email sending call later
           bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC;
         } catch (e: any) {
           console.error(
@@ -1288,7 +1606,7 @@ export async function transactionSubmission(
       }
     }
 
-    // Modify the transaction to return the data needed for the email
+    // Modify the transaction to return the customer record needed for the email sending function
     const transactionResult = await prisma.$transaction(
       async (tx) => {
         let customerRecord;
@@ -1324,9 +1642,6 @@ export async function transactionSubmission(
             throw e;
           }
         }
-        // customerForEmailConfirmation is no longer needed as a shared variable
-        // It will be returned directly from the transaction.
-        // customerForEmailConfirmation = { name: customerRecord.name, email: customerRecord.email };
 
         let processedVoucherId: string | null = null;
         if (voucherCode && voucherCode.trim()) {
@@ -1352,39 +1667,54 @@ export async function transactionSubmission(
             paymentMethod: paymentMethod,
             grandTotal,
             discount: totalDiscount,
-            status: Status.PENDING,
+            status: Status.PENDING, // Or maybe set to DONE if paymentMethod is cash and serveTime is now? Check your business logic.
             bookedFor: finalBookingDateTimeUTC,
             voucherId: processedVoucherId,
             createdAt: transactionProcessingStartTimeUTC,
+            // Assuming branchId is available in transactionForm if needed
+            // branchId: transactionForm.branchId,
           },
         });
 
-        const tempServicesForEmail: { name: string }[] = [];
+        // Use the outer scope variable to collect service names
+        servicesForConfirmationEmail = [];
         for (const item of servicesAvailed) {
-          tempServicesForEmail.push({ name: item.name });
+          // Ensure you capture the *display name* from the form item, not just the ID
+          servicesForConfirmationEmail.push({ name: item.name });
+
           if (item.type === "service") {
+            // Fetching service details just for commission calculation and price snapshot
             const serviceDetails = await tx.service.findUnique({
               where: { id: item.id },
-              select: { price: true },
+              select: { price: true }, // Price is needed for commission
             });
+            // Use the price from the form item as the snapshot price,
+            // commission is based on the service's standard price for consistency
             const commission = serviceDetails
               ? Math.floor(serviceDetails.price * SALARY_COMMISSION_RATE)
               : 0;
+
             await tx.availedService.create({
               data: {
                 transactionId: newTransactionRecord.id,
-                serviceId: item.id,
-                quantity: item.quantity,
-                price: item.originalPrice,
+                serviceId: item.id, // Use the service ID from the form item
+                quantity: item.quantity, // Should be 1 for a single service item
+                price: item.originalPrice, // Use the price snapshot from the form item
                 commissionValue: commission,
+                status: Status.PENDING, // Default status
               },
             });
           } else if (item.type === "set") {
+            // For sets, you need to fetch the included services to create AvailedService records
             const setDetails = await tx.serviceSet.findUnique({
-              where: { id: item.id },
-              include: { services: { select: { id: true, price: true } } },
+              where: { id: item.id }, // Use the set ID from the form item
+              include: {
+                services: { select: { id: true, price: true, title: true } },
+              }, // Need service id, price (for commission), and title
             });
+
             if (setDetails?.services) {
+              // Create an AvailedService record for EACH service WITHIN the set
               for (const serviceInSet of setDetails.services) {
                 const commission = Math.floor(
                   serviceInSet.price * SALARY_COMMISSION_RATE,
@@ -1392,20 +1722,24 @@ export async function transactionSubmission(
                 await tx.availedService.create({
                   data: {
                     transactionId: newTransactionRecord.id,
-                    serviceId: serviceInSet.id,
-                    quantity: 1,
-                    price: 0,
+                    serviceId: serviceInSet.id, // Link to the actual Service model
+                    quantity: 1, // Each service in the set is quantity 1
+                    price: 0, // Price of individual service within a set is typically 0 unless specified otherwise in your logic
                     commissionValue: commission,
                     originatingSetId: setDetails.id,
-                    originatingSetTitle: item.name,
+                    originatingSetTitle: setDetails.title, // Use the set's title
+                    status: Status.PENDING, // Default status
                   },
                 });
+                // Also add the name of the service *within the set* to the email list if desired,
+                // or just the set name is sufficient depending on desired email detail level.
+                // servicesForConfirmationEmail.push({ name: serviceInSet.title }); // If you want *all* services listed
               }
             }
+            // If you only want the SET name in the email list:
+            // servicesForConfirmationEmail.push({ name: item.name }); // This is already done above before the loop
           }
         }
-        // Assign to the outer scope variable if you still need it after return
-        servicesForConfirmationEmail = tempServicesForEmail;
 
         if (selectedRecommendedAppointmentId) {
           const raToLink = await tx.recommendedAppointment.findUnique({
@@ -1414,6 +1748,7 @@ export async function transactionSubmission(
               originatingService: { select: { followUpPolicy: true } },
             },
           });
+          // Ensure RA exists, belongs to the customer, and hasn't been linked/attended already
           if (
             raToLink &&
             raToLink.customerId === customerRecord.id &&
@@ -1421,34 +1756,52 @@ export async function transactionSubmission(
             !raToLink.attendedTransactionId
           ) {
             let suppressNextGenFlag = false;
+            // Determine if we should suppress the *next* follow-up generation
+            // based on the original service's policy and the form selection.
+            // If policy is NONE, always suppress future follow-ups for this specific type.
+            // If policy is ONCE or EVERY_TIME, suppress only if the user explicitly chose NOT to generate one.
             if (
               raToLink.originatingService?.followUpPolicy ===
               FollowUpPolicy.NONE
             ) {
-              suppressNextGenFlag = true;
+              suppressNextGenFlag = true; // Never recommend this service again from any transaction
             } else {
+              // If the policy allows follow-ups (ONCE/EVERY_TIME), only suppress
+              // the generation from *this specific attended appointment* if the flag is false.
+              // The next time they get this service, a new RA might still be generated
+              // depending on the policy and the suppressNextFollowUpGeneration flag on the RA itself.
+              // This flag on the RA specifically controls if *this attended appointment* triggers the *next* RA.
+              // Let's align the flag to mean "Do NOT generate the next RA linked to *this fulfilled RA*".
               suppressNextGenFlag = !generateNewFollowUpForFulfilledRA;
             }
+
             await tx.recommendedAppointment.update({
               where: { id: selectedRecommendedAppointmentId },
               data: {
                 status: RecommendedAppointmentStatus.ATTENDED,
                 attendedTransactionId: newTransactionRecord.id,
+                // This flag now controls if the fulfillment of *this* RA triggers a *new* RA (if policy allows)
                 suppressNextFollowUpGeneration: suppressNextGenFlag,
               },
             });
+            console.log(
+              `Server Action: Linked RecommendedAppointment ${selectedRecommendedAppointmentId} to Transaction ${newTransactionRecord.id}`,
+            );
           } else {
             console.warn(
-              `Server Action: Could not link RA ${selectedRecommendedAppointmentId}. Conditions: RA found=${!!raToLink}, customerMatch=${raToLink?.customerId === customerRecord.id}, notAttended=${raToLink?.status !== RecommendedAppointmentStatus.ATTENDED}, notLinked=${!raToLink?.attendedTransactionId}`,
+              `Server Action: Skipped linking RecommendedAppointment ${selectedRecommendedAppointmentId} to transaction ${newTransactionRecord.id}. Conditions not met: RA found=${!!raToLink}, customerMatch=${raToLink?.customerId === customerRecord.id}, notAttended=${raToLink?.status !== RecommendedAppointmentStatus.ATTENDED}, notLinked=${!raToLink?.attendedTransactionId}`,
             );
+            // TODO: Handle potential race conditions or stale data - maybe the RA was just attended in another transaction?
+            // For now, a warning is sufficient.
           }
         }
 
         await tx.customer.update({
           where: { id: customerRecord.id },
-          data: { totalPaid: { increment: grandTotal } },
+          data: { totalPaid: { increment: grandTotal } }, // Assuming grandTotal is in the smallest currency unit
         });
 
+        // Update nextAppointment logic
         const customerAfterRAsUpdate = await tx.customer.findUnique({
           where: { id: customerRecord.id },
           select: {
@@ -1461,7 +1814,7 @@ export async function transactionSubmission(
                     RecommendedAppointmentStatus.SCHEDULED,
                   ],
                 },
-                recommendedDate: { gte: startOfDay(new Date()) },
+                recommendedDate: { gte: startOfDay(new Date()) }, // Only consider future RAs
               },
               orderBy: { recommendedDate: "asc" },
               take: 1,
@@ -1475,6 +1828,7 @@ export async function transactionSubmission(
         const currentNextApptDate =
           customerAfterRAsUpdate?.nextAppointment || null;
 
+        // Only update if the earliest date has changed or is newly null/not null
         if (
           (newEarliestActiveRADate === null && currentNextApptDate !== null) ||
           (newEarliestActiveRADate !== null && currentNextApptDate === null) ||
@@ -1489,21 +1843,36 @@ export async function transactionSubmission(
             where: { id: customerRecord.id },
             data: { nextAppointment: newEarliestActiveRADate },
           });
+          console.log(
+            `Server Action: Updated customer ${customerRecord.id} nextAppointment to ${newEarliestActiveRADate}`,
+          );
+        } else if (
+          newEarliestActiveRADate === null &&
+          currentNextApptDate !== null
+        ) {
+          // If no future RAs, but nextAppointment was set, clear it
+          await tx.customer.update({
+            where: { id: customerRecord.id },
+            data: { nextAppointment: null },
+          });
+          console.log(
+            `Server Action: Cleared customer ${customerRecord.id} nextAppointment as no future RAs exist.`,
+          );
         }
 
-        // *** Return the necessary data from the transaction ***
+        // Return customer details for email sending outside transaction
         return {
           transaction: newTransactionRecord,
-          customer: {
+          customerForEmail: {
             name: customerRecord.name,
             email: customerRecord.email,
           },
-          // servicesForEmail are already assigned to the outer scope variable
-          // bookedFor (UTC) is already assigned to the outer scope variable
+          // servicesForConfirmationEmail is populated in the outer scope
+          // bookingDateTimeForConfirmationEmail is populated in the outer scope
         };
       },
       {
-        timeout: 15000,
+        timeout: 15000, // 15 seconds timeout
       },
     );
     // --- End of prisma.$transaction ---
@@ -1511,75 +1880,27 @@ export async function transactionSubmission(
     // *** Capture returned data ***
     const {
       transaction: createdTransaction,
-      customer: customerForEmailConfirmationResult,
+      customerForEmail: customerForEmailConfirmationData,
     } = transactionResult;
 
     // --- Send Booking Confirmation Email (AFTER successful DB transaction) ---
-    // Now check the result obtained directly from the transaction
+    // Only send email if it was a 'later' booking AND customer has an email
     if (
       serveTime === "later" &&
-      customerForEmailConfirmationResult !== null && // Check if customer data was returned (it always should if transaction succeeds)
-      customerForEmailConfirmationResult.email && // Check if the customer has an email
-      bookingDateTimeForConfirmationEmail && // This variable was set earlier
-      resendInstanceSA
+      customerForEmailConfirmationData?.email && // Safely check if customerForEmailConfirmationData and its email exist
+      bookingDateTimeForConfirmationEmail // Check if booking time was set for later booking
     ) {
-      console.log(
-        // Accessing properties on customerForEmailConfirmationResult is now safe
-        `Server Action: Attempting to send booking confirmation to ${customerForEmailConfirmationResult.email} for booking (UTC): ${bookingDateTimeForConfirmationEmail.toISOString()}`,
-      );
-      const emailSubject = "Your BeautyFeel Booking Confirmation";
-
-      const emailBodyText = generateBookingConfirmationBodySA(
-        customerForEmailConfirmationResult.name, // Use name from the returned object
+      // Call the new dedicated email sending function
+      await sendBookingConfirmationEmail(
+        customerForEmailConfirmationData.name,
+        customerForEmailConfirmationData.email,
         bookingDateTimeForConfirmationEmail,
-        servicesForConfirmationEmail, // This variable was populated inside the transaction
+        servicesForConfirmationEmail, // Use the variable populated during transaction
+        LOGO_URL_SA, // Pass the logo URL
       );
-      const emailHtmlContent = generateBookingEmailHTMLSA(
-        emailBodyText,
-        emailSubject,
-        LOGO_URL_SA,
-      );
-
-      try {
-        const { data: emailSentData, error: emailSendError } =
-          await resendInstanceSA.emails.send({
-            from: SENDER_EMAIL_SA,
-            to: [customerForEmailConfirmationResult.email],
-            subject: emailSubject,
-            html: emailHtmlContent,
-            text: emailBodyText,
-          });
-        if (emailSendError) {
-          console.error(
-            "Server Action: Failed to send booking confirmation email:",
-            emailSendError,
-          );
-        } else {
-          console.log(
-            "Server Action: Booking confirmation email sent successfully. Email ID:",
-            emailSentData?.id,
-          );
-        }
-      } catch (emailCatchError: any) {
-        console.error(
-          "Server Action: Exception occurred during booking confirmation email sending:",
-          emailCatchError.message,
-        );
-      }
-    } else if (
-      // This `else if` can still use the potentially null variable if needed,
-      // but it's better to use the result if possible for clarity.
-      // Using customerForEmailConfirmationResult here as well for consistency
-      serveTime === "later" &&
-      (!customerForEmailConfirmationResult?.email || !resendInstanceSA)
-    ) {
-      console.warn(
-        "Server Action: Skipped sending booking confirmation. Reason:",
-        !customerForEmailConfirmationResult?.email
-          ? "Customer email missing."
-          : "Resend not configured or missing instance.",
-        "Transaction ID:",
-        createdTransaction.id,
+    } else if (serveTime === "later") {
+      console.log(
+        "Server Action: Skipping booking confirmation email because customer has no email or it wasn't a 'later' booking.",
       );
     }
 
@@ -1604,27 +1925,25 @@ export async function transactionSubmission(
       fieldErrors.general = [message];
     } else if (error instanceof Error) {
       message = error.message;
-      if (
-        message.toLowerCase().includes("voucher") &&
-        message.toLowerCase().includes("used")
-      )
+      // Improve error mapping based on common messages
+      if (message.includes("voucher") && message.includes("used"))
         fieldErrors.voucherCode = [message];
-      else if (message.toLowerCase().includes("invalid voucher code"))
+      else if (message.includes("Invalid voucher code"))
         fieldErrors.voucherCode = [message];
       else if (
-        message.toLowerCase().includes("email") &&
-        (message.toLowerCase().includes("already in use") ||
-          message.toLowerCase().includes("associated with another customer"))
+        message.includes("email") &&
+        (message.includes("already in use") ||
+          message.includes("associated with another customer"))
       )
         fieldErrors.email = [message];
       else if (
-        message.toLowerCase().includes("invalid date or time format") ||
-        message.toLowerCase().includes("time zone conversion failed")
+        message.includes("Invalid date or time format") ||
+        message.includes("time zone conversion failed")
       )
         fieldErrors.serveTime = [message];
-      else fieldErrors.general = [message];
+      else fieldErrors.general = [message]; // Catch-all for other specific errors
     } else {
-      fieldErrors.general = [message];
+      fieldErrors.general = [message]; // Handle non-Error exceptions
     }
     return { success: false, message, errors: fieldErrors };
   }
@@ -1652,15 +1971,24 @@ export async function createGiftCertificateAction(
   if (!data.itemType || !["service", "set"].includes(data.itemType)) {
     errors.itemType = ["Invalid item type specified."];
   }
+  // Validate recipient email format if provided
+  const trimmedRecipientEmail = data.recipientEmail?.trim() || null;
   if (
-    data.recipientEmail &&
-    !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(data.recipientEmail)
+    trimmedRecipientEmail &&
+    !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(trimmedRecipientEmail)
   ) {
     errors.recipientEmail = ["Please enter a valid email address."];
+  } else {
+    // Use the trimmed email if valid, otherwise null
+    data.recipientEmail = trimmedRecipientEmail;
   }
+
+  // Validate expiry date
+  const expiresAtDate = data.expiresAt ? new Date(data.expiresAt) : null;
   if (
-    data.expiresAt &&
-    new Date(data.expiresAt) < new Date(new Date().setHours(0, 0, 0, 0))
+    expiresAtDate &&
+    // Compare against start of day in *a* consistent timezone, ideally server's UTC
+    expiresAtDate < new Date(new Date().setUTCHours(0, 0, 0, 0))
   ) {
     errors.expiresAt = ["Expiry date cannot be in the past."];
   }
@@ -1675,136 +2003,318 @@ export async function createGiftCertificateAction(
     code,
     itemIds,
     itemType,
-    recipientCustomerId,
-    recipientEmail,
+    purchaserCustomerId, // This is the ID of the *existing* customer who is *buying* it
+    recipientName,
+    recipientEmail, // This is the email string provided for the recipient
     expiresAt,
   } = data;
 
   try {
-    // Check for existing code
-    const existing = await prisma.giftCertificate.findUnique({
-      where: { code },
-    });
-    if (existing) {
-      return {
-        success: false,
-        message: `Code "${code}" already exists.`,
-        errors: { code: [`Code "${code}" already exists.`] },
+    // Use a transaction for the core DB operations
+    const createdGC = await prisma.$transaction(async (tx) => {
+      // 1. Check for existing GC code (important inside transaction for race conditions)
+      const existing = await tx.giftCertificate.findUnique({ where: { code } });
+      if (existing) {
+        throw new Error(`Code "${code}" already exists.`); // Throw to rollback transaction
+      }
+
+      // 2. Handle Recipient Customer (Find or Create by email)
+      let recipientCustomerRecord = null;
+      if (recipientEmail) {
+        recipientCustomerRecord = await tx.customer.findUnique({
+          where: { email: recipientEmail },
+        });
+
+        if (!recipientCustomerRecord) {
+          // Create new customer if no existing customer found with this email
+          try {
+            // Ensure name is not an empty string if provided, use null if empty or not provided
+            const nameToCreate = recipientName?.trim() || null;
+            if (!nameToCreate) {
+              console.warn(
+                `[ServerAction] No recipient name provided for new customer with email: ${recipientEmail}. Creating with default name.`,
+              );
+            }
+            recipientCustomerRecord = await tx.customer.create({
+              data: {
+                name: nameToCreate || "Unknown", // Use provided name or 'Unknown' if none
+                email: recipientEmail,
+              },
+            });
+            console.log(
+              `[ServerAction] Created new customer for GC recipient: ${recipientCustomerRecord.id}`,
+            );
+          } catch (e: any) {
+            // Handle potential race condition if another request just created this customer
+            if (e.code === "P2002" && e.meta?.target?.includes("email")) {
+              console.warn(
+                `[ServerAction] Race condition: Customer with email ${recipientEmail} created concurrently. Fetching existing.`,
+              );
+              // Try finding again - it *must* exist now
+              recipientCustomerRecord = await tx.customer.findUnique({
+                where: { email: recipientEmail },
+              });
+              if (!recipientCustomerRecord) {
+                // This scenario is highly unlikely after a P2002, but included as safeguard
+                throw new Error(
+                  `Failed to retrieve customer with email ${recipientEmail} after conflict.`,
+                );
+              }
+            } else {
+              // Re-throw other errors encountered during customer creation
+              console.error(
+                `[ServerAction] Error creating new customer for GC recipient:`,
+                e,
+              );
+              throw e;
+            }
+          }
+        } else {
+          console.log(
+            `[ServerAction] Found existing customer for GC recipient: ${recipientCustomerRecord.id}`,
+          );
+          // Optional: Update existing customer's name if recipientName is provided
+          // and existing name is null or differs? Let's skip this for now to keep logic simple.
+        }
+      }
+
+      // 3. Prepare data for Gift Certificate creation
+      const prismaCreateData: any = {
+        code,
+        // Link to the *purchaser* customer if purchaserCustomerId is provided
+        purchaserCustomer: purchaserCustomerId
+          ? { connect: { id: purchaserCustomerId } }
+          : undefined,
+        // Store recipient details as strings based on input data
+        recipientName: recipientName || null,
+        recipientEmail: recipientEmail || null,
+        expiresAt: expiresAtDate, // Use the validated Date object
       };
-    }
 
-    // Prepare data for Prisma create
-    const prismaCreateData: any = {
-      code,
-      purchaserCustomerId: recipientCustomerId,
-      recipientName: data.recipientName || null,
-      recipientEmail: recipientEmail,
-      expiresAt: expiresAt ? new Date(expiresAt) : null,
-    };
+      // Link the included services or sets
+      if (itemType === "service") {
+        prismaCreateData.services = { connect: itemIds.map((id) => ({ id })) };
+      } else if (itemType === "set") {
+        prismaCreateData.serviceSets = {
+          connect: itemIds.map((id) => ({ id })),
+        };
+      }
 
-    // Define structure to include related items for email content
-    const includeRelationsForEmail = {
-      services: { select: { title: true } },
-      serviceSets: { select: { title: true } },
-    };
+      // 4. Create the Gift Certificate
+      // Include relations needed for the email data
+      const includeRelationsForEmail = {
+        services: { select: { title: true } },
+        serviceSets: { select: { title: true } },
+      };
 
-    // Connect relation based on itemType
-    if (itemType === "service") {
-      prismaCreateData.services = { connect: itemIds.map((id) => ({ id })) };
-    } else if (itemType === "set") {
-      prismaCreateData.serviceSets = { connect: itemIds.map((id) => ({ id })) };
-    }
+      const newGC = await tx.giftCertificate.create({
+        data: prismaCreateData,
+        include: includeRelationsForEmail, // Include relations for fetching titles for the email
+      });
 
-    // Create the Gift Certificate and include related items
-    const createdGC = await prisma.giftCertificate.create({
-      data: prismaCreateData,
-      include: includeRelationsForEmail,
-    });
-    console.log("[ServerAction] GC Created:", createdGC);
+      console.log("[ServerAction] GC Created within transaction:", newGC.id);
 
-    // --- Send Gift Certificate Email ---
-    if (createdGC.recipientEmail && resendInstanceSA) {
+      // Return the created GC object (with included relations) from the transaction
+      return newGC;
+    }); // End of prisma.$transaction
+
+    // --- Send Gift Certificate Email (OUTSIDE the transaction) ---
+    // Use the createdGC object returned from the transaction
+    // Only attempt to send email if recipient has an email and Resend is configured
+    if (createdGC.recipientEmail && resendInstanceSA && SENDER_EMAIL_SA) {
       console.log(
         `[ServerAction] Attempting to send GC email to ${createdGC.recipientEmail} for code ${createdGC.code}`,
       );
-      const includedItemsForEmail =
-        itemType === "service"
-          ? createdGC.services.map((s) => ({ name: s.title }))
-          : createdGC.serviceSets.map((s) => ({ name: s.title }));
-      const emailSubject = `Your BeautyFeel Gift Certificate! (Code: ${createdGC.code})`;
-      const emailBodyContent = generateGiftCertificateBodySA(
-        createdGC.recipientName,
-        createdGC.code,
-        includedItemsForEmail,
-        createdGC.expiresAt,
-      );
-      const emailHtml = generateGiftCertificateEmailHTMLSA(
-        emailBodyContent,
-        emailSubject,
-        LOGO_URL_SA,
-      );
-      const emailText = `Gift Certificate Code: ${createdGC.code}. Expires: ${formatGCExpiryDate(createdGC.expiresAt)}. Details: ${includedItemsForEmail.map((i) => i.name).join(", ")}`;
+
       try {
-        const { data: emailSentData, error: emailSendError } =
-          await resendInstanceSA.emails.send({
-            from: SENDER_EMAIL_SA,
-            to: [createdGC.recipientEmail],
-            subject: emailSubject,
-            html: emailHtml,
-            text: emailText,
-          });
-        if (emailSendError) {
-          console.error(
-            `[ServerAction] Failed to send GC email for ${createdGC.code}:`,
-            emailSendError,
+        // 1. Fetch the Gift Certificate Email Template
+        const gcEmailTemplate = await prisma.emailTemplate.findFirst({
+          where: {
+            name: "Gift Certificate Notification", // <<< NAME OF YOUR TEMPLATE
+            isActive: true,
+          },
+        });
+
+        if (!gcEmailTemplate) {
+          console.warn(
+            `[ServerAction] Gift Certificate email template "Gift Certificate Notification" not found or not active. Email not sent for GC ${createdGC.code}.`,
           );
+          // Proceed without sending email, but log the warning
         } else {
           console.log(
-            `[ServerAction] GC email sent successfully for ${createdGC.code}. Email ID:`,
-            emailSentData?.id,
+            `[ServerAction] Using template "${gcEmailTemplate.name}" for GC email.`,
           );
-        }
-      } catch (emailCatchError: any) {
+
+          // 2. Prepare placeholder values
+          // Use recipientName from the createdGC record for the email personalization
+          const customerName = createdGC.recipientName || "Valued Customer";
+          // Format expiry date using your helper
+          const expiryInfo = formatGCExpiryDate(createdGC.expiresAt);
+
+          // Build the HTML list for included items using the included relations
+          const includedItems =
+            itemType === "service"
+              ? createdGC.services.map((s) => ({ name: s.title }))
+              : createdGC.serviceSets.map((s) => ({ name: s.title }));
+
+          const itemsListHtml =
+            includedItems.length > 0
+              ? includedItems.map((item) => `<li>${item.name}</li>`).join("")
+              : "<li>Details will be confirmed upon redemption.</li>";
+
+          // 3. Start with the raw template HTML and replace placeholders directly
+          let finalEmailHtml = gcEmailTemplate.body;
+          let finalSubject = gcEmailTemplate.subject;
+
+          // Replace placeholders in the Subject
+          finalSubject = finalSubject.replace(
+            /{{customerName}}/g,
+            customerName,
+          );
+          finalSubject = finalSubject.replace(/{{gcCode}}/g, createdGC.code); // If subject includes code placeholder
+
+          // Replace placeholders in the HTML Body
+          finalEmailHtml = finalEmailHtml.replace(/{{subject}}/g, finalSubject); // Replace title placeholder in <head>
+          finalEmailHtml = finalEmailHtml.replace(/{{logoUrl}}/g, LOGO_URL_SA); // Replace logo placeholder
+          finalEmailHtml = finalEmailHtml.replace(
+            /{{customerName}}/g,
+            customerName,
+          ); // Replace customer name placeholder in body
+          finalEmailHtml = finalEmailHtml.replace(
+            /{{gcCode}}/g,
+            createdGC.code,
+          ); // Replace GC code
+          finalEmailHtml = finalEmailHtml.replace(
+            /{{itemsList}}/g,
+            itemsListHtml,
+          ); // Replace items list HTML
+          finalEmailHtml = finalEmailHtml.replace(
+            /{{expiryInfo}}/g,
+            expiryInfo,
+          ); // Replace expiry info
+
+          // 4. Generate a plain text version (simple extraction/formatting)
+          const plainTextBody = `
+Hi ${customerName},
+
+This email confirms the details of your Gift Certificate for BeautyFeel.
+Your unique Gift Certificate code is: ${createdGC.code}
+
+It is applicable to the following:
+${includedItems.map((item) => `- ${item.name}`).join("\n")}
+
+Expires: ${expiryInfo}
+
+Please present this code (or email) upon arrival. We look forward to providing your services soon!
+
+Best regards,
+The BeautyFeel Team
+         `
+            .replace(/\n\s+/g, "\n")
+            .trim(); // Basic cleanup
+
+          // 5. Send the email
+          const { data: emailSentData, error: emailSendError } =
+            await resendInstanceSA.emails.send({
+              from: SENDER_EMAIL_SA,
+              to: [createdGC.recipientEmail], // Resend expects an array
+              subject: finalSubject, // Use the subject with placeholders replaced
+              html: finalEmailHtml, // Use the full, processed HTML directly
+              text: plainTextBody, // Include plain text version
+            });
+
+          if (emailSendError) {
+            console.error(
+              `[ServerAction] Failed to send GC email for ${createdGC.code} using template:`,
+              emailSendError,
+            );
+          } else {
+            console.log(
+              `[ServerAction] GC email sent successfully for ${createdGC.code} using template. Email ID:`,
+              emailSentData?.id,
+            );
+          }
+        } // End if (gcEmailTemplate)
+      } catch (error: any) {
         console.error(
-          `[ServerAction] Exception during GC email sending for ${createdGC.code}:`,
-          emailCatchError,
+          `[ServerAction] Exception during GC email sending process for ${createdGC.code}:`,
+          error,
         );
+        // Log the error, but the GC creation was successful, so continue
       }
     } else {
+      // Log why email was skipped
+      let reason = "";
+      if (!createdGC.recipientEmail) reason += "No recipient email. ";
+      if (!resendInstanceSA) reason += "Resend not configured. ";
+      if (!SENDER_EMAIL_SA) reason += "Sender email not configured.";
       console.log(
-        `[ServerAction] Skipping GC email for ${createdGC.code}. Reason: ${!createdGC.recipientEmail ? "No recipient email." : "Resend not configured."}`,
+        `[ServerAction] Skipping GC email for ${createdGC.code}. Reason: ${reason.trim()}`,
       );
     }
     // --- End Email Sending ---
 
-    revalidatePath("/customize");
+    // Revalidate necessary paths
+    revalidatePath("/dashboard/settings/gift-certificates"); // Revalidate GC list page
+    // Revalidate customer path potentially, if GC purchase history is shown there
+    if (createdGC.purchaserCustomerId) {
+      revalidatePath(`/dashboard/customers/${createdGC.purchaserCustomerId}`);
+    }
+    // If a *new* customer was created, you might also want to revalidate the customer list or search endpoints
+    // if the recipientEmail was used to create a new customer. This is harder to track directly here
+    // unless you return the created customer ID or a flag from the transaction.
+    // For simplicity, let's skip revalidating general customer lists for now.
+
     return {
       success: true,
       message: `Gift Certificate ${code} created successfully.`,
     };
   } catch (error: any) {
-    // --- DB Error Handling ---
-    console.error("[ServerAction] Error creating Gift Certificate:", error);
-    if (error.code === "P2002" && error.meta?.target?.includes("code")) {
-      return {
-        success: false,
-        message: `Code "${code}" already exists (race condition).`,
-        errors: { code: [`Code "${code}" already exists.`] },
-      };
+    // --- DB Error Handling for Transaction ---
+    console.error(
+      "[ServerAction] Error creating Gift Certificate (in transaction):",
+      error,
+    );
+    let message = "Database error creating Gift Certificate.";
+    const fieldErrors: Record<string, string[]> = {};
+
+    // Check for specific errors thrown within the transaction
+    if (error.message.includes(`Code "${code}" already exists`)) {
+      message = error.message;
+      fieldErrors.code = [message];
     }
-    if (error.code === "P2025") {
-      return {
-        success: false,
-        message: `One or more selected ${itemType}s or the customer do not exist.`,
-        errors: {
-          serviceIds: [`Invalid ${itemType} ID found or Customer ID invalid.`],
-        },
-      };
+    // Catch errors related to customer email unique constraint during creation
+    else if (
+      error.message.includes(`Failed to create customer with email`) ||
+      (error.code === "P2002" && error.meta?.target?.includes("email"))
+    ) {
+      message = error.message.includes("Failed to create customer with email")
+        ? error.message
+        : `The email "${recipientEmail}" is already in use by another customer.`;
+      fieldErrors.recipientEmail = [message];
     }
+    // Handle foreign key constraint errors (P2003) for purchaserCustomerId or itemIds
+    else if (error.code === "P2003") {
+      // You might need to inspect error.meta for target field to be more specific
+      console.error(
+        "[ServerAction] Foreign key constraint failed:",
+        error.meta,
+      );
+      message = `Invalid ID provided for purchaser or selected ${itemType}(s).`;
+      fieldErrors.general = [`One or more selected IDs do not exist.`];
+    }
+    // Catch any other uncaught transaction errors
+    else {
+      fieldErrors.general = [
+        error.message ||
+          "An unexpected error occurred during database operation.",
+      ];
+    }
+
     return {
       success: false,
-      message: "Database error creating Gift Certificate.",
-      errors: { general: ["A database error occurred."] },
+      message: message,
+      errors: fieldErrors,
     };
   }
 }
@@ -3090,7 +3600,7 @@ export async function getBranchesForSelectAction(): Promise<BranchForSelect[]> {
   }
 }
 
-export async function createAccountAction(formData: FormData) {
+/* export async function createAccountAction(formData: FormData) {
   console.log("Raw FormData:", Object.fromEntries(formData.entries()));
 
   const roles = ALL_ROLES.filter(
@@ -3264,7 +3774,7 @@ export async function createAccountAction(formData: FormData) {
       message: `Database error: Failed to create account. ${error.message || "Unknown error"}`,
     };
   }
-}
+} */
 
 export async function getAttendanceForPeriod(
   accountId: string,
@@ -4025,14 +4535,15 @@ export async function toggleDiscountRuleAction(
 }
 export async function createDiscountRuleAction(formData: FormData) {
   const rawData = {
-    description: formData.get("description") || null,
-    discountType: formData.get("discountType"),
-    discountValue: formData.get("discountValue"),
-    startDate: formData.get("startDate"),
-    endDate: formData.get("endDate"),
-    applyTo: formData.get("applyTo"),
-    serviceIds: formData.getAll("serviceIds"),
+    description: formData.get("description") as string | null, // Cast for Zod if needed
+    discountType: formData.get("discountType") as DiscountType, // Cast for Zod
+    discountValue: formData.get("discountValue") as string, // Keep as string for Zod preprocess
+    startDate: formData.get("startDate") as string,
+    endDate: formData.get("endDate") as string,
+    applyTo: formData.get("applyTo") as "all" | "specific", // Cast for Zod
+    serviceIds: formData.getAll("serviceIds") as string[],
   };
+
   const validation = DiscountRuleSchema.safeParse(rawData);
 
   if (!validation.success) {
@@ -4042,55 +4553,95 @@ export async function createDiscountRuleAction(formData: FormData) {
     );
     return {
       success: false,
-      message: "Validation failed.",
+      message: "Validation failed. Please check the form.",
       errors: validation.error.flatten().fieldErrors,
     };
   }
 
-  // Destructure applyTo from validated data
   const {
     discountType,
     discountValue,
-    startDate,
-    endDate,
+    startDate: rawPhtStartDateString, // "YYYY-MM-DD" from form, representing PHT day
+    endDate: rawPhtEndDateString, // "YYYY-MM-DD" from form, representing PHT day
     applyTo,
     serviceIds,
     description,
   } = validation.data;
 
   try {
-    // Base data includes the new applyToAll flag
+    // --- CRITICAL: Convert PHT day strings to PHT-aware UTC Date objects ---
+    const [startYear, startMonth, startDay] = rawPhtStartDateString
+      .split("-")
+      .map(Number);
+    // UTC timestamp that corresponds to PHT midnight on the start day
+    const startDateUTC = new Date(
+      Date.UTC(startYear, startMonth - 1, startDay) -
+        PHT_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000,
+    );
+
+    const [endYear, endMonth, endDay] = rawPhtEndDateString
+      .split("-")
+      .map(Number);
+    // UTC timestamp that corresponds to PHT end-of-day (inclusive) on the end day
+    const endOfDayPHTinUTCms =
+      Date.UTC(endYear, endMonth - 1, endDay, 23, 59, 59, 999) -
+      PHT_TIMEZONE_OFFSET_HOURS * 60 * 60 * 1000;
+    const endDateUTC = new Date(endOfDayPHTinUTCms);
+    // --- End Date Conversion ---
+
+    console.log("[Server Action] createDiscountRule:");
+    console.log("  Raw PHT Start Date (from form):", rawPhtStartDateString);
+    console.log(
+      "  Converted Start Date (UTC for DB):",
+      startDateUTC.toISOString(),
+    );
+    console.log("  Raw PHT End Date (from form):", rawPhtEndDateString);
+    console.log(
+      "  Converted End Date (UTC for DB, inclusive end):",
+      endDateUTC.toISOString(),
+    );
+
     const createData: {
       description?: string | null;
       discountType: DiscountType;
       discountValue: number;
-      startDate: Date;
-      endDate: Date;
+      startDate: Date; // Will be the PHT-aware UTC Date
+      endDate: Date; // Will be the PHT-aware UTC Date
       isActive: boolean;
-      applyToAll: boolean; // <<< Add applyToAll
+      applyToAll: boolean;
       services?: { connect: { id: string }[] };
     } = {
-      description,
+      description: description ?? null, // Use validated description
       discountType,
       discountValue,
-      startDate: new Date(startDate),
-      endDate: new Date(endDate),
+      startDate: startDateUTC, // Use the converted UTC date
+      endDate: endDateUTC, // Use the converted UTC date
       isActive: true,
-      applyToAll: applyTo === "all", // <<< Set flag based on form value
+      applyToAll: applyTo === "all",
     };
 
-    // Connect services only if applying to specific ones
     if (applyTo === "specific" && serviceIds && serviceIds.length > 0) {
       createData.services = { connect: serviceIds.map((id) => ({ id })) };
     }
-    // No need to explicitly handle 'services' field when applyTo is 'all'
 
     await prisma.discountRule.create({ data: createData });
 
-    revalidatePath("/customize");
+    revalidatePath("/customize"); // Or your relevant path
     return { success: true, message: "Discount rule created successfully." };
-  } catch (error) {
-    /* ... handle errors ... */
+  } catch (error: any) {
+    console.error("Error creating discount rule in Prisma:", error);
+    let message = "Failed to create discount rule due to a server error.";
+    if (error.code === "P2002") {
+      // Example: Handle unique constraint violation
+      message =
+        "A discount rule with similar unique properties already exists.";
+    }
+    return {
+      success: false,
+      message: message,
+      // Optionally, you can try to map Prisma errors to specific fields if appropriate
+      // errors: { general: [message] }
+    };
   }
 }
 // --- Action to FETCH Active/Inactive Discount Rules ---
@@ -4191,8 +4742,12 @@ export async function getEmployeesForAttendanceAction(): Promise<
 
     const accounts = await prisma.account.findMany({
       where: {
-        // Add filtering here based on checker's role/branch if needed
-        // role: { not: { hasSome: [Role.OWNER] } }, // Example filter for roles array
+        // This filter ensures that accounts where the 'role' array contains 'OWNER' are excluded.
+        NOT: {
+          role: {
+            has: Role.OWNER,
+          },
+        },
       },
       select: {
         id: true,
@@ -4211,15 +4766,13 @@ export async function getEmployeesForAttendanceAction(): Promise<
             isPresent: true,
             notes: true,
             checkedById: true,
-            // === CORRECTED: Select checkedAt instead of createdAt/updatedAt ===
             checkedAt: true,
-            // === END CORRECTED ===
           },
           take: 1,
         },
         payslips: {
           where: {
-            status: "RELEASED",
+            status: "RELEASED", // Assuming 'RELEASED' is a valid PayslipStatus enum member
           },
           orderBy: {
             periodEndDate: "desc",
@@ -4235,13 +4788,15 @@ export async function getEmployeesForAttendanceAction(): Promise<
       },
     });
 
-    console.log(`Server Action: Fetched ${accounts.length} accounts.`);
+    console.log(
+      `Server Action: Fetched ${accounts.length} accounts (excluding OWNERS).`,
+    );
 
     const employeesWithAttendance: EmployeeForAttendance[] = accounts.map(
       (acc) => ({
         id: acc.id,
         name: acc.name,
-        dailyRate: acc.dailyRate ?? 0,
+        dailyRate: acc.dailyRate ?? 0, // Use nullish coalescing for safety
         branchTitle: acc.branch?.title ?? null,
         todaysAttendance:
           acc.attendances.length > 0 ? acc.attendances[0] : null,
@@ -4256,10 +4811,11 @@ export async function getEmployeesForAttendanceAction(): Promise<
       "Server Action Error [getEmployeesForAttendanceAction]:",
       error,
     );
-    // Re-throw a generic error for security
+    // Re-throw a generic error for security and to be handled by the caller
     throw new Error("Failed to fetch employees for attendance.");
   }
 }
+
 export async function markAttendanceAction(
   accountId: string,
   isPresent: boolean,
@@ -5894,22 +6450,11 @@ export const getAllAccountsWithBasicInfo = async (): Promise<
 export const requestPayslipRelease = async (
   accountId: string,
 ): Promise<{ success: boolean; message?: string; error?: string }> => {
-  // --- Authentication/Authorization Check (Placeholder - Implement this!) ---
-  // Example: You MUST implement proper authorization based on your auth system.
-  // const session = await auth(); // Get session data
-  // if (!session || !session.user || session.user.id !== accountId) {
-  //   // Deny if no session, no user, or the logged-in user is NOT the one whose payslip is requested
-  //   console.warn(`[ServerAction] Unauthorized payslip request attempt for ${accountId} by user ${session?.user?.id}`);
-  //   return { success: false, error: "Unauthorized to perform this action." };
-  // }
-  // --- End Authorization Check ---
-
   console.log(
     `[ServerAction] Initiating payslip release request CREATION for account ID: ${accountId}`,
   );
 
   try {
-    // 1. Find account, check permissions, role
     const account = await prisma.account.findUnique({
       where: { id: accountId },
       select: { id: true, name: true, canRequestPayslip: true, role: true },
@@ -5953,8 +6498,6 @@ export const requestPayslipRelease = async (
       `[ServerAction] Last released payslip end date found: ${lastReleasedPayslip?.periodEndDate}`,
     );
 
-    // Determine start date based on last release or a system default start
-    // **** CORRECTED LINE: Using the imported isValid function ****
     const startOfCurrentPeriod =
       lastReleasedPayslip?.periodEndDate &&
       isValid(new Date(lastReleasedPayslip.periodEndDate))
@@ -6059,74 +6602,6 @@ export const requestPayslipRelease = async (
   }
 };
 
-/* export async function getMyReleasedPayslips(
-  accountId: string,
-): Promise<PayslipData[]> {
-  if (!accountId) {
-    throw new Error("Account ID is required.");
-  }
-  console.log(`SERVER ACTION: Fetching RELEASED payslips for Acc ${accountId}`);
-  try {
-    const payslips = await prisma.payslip.findMany({
-      where: { accountId: accountId, status: PayslipStatus.RELEASED },
-      include: {
-        account: {
-          // Select all fields needed for AccountData, *including canRequestPayslip* if needed by PayslipData's accountData
-          select: {
-            id: true,
-            name: true,
-            role: true,
-            salary: true,
-            dailyRate: true,
-            canRequestPayslip: true, // Added here too for consistency if PayslipData uses it
-          },
-        },
-      },
-      orderBy: [{ periodEndDate: "desc" }],
-    });
-
-    // Map to PayslipData type
-    return payslips.map((p) => ({
-      id: p.id,
-      employeeId: p.accountId,
-      employeeName: p.account.name,
-      periodStartDate: p.periodStartDate,
-      periodEndDate: p.periodEndDate,
-      baseSalary: p.baseSalary,
-      totalCommissions: p.totalCommissions,
-      totalDeductions: p.totalDeductions,
-      totalBonuses: p.totalBonuses,
-      netPay: p.netPay,
-      status: p.status,
-      releasedDate: p.releasedDate,
-      // Construct nested accountData correctly
-      accountData: {
-        id: p.account.id,
-        name: p.account.name,
-        role: p.account.role,
-        salary: p.account.salary,
-        dailyRate: p.account.dailyRate,
-        // Ensure canRequestPayslip is included and handled (e.g., default if null)
-        canRequestPayslip: p.account.canRequestPayslip ?? false,
-      },
-    }));
-  } catch (error) {
-    console.error(
-      `SERVER ACTION: Error fetching released payslips for account ${accountId}:`,
-      error,
-    );
-    if (error instanceof Error) {
-      throw new Error(`Failed to fetch payslip history: ${error.message}`);
-    } else {
-      throw new Error(
-        "Failed to fetch payslip history due to an unknown error.",
-      );
-    }
-  } finally {
-    // await prisma.$disconnect(); // If needed
-  }
-} */
-
 export async function getMyReleasedPayslips(
   accountId: string,
 ): Promise<PayslipData[]> {
@@ -6217,141 +6692,6 @@ export async function getMyReleasedPayslips(
     // }
   }
 }
-/* // The main server action function to send the email
-export async function sendEmail(input: z.infer<typeof sendEmailSchema>) {
-  // Validate the input data using Zod
-  const validation = sendEmailSchema.safeParse(input);
-
-  // If validation fails, return the errors
-  if (!validation.success) {
-    console.error("Validation failed:", validation.error.errors);
-    return { success: false, error: validation.error.flatten().fieldErrors };
-  }
-
-  // Extract validated data
-  const { to, subject, body } = validation.data;
-
-  // Generate the HTML content for the email
-  const htmlContent = generateEmailHTML(body);
-
-  try {
-    // Call the Resend API to send the email
-    const { data, error } = await resend.emails.send({
-      // *** IMPORTANT: This must be an email address on your VERIFIED domain (beautyfeel.net) ***
-      from: "BeautyFeel Puerto Princesa <clinic@beautyfeel.net>", // <-- Replace with your actual sender email
-      to: [to], // 'to' can be a single email string or an array of strings
-      subject: subject, // Email subject line
-      text: body, // Plain text fallback
-      html: htmlContent, // HTML body content
-      // Optional parameters can be added here, e.g.:
-      // reply_to: 'support@beautyfeel.net',
-      // cc: ['cc@example.com'],
-      // bcc: ['bcc@example.com'],
-      // attachments: [{ filename: 'file.pdf', content: '...' }], // Base64 or Buffer
-      // tags: [{ name: 'category', value: 'contact_form' }], // For tracking
-    });
-
-    // If Resend returns an error, log and return it
-    if (error) {
-      console.error("Error sending email:", error);
-      return {
-        success: false,
-        error: error.message || "Failed to send email.",
-      };
-    }
-
-    // If successful, log and return success status and data
-    console.log("Email sent successfully:", data);
-    return { success: true, data };
-  } catch (error: any) {
-    // Catch any unexpected errors during the process
-    console.error("An unexpected error occurred:", error);
-    return {
-      success: false,
-      error: error.message || "An unexpected error occurred.",
-    };
-  }
-}
- */
-
-/* export async function getServedServicesTodayByUser(userId: string) {
-  if (!userId) {
-    console.error(
-      "[ServerAction|getServedServicesTodayByUser] User ID is required.",
-    );
-    return [];
-  }
-
-  try {
-    const timeZone = "Asia/Manila";
-    const now = new Date(); // Current date/time, typically UTC on server or client's local
-
-    // Get year, month, day parts according to Asia/Manila timezone
-    const phtYear = parseInt(
-      new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" }).format(
-        now,
-      ),
-    );
-    const phtMonth =
-      parseInt(
-        new Intl.DateTimeFormat("en-US", { timeZone, month: "numeric" }).format(
-          now,
-        ),
-      ) - 1; // JS Date months are 0-indexed
-    const phtDay = parseInt(
-      new Intl.DateTimeFormat("en-US", { timeZone, day: "numeric" }).format(
-        now,
-      ),
-    );
-
-    // PHT is UTC+8. So, PHT midnight is UTC H-8 on the same PHT day.
-    // For example, July 26 00:00 PHT is July 25 16:00 UTC.
-    const startOfTodayUTC = new Date(
-      Date.UTC(phtYear, phtMonth, phtDay, -8, 0, 0, 0),
-    );
-    // And PHT end of day (23:59:59.999) is UTC H-8 for that time.
-    // July 26 23:59:59.999 PHT is July 26 15:59:59.999 UTC.
-    const endOfTodayUTC = new Date(
-      Date.UTC(phtYear, phtMonth, phtDay, 23 - 8, 59, 59, 999),
-    );
-
-    // console.log(`[ServerAction|getServedServicesTodayByUser] Querying for user ${userId} between PHT ${new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'full', timeStyle: 'full' }).format(startOfTodayUTC)} and ${new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'full', timeStyle: 'full' }).format(endOfTodayUTC)}`);
-    // console.log(`[ServerAction|getServedServicesTodayByUser] UTC Range: ${startOfTodayUTC.toISOString()} to ${endOfTodayUTC.toISOString()}`);
-
-    const services = await prisma.availedService.findMany({
-      where: {
-        servedById: userId,
-        status: Status.DONE,
-        completedAt: {
-          gte: startOfTodayUTC,
-          lte: endOfTodayUTC, // Using lte for end of day inclusive of the last millisecond
-        },
-      },
-      include: {
-        service: {
-          select: { title: true },
-        },
-        transaction: {
-          include: {
-            customer: {
-              select: { name: true },
-            },
-          },
-        },
-      },
-      orderBy: {
-        completedAt: "desc",
-      },
-    });
-    return services;
-  } catch (error) {
-    console.error(
-      `[ServerAction|getServedServicesTodayByUser] Error fetching services for user ${userId}:`,
-      error,
-    );
-    return [];
-  }
-} */
 
 export async function getServedServicesTodayByUser(
   userId: string,
@@ -6659,521 +6999,6 @@ export async function createExpense(data: {
     }
   }
 }
-
-/* export async function createExpense(data: {
-  date: string; // YYYY-MM-DD string from form
-  amount: number; // Expecting number (float/decimal) from frontend input type="number"
-  category: ExpenseCategory; // Use the Prisma enum type directly here if you import it
-  description?: string | null; // Allow null or undefined
-  recordedById: string;
-  branchId?: string | null; // Allow null or undefined
-}): Promise<
-  { success: true; expenseId: string } | { success: false; error: string }
-> {
-  try {
-    console.log("[ServerAction] Received createExpense request:", data);
-
-    // Basic validation for required fields and data types
-    if (typeof data.date !== "string" || !data.date) {
-      return {
-        success: false,
-        error: "Date is required and must be a string.",
-      };
-    }
-    if (
-      typeof data.amount !== "number" ||
-      isNaN(data.amount) ||
-      !isFinite(data.amount) ||
-      data.amount <= 0
-    ) {
-      return { success: false, error: "Amount must be a positive number." };
-    }
-    if (!data.recordedById || typeof data.recordedById !== "string") {
-      return { success: false, error: "Recorded By user ID is required." };
-    }
-    // branchId validation - allow undefined, null, or valid string
-    if (
-      data.branchId !== null &&
-      data.branchId !== undefined &&
-      typeof data.branchId !== "string"
-    ) {
-      return { success: false, error: "Invalid branch ID format." };
-    }
-
-    // Validate expense category against Prisma enum values
-    const validPrismaExpenseCategories = Object.values(ExpenseCategory); // Use the Prisma enum directly
-    if (!validPrismaExpenseCategories.includes(data.category)) {
-      console.error(
-        `[ServerAction] Invalid expense category received: "${data.category}"`,
-      );
-      // You might want to list valid categories in the error for debugging
-      return {
-        success: false,
-        error: `Invalid expense category provided: "${data.category}". Valid categories are: ${validPrismaExpenseCategories.join(", ")}`,
-      };
-    }
-    // Since we validated against the Prisma enum, we can use it directly
-    const prismaCategory = data.category;
-
-    // Parse date string. Ensure it's treated as UTC start of day for @db.Date accuracy.
-    // This correctly captures the DATE the user entered.
-    const expenseDate = new Date(data.date);
-    if (isNaN(expenseDate.getTime())) {
-      return {
-        success: false,
-        error: `Invalid date format provided: ${data.date}`,
-      };
-    }
-    // Set time to start of day in UTC for consistent storage with @db.Date
-    const expenseDateUtc = new Date(
-      Date.UTC(
-        expenseDate.getFullYear(),
-        expenseDate.getMonth(),
-        expenseDate.getDate(),
-      ),
-    );
-
-    // Optional: Check if recordedBy exists (good practice)
-    const recorder = await prisma.account.findUnique({
-      where: { id: data.recordedById },
-      select: { id: true },
-    });
-    if (!recorder) {
-      return {
-        success: false,
-        error: `Recorded By user with ID ${data.recordedById} not found.`,
-      };
-    }
-    // Optional: Check if branch exists if provided
-    if (data.branchId) {
-      const branch = await prisma.branch.findUnique({
-        where: { id: data.branchId },
-        select: { id: true },
-      });
-      if (!branch) {
-        return {
-          success: false,
-          error: `Provided branch with ID ${data.branchId} not found.`,
-        };
-      }
-    }
-
-    // Amount is likely stored as Decimal or Float in your DB based on step="0.01" on frontend.
-    // If your DB column is Integer for centavos, uncomment and use this:
-    // const amountForDb = Math.round(data.amount * 100); // Convert PHP to centavos
-
-    const expense = await prisma.expense.create({
-      data: {
-        date: expenseDateUtc, // Use UTC date for @db.Date
-        amount: data.amount, // Use the number directly if DB is Decimal/Float
-        category: prismaCategory, // Use the validated Prisma enum value
-        description: data.description, // description can be undefined or null
-        recordedById: data.recordedById,
-        branchId: data.branchId, // Can be null
-      },
-    });
-
-    console.log("[ServerAction] Expense created successfully:", expense.id);
-    return { success: true, expenseId: expense.id };
-  } catch (error: any) {
-    // --- DETAILED ERROR LOGGING ---
-    // This is crucial for debugging server errors
-    console.error("[ServerAction] DETAILED ERROR creating expense:", error);
-    // --- END DETAILED ERROR LOGGING ---
-
-    // Provide a user-friendly message
-    let userErrorMessage =
-      "Failed to create expense due to an unexpected server error.";
-
-    // Attempt to provide more specific error messages based on the error object
-    if (error instanceof Error) {
-      // Check if it's a standard Error object
-      if (error.message.includes("Invalid date format")) {
-        userErrorMessage = "Invalid date format provided.";
-      } else if (error.message.includes("Amount must be positive")) {
-        userErrorMessage = "Amount must be positive.";
-      } else if (error.message.includes("Invalid expense category")) {
-        userErrorMessage = "Invalid expense category provided."; // More specific error message from validation above
-      } else if (error.message.includes("user not found")) {
-        userErrorMessage = "Recorded By user not found.";
-      } else if (error.message.includes("branch not found")) {
-        userErrorMessage = "Provided branch not found.";
-      }
-      // Check for specific Prisma errors if the error object has a 'code' property
-      if (error.code === "P2002") {
-        // Prisma Unique constraint violation
-        userErrorMessage = `Duplicate entry error: ${error.meta?.target || "unique constraint violated"}`;
-      } else if (error.code === "P2003") {
-        // Prisma Foreign key constraint violation
-        userErrorMessage = `Data integrity error: Related record not found for field "${error.meta?.field_name || "unknown"}"`;
-      } else if (error.code === "P2005") {
-        // Prisma Invalid data type
-        userErrorMessage = `Invalid data type for field "${error.meta?.field_name || "unknown"}". Please check input values.`;
-      }
-      // Add other relevant Prisma error codes you encounter
-      // Refer to Prisma error documentation: https://www.prisma.io/docs/reference/api-reference/error-reference
-    } else if (
-      typeof error === "object" &&
-      error !== null &&
-      "error" in error &&
-      typeof error.error === "string"
-    ) {
-      // Handle potential structure from fetch requests that wrap errors
-      userErrorMessage = `Server responded with error: ${error.error}`;
-    } else if (typeof error === "string") {
-      userErrorMessage = `Server error: ${error}`;
-    }
-
-    return { success: false, error: userErrorMessage };
-  } finally {
-    // Ensure prisma client is connected before trying to disconnect
-    if (prisma && (prisma as any)._activeProvider) {
-      await prisma.$disconnect(); // Good practice to disconnect in server actions
-    }
-  }
-} */
-
-/* export async function getSalesDataLast6Months(): Promise<SalesDataDetailed | null> {
-  try {
-    const today = new Date();
-    const endDate = endOfMonth(today);
-    const startDate = startOfMonth(subMonths(today, 5));
-
-    console.log(
-      `[ServerAction] Fetching sales data from ${startDate.toISOString()} to ${endDate.toISOString()}`,
-    );
-
-    // Fetch all active branches
-    const allBranches = await prisma.branch.findMany({
-      select: {
-        id: true,
-        title: true,
-      },
-      // Optional: Add a filter if you only want active/visible branches
-      // where: { isActive: true }
-      orderBy: {
-        title: "asc", // Order branches alphabetically
-      },
-    });
-    console.log(`[ServerAction] Fetched ${allBranches.length} branches.`);
-
-    // Define the structure for detailed transaction fetching including branch
-    type DetailedTransactionWithBranch = {
-      id: string;
-      bookedFor: Date;
-      paymentMethod: PaymentMethod | null; // Assuming PaymentMethod is from @prisma/client now
-      grandTotal: number; // Assuming grandTotal is Int
-      availedServices: {
-        id: string;
-        price: number; // Assuming price is Int
-        quantity: number; // Assuming quantity is Int
-        service: {
-          id: string;
-          title: string;
-          branch: {
-            id: string;
-            title: string;
-          };
-        } | null; // Service can be null if availed from a set directly? Check your schema. Using null allows flexibility.
-        originatingSetId: string | null;
-        originatingSetTitle: string | null;
-      }[];
-    };
-
-    // --- Fetch Sales Data ---
-    const completedTransactions: DetailedTransactionWithBranch[] =
-      await prisma.transaction.findMany({
-        where: {
-          status: Status.DONE, // Ensure Status is imported from @prisma/client
-          bookedFor: {
-            gte: startDate,
-            lte: endDate,
-          },
-        },
-        // Use a consistent select structure that includes branch
-        select: {
-          id: true,
-          bookedFor: true,
-          paymentMethod: true, // Assuming PaymentMethod is from @prisma/client now
-          grandTotal: true,
-          availedServices: {
-            select: {
-              id: true,
-              price: true,
-              quantity: true,
-              service: {
-                select: {
-                  id: true,
-                  title: true,
-                  branch: {
-                    select: {
-                      id: true,
-                      title: true,
-                    },
-                  },
-                },
-              },
-              originatingSetId: true,
-              originatingSetTitle: true,
-            },
-          },
-        },
-        orderBy: {
-          bookedFor: "asc",
-        },
-      });
-
-    console.log(
-      `[ServerAction] Fetched ${completedTransactions.length} completed transactions for sales report.`,
-    );
-
-    // --- Fetch Expense Data ---
-    const expenses = await prisma.expense.findMany({
-      where: {
-        date: {
-          gte: startDate,
-          lte: endDate,
-        },
-      },
-      select: {
-        id: true,
-        date: true,
-        amount: true, // Assuming amount is Int or Decimal/Float
-        category: true, // Assuming ExpenseCategory is from @prisma/client
-        branchId: true, // Include branch ID if needed for filtering/aggregation
-      },
-      orderBy: {
-        date: "asc",
-      },
-    });
-    console.log(
-      `[ServerAction] Fetched ${expenses.length} expenses for report.`,
-    );
-
-    // Maps for aggregation
-    const monthlyDataMap = new Map<
-      string,
-      {
-        totalSales: number;
-        cash: number;
-        ewallet: number;
-        bank: number;
-        unknown: number;
-        branchMonthlySalesMap: Map<string, number>; // Data aggregated by branch title for sales
-        // --- NEW: Monthly Total Expenses ---
-        totalExpenses: number;
-        // --- END NEW ---
-      }
-    >();
-    const overallPaymentMethodTotals: PaymentMethodTotals = {
-      cash: 0,
-      ewallet: 0,
-      bank: 0,
-      unknown: 0,
-    };
-    let overallGrandTotal = 0;
-    // --- NEW: Overall Total Expenses ---
-    let overallTotalExpenses = 0;
-    // --- END NEW ---
-    const uniqueBranchTitlesFromTransactions = new Set<string>(); // Collect unique branch titles found in transactions
-
-    // Initialize monthly map entries for the last 6 months (including current)
-    const currentFullMonthStart = startOfMonth(today);
-    for (let i = 0; i < 6; i++) {
-      const monthStart = subMonths(currentFullMonthStart, i);
-      const yearMonthKey = format(monthStart, "yyyy-MM");
-      monthlyDataMap.set(yearMonthKey, {
-        totalSales: 0,
-        cash: 0,
-        ewallet: 0,
-        bank: 0,
-        unknown: 0,
-        branchMonthlySalesMap: new Map(), // Initialize the map for sales
-        totalExpenses: 0, // --- Initialize monthly expense total ---
-      });
-    }
-
-    // --- Aggregate Sales Data ---
-    completedTransactions.forEach((transaction) => {
-      const yearMonthKey = format(transaction.bookedFor, "yyyy-MM");
-      const monthData = monthlyDataMap.get(yearMonthKey);
-
-      if (monthData) {
-        const transactionGrandTotal = transaction.grandTotal ?? 0; // Use grandTotal from transaction
-
-        // Aggregate monthly total sales
-        monthData.totalSales += transactionGrandTotal;
-
-        // Aggregate monthly payment methods
-        const method = transaction.paymentMethod?.toLowerCase() || "unknown";
-        // Ensure keys match PaymentMethod enum or 'unknown' string used in PaymentMethodTotals type
-        if (
-          method === PaymentMethod.cash ||
-          method === PaymentMethod.ewallet ||
-          method === PaymentMethod.bank
-        ) {
-          (monthData as any)[method] += transactionGrandTotal;
-        } else {
-          monthData.unknown += transactionGrandTotal;
-        }
-
-        // Aggregate overall payment methods
-        const overallMethodKey =
-          transaction.paymentMethod?.toLowerCase() || "unknown";
-        if (
-          overallMethodKey === PaymentMethod.cash ||
-          overallMethodKey === PaymentMethod.ewallet ||
-          overallMethodKey === PaymentMethod.bank
-        ) {
-          (overallPaymentMethodTotals as any)[overallMethodKey] +=
-            transactionGrandTotal;
-        } else {
-          overallPaymentMethodTotals.unknown += transactionGrandTotal;
-        }
-
-        // Aggregate overall grand total sales
-        overallGrandTotal += transactionGrandTotal;
-
-        // Aggregate monthly branch sales from availed services
-        transaction.availedServices.forEach((item) => {
-          if (item.service?.branch) {
-            const branchTitle = item.service.branch.title;
-            const itemSales = (item.price ?? 0) * (item.quantity ?? 0); // Use price and quantity from availed item
-
-            // Add branch title to the unique set found in transactions
-            uniqueBranchTitlesFromTransactions.add(branchTitle);
-
-            // Aggregate for the branchMonthlySalesMap
-            monthData.branchMonthlySalesMap.set(
-              branchTitle,
-              (monthData.branchMonthlySalesMap.get(branchTitle) ?? 0) +
-                itemSales,
-            );
-          } else if (item.originatingSetId && item.originatingSetTitle) {
-            // Handle sales from sets - Needs specific logic if you want to attribute set sales to branches.
-            // For now, sales from sets without a direct service->branch link are not aggregated by branch sales.
-          } else {
-            // Handle items not linked to a service or set that has branch info
-          }
-        });
-      } else {
-        console.warn(
-          `[ServerAction] Transaction outside of 6-month calculation range? ID: ${transaction.id}, Date: ${transaction.bookedFor}`,
-        );
-      }
-    });
-
-    // --- Aggregate Expense Data ---
-    expenses.forEach((expense) => {
-      const yearMonthKey = format(expense.date, "yyyy-MM");
-      const monthData = monthlyDataMap.get(yearMonthKey);
-
-      if (monthData) {
-        const expenseAmount = expense.amount ?? 0; // Use amount from expense
-
-        // Aggregate monthly total expenses
-        monthData.totalExpenses += expenseAmount;
-
-        // Aggregate overall total expenses
-        overallTotalExpenses += expenseAmount;
-
-        // NOTE: If you need to aggregate expenses by branch, you'd add similar logic here
-        // to store it in monthData (e.g., monthData.branchMonthlyExpensesMap)
-      } else {
-        console.warn(
-          `[ServerAction] Expense outside of 6-month calculation range? ID: ${expense.id}, Date: ${expense.date}`,
-        );
-      }
-    });
-
-    // Convert the monthly map to the desired array format
-    const monthlySalesArray: MonthlySales[] = Array.from(
-      monthlyDataMap.entries(),
-    )
-      .map(([yearMonthKey, data]) => {
-        // Convert the branchMonthlySalesMap to a simple object for the chart data
-        const branchMonthlySales: { [branchTitle: string]: number } = {};
-        data.branchMonthlySalesMap.forEach((value, key) => {
-          branchMonthlySales[key] = value;
-        });
-
-        // Create branchSales array for the Preview tooltip (using the monthly aggregated sales data)
-        const branchSalesForTooltip = Array.from(
-          data.branchMonthlySalesMap.entries(),
-        )
-          .map(([branchTitle, totalSales]) => ({
-            branchTitle,
-            totalSales,
-          }))
-          .sort((a, b) => b.totalSales - a.totalSales);
-
-        return {
-          month: format(new Date(yearMonthKey + "-01"), "MMM"), // e.g., "Jan". Append '-01' to ensure it's a valid date string.
-          yearMonth: yearMonthKey, // e.g., "yyyy-MM"
-          totalSales: data.totalSales,
-          cash: data.cash,
-          ewallet: data.ewallet,
-          bank: data.bank,
-          unknown: data.unknown,
-          branchSales: branchSalesForTooltip, // Use the monthly branch sales data for the tooltip
-          branchMonthlySales: branchMonthlySales, // For Expanded Chart
-          totalExpenses: data.totalExpenses, // --- Include monthly expense total ---
-        };
-      })
-      .sort((a, b) => a.yearMonth.localeCompare(b.yearMonth)); // Sort by month chronologically
-
-    // Extract unique branch titles from the fetched branches list
-    const uniqueBranchTitlesArray = allBranches.map((b) => b.title).sort();
-
-    console.log("[ServerAction] Sales and Expense data aggregated and sorted.");
-    console.log(
-      "[ServerAction] Monthly Data Array (first 2):",
-      monthlySalesArray.slice(0, 2),
-    );
-    console.log(
-      "[ServerAction] Overall Payment Totals:",
-      overallPaymentMethodTotals,
-    );
-    console.log("[ServerAction] Overall Grand Total Sales:", overallGrandTotal);
-    console.log(
-      "[ServerAction] Overall Grand Total Expenses:",
-      overallTotalExpenses,
-    ); // Log overall expenses
-    console.log(
-      "[ServerAction] All Branches Fetched:",
-      allBranches.map((b) => ({ id: b.id, title: b.title })), // Log ID and title
-    );
-    console.log(
-      "[ServerAction] Unique Branch Titles from Transactions (for comparison):", // Keep this log to compare
-      Array.from(uniqueBranchTitlesFromTransactions).sort(),
-    );
-
-    return {
-      monthlySales: monthlySalesArray,
-      paymentMethodTotals: overallPaymentMethodTotals,
-      grandTotal: overallGrandTotal, // Total Sales
-      uniqueBranchTitles: uniqueBranchTitlesArray, // Use the list from all branches
-      branches: allBranches, // --- Return the list of ALL branches ---
-      overallTotalExpenses: overallTotalExpenses, // --- Return overall total expenses ---
-    };
-  } catch (error: any) {
-    console.error("[ServerAction] Error fetching sales data:", error);
-    // Return empty data structure on error, including empty branches array and zero expenses
-    return {
-      monthlySales: [],
-      paymentMethodTotals: { cash: 0, ewallet: 0, bank: 0, unknown: 0 },
-      grandTotal: 0, // Total Sales
-      uniqueBranchTitles: [],
-      branches: [], // --- Return empty branches array on error ---
-      overallTotalExpenses: 0, // --- Return zero expenses on error ---
-    };
-  } finally {
-    // Ensure prisma client is connected before trying to disconnect
-    if (prisma && (prisma as any)._activeProvider) {
-      await prisma.$disconnect();
-    }
-  }
-} */
 
 export async function getSalesDataLast6Months(): Promise<SalesDataDetailed | null> {
   try {
@@ -7621,357 +7446,6 @@ interface ClaimGCResult {
   errors?: Record<string, string[]>;
 }
 
-export async function createTransactionFromGiftCertificate(
-  data: ClaimGCData,
-): Promise<ClaimGCResult> {
-  const { gcId, customerId, bookedForDate: clientBookedForDateString } = data;
-
-  console.log(
-    "[GC Claim Action] Received data:",
-    JSON.stringify(data, null, 2),
-  ); // Log incoming data
-
-  if (!gcId || !customerId || !clientBookedForDateString) {
-    console.error("[GC Claim Action] Missing required data:", {
-      gcId,
-      customerId,
-      clientBookedForDateString,
-    });
-    return {
-      success: false,
-      message: "Missing required data (GC ID, Customer ID, or Booking Date).",
-      errors: {
-        general: [
-          "Missing required data (GC ID, Customer ID, or Booking Date).",
-        ],
-      },
-    };
-  }
-
-  // --- Time Handling ---
-  const transactionProcessingStartTimeUTC = new Date(); // For createdAt, usedAt
-  let finalBookingDateTimeUTC: Date; // For Transaction.bookedFor
-
-  try {
-    console.log(
-      "[GC Claim Time Calc] Client bookedForDateString:",
-      clientBookedForDateString,
-    );
-
-    // Robust parsing for "YYYY-MM-DD"
-    const dateParts = clientBookedForDateString.split("-");
-    if (dateParts.length !== 3) {
-      throw new Error(
-        `Invalid date format. Expected YYYY-MM-DD, got '${clientBookedForDateString}'`,
-      );
-    }
-
-    const year = parseInt(dateParts[0], 10);
-    const month = parseInt(dateParts[1], 10); // This will be 1-12 (e.g., 1 for Jan, 12 for Dec)
-    const day = parseInt(dateParts[2], 10);
-
-    if (isNaN(year) || isNaN(month) || isNaN(day)) {
-      throw new Error(
-        `Invalid date components after parsing. Y: ${year}, M: ${month}, D: ${day} from '${clientBookedForDateString}'`,
-      );
-    }
-
-    // Basic validation for date components
-    if (
-      month < 1 ||
-      month > 12 ||
-      day < 1 ||
-      day > 31 ||
-      year < 1900 ||
-      year > 2300
-    ) {
-      // Adjusted year range
-      throw new Error(
-        `Date components out of reasonable range. Y: ${year}, M: ${month}, D: ${day}`,
-      );
-    }
-
-    // Get current time components (hours, minutes, seconds) in PHT
-    // We'll use these to set the time on the client's chosen date.
-    const nowInPHT = new Date(
-      transactionProcessingStartTimeUTC.getTime() +
-        MANILA_OFFSET_HOURS * 60 * 60 * 1000,
-    );
-    const currentPHTHours = nowInPHT.getUTCHours(); // Because we shifted 'nowInPHT', its UTC hours are actual PHT hours
-    const currentPHTMinutes = nowInPHT.getUTCMinutes();
-    const currentPHTSeconds = nowInPHT.getUTCSeconds();
-
-    console.log("[GC Claim Time Calc] Parsed Date (year, month (1-12), day):", {
-      year,
-      month,
-      day,
-    });
-    console.log("[GC Claim Time Calc] PHT Time Comps (H, M, S):", {
-      currentPHTHours,
-      currentPHTMinutes,
-      currentPHTSeconds,
-    });
-
-    // Date.UTC expects month to be 0-indexed (0 for January, 11 for December)
-    // So, we use 'month - 1'.
-    const phtDateTimeAsIfUTC = Date.UTC(
-      year,
-      month - 1, // Adjust month to be 0-indexed for Date.UTC
-      day,
-      currentPHTHours,
-      currentPHTMinutes,
-      currentPHTSeconds,
-    );
-
-    console.log(
-      "[GC Claim Time Calc] phtDateTimeAsIfUTC (raw timestamp from Date.UTC):",
-      phtDateTimeAsIfUTC,
-    );
-    if (isNaN(phtDateTimeAsIfUTC)) {
-      console.error(
-        "[GC Claim Time Calc] Date.UTC returned NaN. Inputs to Date.UTC:",
-        {
-          year,
-          monthInputToUTC: month - 1,
-          day,
-          currentPHTHours,
-          currentPHTMinutes,
-          currentPHTSeconds,
-        },
-      );
-      throw new Error(
-        "Date.UTC resulted in NaN, indicating invalid input components for the date/time.",
-      );
-    }
-
-    // Convert this PHT-meaningful timestamp (which was constructed as if it were UTC)
-    // back to actual UTC by subtracting the Manila offset.
-    const utcTimestampForBooking =
-      phtDateTimeAsIfUTC - MANILA_OFFSET_HOURS * 60 * 60 * 1000;
-    finalBookingDateTimeUTC = new Date(utcTimestampForBooking);
-
-    console.log(
-      "[GC Claim Time Calc] final utcTimestampForBooking (after offset adjustment):",
-      utcTimestampForBooking,
-    );
-
-    if (isNaN(finalBookingDateTimeUTC.getTime())) {
-      // Check if the final Date object is valid
-      console.error(
-        "[GC Claim Time Calc] FINAL Date object for booking is NaN. This means 'new Date(utcTimestampForBooking)' failed.",
-      );
-      console.error(
-        "[GC Claim Time Calc] utcTimestampForBooking was:",
-        utcTimestampForBooking,
-      );
-      console.error(
-        "[GC Claim Time Calc] Inputs to Date.UTC that led to this were:",
-        {
-          year,
-          monthInputToUTC: month - 1,
-          day,
-          currentPHTHours,
-          currentPHTMinutes,
-          currentPHTSeconds,
-        },
-      );
-      throw new Error(
-        "The calculated date for booking resulted in an invalid Date object (final check).",
-      );
-    }
-    console.log(
-      "[GC Claim Time Calc] finalBookingDateTimeUTC (as ISO string):",
-      finalBookingDateTimeUTC.toISOString(),
-    );
-  } catch (e: any) {
-    console.error(
-      "[GC Claim Action] Critical Error in Time Handling Block:",
-      e.message,
-      e.stack,
-    );
-    return {
-      success: false,
-      message:
-        e.message ||
-        "Error processing booking date/time. Please check the date format.",
-      errors: {
-        general: [
-          e.message ||
-            "An error occurred while processing the booking date and time.",
-        ],
-      },
-    };
-  }
-  // --- End Time Handling ---
-
-  try {
-    const transactionResult = await prisma.$transaction(
-      async (tx) => {
-        // 1. Fetch and Validate Gift Certificate
-        const gc = await tx.giftCertificate.findUnique({
-          where: { id: gcId },
-          include: {
-            services: true, // Include direct services
-            serviceSets: {
-              include: {
-                services: true, // Include services within sets
-              },
-            },
-          },
-        });
-
-        if (!gc) {
-          throw new Error(
-            "Gift Certificate not found. It may have been deleted.",
-          );
-        }
-        if (gc.usedAt) {
-          throw new Error(
-            `Gift Certificate ${gc.code} was already used on ${gc.usedAt.toLocaleDateString()}.`,
-          );
-        }
-        if (
-          gc.expiresAt &&
-          new Date(gc.expiresAt) <
-            new Date(transactionProcessingStartTimeUTC.toDateString())
-        ) {
-          // Compare date parts for expiry
-          throw new Error(
-            `Gift Certificate ${gc.code} expired on ${gc.expiresAt.toLocaleDateString()}.`,
-          );
-        }
-
-        // 2. Fetch Customer
-        const customer = await tx.customer.findUnique({
-          where: { id: customerId },
-        });
-        if (!customer) {
-          throw new Error(
-            "Customer not found. The selected customer may have been deleted.",
-          );
-        }
-
-        // 3. Prepare AvailedService data
-        const availedServicesData: any[] = []; // Use a more specific type if possible
-        let totalOriginalValue = 0;
-
-        // Add individual services from the GC
-        for (const service of gc.services) {
-          availedServicesData.push({
-            serviceId: service.id,
-            quantity: 1,
-            price: service.price, // Price at time of transaction (original service price)
-            commissionValue: 0, // Or calculate based on your rules, often 0 for GC
-            status: Status.PENDING,
-            // branchId: service.branchId, // If services are branch-specific and GC implies a branch
-          });
-          totalOriginalValue += service.price;
-        }
-
-        // Add services from sets linked to the GC
-        for (const set of gc.serviceSets) {
-          for (const serviceInSet of set.services) {
-            availedServicesData.push({
-              serviceId: serviceInSet.id,
-              quantity: 1,
-              price: serviceInSet.price, // Individual service price within the set
-              commissionValue: 0,
-              status: Status.PENDING,
-              originatingSetId: set.id,
-              originatingSetTitle: set.title,
-              // branchId: serviceInSet.branchId, // If services are branch-specific
-            });
-            totalOriginalValue += serviceInSet.price;
-          }
-        }
-
-        if (availedServicesData.length === 0) {
-          throw new Error(
-            "No services or sets are associated with this Gift Certificate. Cannot create a transaction.",
-          );
-        }
-
-        // 4. Create the Transaction
-        const newTransaction = await tx.transaction.create({
-          data: {
-            customerId,
-            bookedFor: finalBookingDateTimeUTC, // Use the calculated UTC booking time
-            createdAt: transactionProcessingStartTimeUTC, // Use server's UTC time at start of processing
-            availedServices: {
-              create: availedServicesData,
-            },
-            grandTotal: 0, // GC means customer pays 0 for these items
-            discount: totalOriginalValue, // The "discount" is the full value of the GC items
-            status: Status.PENDING,
-            paymentMethod: null, // Or a specific 'GIFT_CERTIFICATE' if you add it to PaymentMethod enum
-            // branchId: ... // Add branch logic if needed, e.g., from GC or first service
-          },
-        });
-
-        // 5. Mark Gift Certificate as used
-        await tx.giftCertificate.update({
-          where: { id: gcId },
-          data: { usedAt: transactionProcessingStartTimeUTC }, // Mark used with current UTC time
-        });
-
-        // Optional: Update customer totalPaid or nextAppointment if GCs contribute.
-        // Typically, totalPaid does not increase for a GC redemption itself.
-        // await tx.customer.update({
-        //   where: { id: customerId },
-        //   data: { totalPaid: { increment: 0 } }, // Example if needed
-        // });
-
-        return newTransaction;
-      },
-      { timeout: 15000 },
-    ); // Adjusted timeout
-
-    revalidatePath("/transactions"); // Or relevant paths where transactions are listed
-    revalidatePath("/customize"); // For Gift Certificate list update (if you show used status)
-
-    console.log(
-      `[GC Claim Action] Successfully created transaction ${transactionResult.id} for GC ${gcId}`,
-    );
-    return {
-      success: true,
-      message: `Gift Certificate claimed successfully. A new pending transaction (ID: ${transactionResult.id}) has been created.`,
-      transactionId: transactionResult.id,
-    };
-  } catch (error: any) {
-    console.error(
-      "[GC Claim Action] Error during Prisma transaction or post-transaction:",
-      error.message,
-      error.stack,
-    );
-    // @ts-ignore - Prisma error structure check
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "P2028"
-    ) {
-      return {
-        success: false,
-        message:
-          "Claiming the Gift Certificate took too long and timed out. Please try again.",
-        errors: { general: ["The operation timed out. Please try again."] },
-      };
-    }
-    return {
-      success: false,
-      message:
-        error.message ||
-        "Failed to claim Gift Certificate due to a server error.",
-      errors: {
-        general: [
-          error.message ||
-            "An unexpected error occurred while claiming the Gift Certificate.",
-        ],
-      },
-    };
-  }
-}
-
 export async function toggleAllCanRequestPayslipAction(
   newStatus: boolean,
   accountIds?: string[], // Optional: to only update a subset, e.g., filtered view
@@ -8012,6 +7486,1235 @@ export async function toggleAllCanRequestPayslipAction(
     return {
       success: false,
       error: error.message || "Failed to update all permissions.",
+    };
+  }
+}
+
+export async function createTransactionFromGiftCertificate(data: {
+  gcId: string;
+  customerId: string;
+  bookedForDate: string; // Expected YYYY-MM-DD format
+}): Promise<
+  | { success: true; message: string; transactionId: string }
+  | { success: false; message: string }
+> {
+  try {
+    // --- 1. Input Validation ---
+    if (!data.gcId || !data.customerId || !data.bookedForDate) {
+      return {
+        success: false,
+        message: "Missing required data (GC ID, Customer ID, or Booking Date).",
+      };
+    }
+
+    // --- 2. Fetch and Validate GC ---
+    const giftCertificate = await prisma.giftCertificate.findUnique({
+      where: { id: data.gcId },
+      include: {
+        services: true, // Include related Service details
+        serviceSets: {
+          // Include related ServiceSet details and their services
+          include: {
+            services: true, // Include services within the set (might not be needed for calculation but good for context)
+          },
+        },
+      },
+    });
+
+    if (!giftCertificate) {
+      return { success: false, message: "Gift Certificate not found." };
+    }
+    if (giftCertificate.usedAt) {
+      // Format date for user readability
+      const usedDate = giftCertificate.usedAt.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      const usedTime = giftCertificate.usedAt.toLocaleTimeString("en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZoneName: "short",
+      });
+      return {
+        success: false,
+        message: `Gift Certificate already used on ${usedDate} at ${usedTime}.`,
+      };
+    }
+    if (giftCertificate.expiresAt && giftCertificate.expiresAt < new Date()) {
+      const expiryDate = giftCertificate.expiresAt.toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+      return {
+        success: false,
+        message: `Gift Certificate expired on ${expiryDate}.`,
+      };
+    }
+    if (
+      giftCertificate.services.length === 0 &&
+      giftCertificate.serviceSets.length === 0
+    ) {
+      // This GC doesn't grant anything.
+      return {
+        success: false,
+        message:
+          "Gift Certificate is not linked to any services or sets and cannot be claimed.",
+      };
+    }
+
+    // --- 3. Fetch Customer ---
+    const customer = await prisma.customer.findUnique({
+      where: { id: data.customerId },
+    });
+
+    if (!customer) {
+      return { success: false, message: "Customer not found." };
+    }
+
+    // --- 4. Prepare Transaction and Availed Service Data ---
+    let grandTotal = 0; // Total value of the GC items
+    const availedServiceItemsData: any[] = []; // Data structure for createMany
+
+    // Add services listed directly on the GC
+    for (const service of giftCertificate.services) {
+      availedServiceItemsData.push({
+        // transactionId will be added later in the transaction
+        serviceId: service.id,
+        quantity: 1, // Assuming 1 quantity per service listed on GC
+        price: service.price, // Snapshot of the service's current price
+        commissionValue: 0, // Default commission for GC items is often 0, adjust if needed
+        status: Status.PENDING, // Initially pending
+        completedAt: null,
+      });
+      grandTotal += service.price;
+    }
+
+    // Add service sets listed on the GC
+    for (const serviceSet of giftCertificate.serviceSets) {
+      // Create ONE AvailedService record to represent the set being redeemed
+      availedServiceItemsData.push({
+        // transactionId will be added later
+        originatingSetId: serviceSet.id,
+        originatingSetTitle: serviceSet.title, // Denormalize title for easier access
+        serviceId: null, // This AvailedService represents the set, not a specific service line
+        quantity: 1, // One set
+        price: serviceSet.price, // Snapshot of the set's current price
+        commissionValue: 0, // Default commission
+        status: Status.PENDING, // Initially pending
+        completedAt: null,
+      });
+      grandTotal += serviceSet.price;
+    }
+
+    // Prepare dates
+    const selectedDate = new Date(data.bookedForDate); // Gets the date part, usually midnight UTC
+    if (isNaN(selectedDate.getTime())) {
+      return { success: false, message: "Invalid booking date provided." };
+    }
+
+    // Get the current time
+    const currentTime = new Date();
+
+    // Combine selected date with current time for bookedFor
+    const bookedForWithClaimTime = new Date(
+      selectedDate.getFullYear(),
+      selectedDate.getMonth(),
+      selectedDate.getDate(),
+      currentTime.getHours(),
+      currentTime.getMinutes(),
+      currentTime.getSeconds(),
+      currentTime.getMilliseconds(),
+    );
+
+    const now = new Date(); // Use current time for createdAt and usedAt timestamp
+
+    // --- 5. Create Transaction, Availed Services, and Update GC atomically ---
+    const result = await prisma.$transaction(async (tx) => {
+      // Create the Transaction
+      const transaction = await tx.transaction.create({
+        data: {
+          customerId: customer.id,
+          grandTotal: grandTotal, // Total value covered by GC
+          discount: 0,
+          // --- START MODIFICATION ---
+          paymentMethod: PaymentMethod.cash, // Set default payment method to Cash
+          // --- END MODIFICATION ---
+          status: Status.PENDING, // Initial status
+          giftCertificateId: giftCertificate.id, // Link the GC used
+          bookedFor: bookedForWithClaimTime, // The scheduled date/time for the service
+          createdAt: now, // The actual date/time the transaction record was created
+          // branchId: // Omit or add logic to determine branch if needed
+        },
+      });
+
+      // Link AvailedService items to the new Transaction ID
+      const availedServiceDataWithTxId = availedServiceItemsData.map(
+        (item) => ({
+          ...item,
+          transactionId: transaction.id,
+          // Add branchId to AvailedService if needed
+        }),
+      );
+
+      // Create AvailedService records
+      if (availedServiceDataWithTxId.length > 0) {
+        await tx.availedService.createMany({
+          data: availedServiceDataWithTxId,
+          skipDuplicates: true,
+        });
+      }
+
+      // Mark the Gift Certificate as used
+      await tx.giftCertificate.update({
+        where: { id: giftCertificate.id },
+        data: {
+          usedAt: now, // Mark as used at the current time
+          // Add transaction relation if added to GC model
+          // transactions: {
+          //    connect: { id: transaction.id }
+          // }
+        },
+      });
+
+      return transaction; // Return the created transaction for the success message
+    });
+
+    // --- 6. Return Success ---
+    return {
+      success: true,
+      message: `Gift Certificate "${giftCertificate.code}" successfully claimed and transaction created with ID ${result.id}.`,
+      transactionId: result.id,
+    };
+  } catch (error: any) {
+    console.error("Error claiming Gift Certificate:", error);
+    // Provide a more user-friendly error message
+    if (
+      error.code === "P2003" &&
+      error.meta?.field_name === "giftCertificateId"
+    ) {
+      return {
+        success: false,
+        message:
+          "Failed to link Gift Certificate to transaction. GC ID may not exist (unexpected after validation). Please try again or contact support.",
+      };
+    }
+    // Catch potential type errors if Date construction fails unexpectedly
+    if (error instanceof TypeError) {
+      return {
+        success: false,
+        message:
+          "Error processing date/time. Please try again or contact support.",
+      };
+    }
+
+    return {
+      success: false,
+      message:
+        error.message ||
+        "An unexpected error occurred during the claim process. Please try again.",
+    };
+  }
+}
+
+export async function getRecentTransactions(limit: number = 50) {
+  try {
+    const transactions = await prisma.transaction.findMany({
+      orderBy: { createdAt: "desc" },
+      take: limit, // Limit the number of transactions fetched
+      include: {
+        customer: {
+          select: { id: true, name: true, email: true },
+        },
+        availedServices: {
+          include: {
+            service: { select: { id: true, title: true } },
+            servedBy: { select: { id: true, name: true } },
+          },
+        },
+        voucherUsed: {
+          select: { code: true },
+        },
+        branch: {
+          select: { id: true, title: true },
+        },
+      },
+    });
+
+    return transactions; // Prisma results are typically plain objects compatible with JSON
+  } catch (error) {
+    console.error("Error fetching recent transactions:", error);
+    return [];
+  }
+}
+
+export async function updateTransactionDetails({
+  transactionId,
+  status,
+  paymentMethod,
+}: UpdateTransactionInput): Promise<{
+  success: boolean;
+  message?: string;
+  errors?: Record<string, string[]>;
+}> {
+  if (!transactionId) {
+    return { success: false, message: "Transaction ID is required." };
+  }
+
+  try {
+    const updatedTransaction = await prisma.transaction.update({
+      where: { id: transactionId },
+      data: {
+        ...(status !== undefined && { status }), // Update status if provided
+        ...(paymentMethod !== undefined && { paymentMethod }), // Update paymentMethod if provided (can be null)
+      },
+    });
+
+    // Revalidate paths that might display transaction data
+    revalidatePath("/[accountId]"); // Revalidate dashboard page
+    revalidatePath("/[accountId]/transactions"); // Revalidate dedicated transactions page if it exists
+
+    return { success: true, message: "Transaction updated successfully." };
+  } catch (error: any) {
+    console.error(`Error updating transaction ${transactionId}:`, error);
+
+    // Handle Prisma-specific errors, e.g., record not found
+    if (error.code === "P2025") {
+      return { success: false, message: "Transaction not found." };
+    }
+
+    return {
+      success: false,
+      message: error.message || "Failed to update transaction.",
+    };
+  }
+}
+
+export async function createAccountAction(
+  formData: FormData,
+): Promise<ActionResult> {
+  try {
+    const username = formData.get("username") as string;
+    const name = formData.get("name") as string;
+    const email = formData.get("email") as string; // Now explicitly required from the form for new accounts
+    const dailyRateStr = formData.get("dailyRate") as string;
+    const branchId = formData.get("branchId") as string | null; // Can be empty string "" or actual ID
+
+    const selectedRoles: Role[] = Object.values(Role).filter(
+      (roleValue) => formData.get(`role-${roleValue}`) === "on",
+    );
+
+    // --- Server-Side Validations ---
+    const validationErrors: Record<string, string[]> = {};
+
+    if (!username || username.trim() === "") {
+      validationErrors.username = ["Username is required."];
+    } else if (username.length > 20) {
+      validationErrors.username = ["Username cannot exceed 20 characters."];
+    }
+
+    if (!name || name.trim() === "") {
+      validationErrors.name = ["Full Name is required."];
+    }
+
+    if (!email || email.trim() === "") {
+      validationErrors.email = ["Email is required for new accounts."];
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      // Basic email format validation
+      validationErrors.email = ["Please enter a valid email address."];
+    }
+
+    let dailyRate: number | undefined;
+    if (!dailyRateStr || dailyRateStr.trim() === "") {
+      validationErrors.dailyRate = ["Daily rate is required."];
+    } else {
+      dailyRate = parseInt(dailyRateStr, 10);
+      if (isNaN(dailyRate) || dailyRate < 0) {
+        validationErrors.dailyRate = [
+          "Daily rate must be a non-negative number.",
+        ];
+      }
+    }
+
+    if (selectedRoles.length === 0) {
+      validationErrors.roles = ["At least one role must be selected."];
+    }
+
+    if (Object.keys(validationErrors).length > 0) {
+      return {
+        success: false,
+        message: "Validation failed. Please check the form.",
+        errors: validationErrors,
+      };
+    }
+
+    // --- Check for existing username or email ---
+    const existingUserByUsername = await prisma.account.findUnique({
+      where: { username },
+    });
+    if (existingUserByUsername) {
+      return {
+        success: false,
+        message: "Username already exists.",
+        errors: { username: ["This username is already taken."] },
+      };
+    }
+
+    // Email must be unique (as per schema, this is an extra frontend-friendly check)
+    const existingUserByEmail = await prisma.account.findUnique({
+      where: { email },
+    });
+    if (existingUserByEmail) {
+      return {
+        success: false,
+        message: "Email already associated with an account.",
+        errors: { email: ["This email address is already in use."] },
+      };
+    }
+
+    // --- Generate and Hash Password ---
+    const temporaryPassword = generateRandomPassword(); // Default length 12
+    const hashedPassword = await bcrypt.hash(temporaryPassword, 10); // Standard salt rounds
+
+    // --- Create Account in Database ---
+    const newAccount = await prisma.account.create({
+      data: {
+        username,
+        name,
+        email, // Email is validated to be present
+        password: hashedPassword,
+        dailyRate: dailyRate!, // Validated above
+        role: selectedRoles,
+        branchId: branchId && branchId !== "" ? branchId : null, // Prisma expects null for optional unset relation
+        mustChangePassword: true, // CRITICAL: Force password change on first login
+        // salary, canRequestPayslip will use defaults from schema
+      },
+      select: {
+        // Select only necessary fields for response/email
+        id: true,
+        username: true,
+        email: true,
+        name: true,
+      },
+    });
+
+    let emailSentSuccessfully = false;
+    let emailErrorMessage = "";
+
+    if (resendInstanceSA) {
+      try {
+        const { data, error } = await resendInstanceSA.emails.send({
+          from: SENDER_EMAIL_SA, // IMPORTANT: Replace with your verified sender email
+          to: [newAccount.email!], // Email is guaranteed to be present here
+          subject: `Welcome to Your App - ${newAccount.name}!`,
+          html: `
+              <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                <h2 style="color: #0056b3;">Welcome to Your App, ${newAccount.name}!</h2>
+                <p>An account has been created for you by an administrator.</p>
+                <p>Here are your login details:</p>
+                <ul style="list-style-type: none; padding: 0;">
+                  <li style="margin-bottom: 8px;"><strong>Username:</strong> ${newAccount.username}</li>
+                  <li style="margin-bottom: 8px;"><strong>Temporary Password:</strong> <strong style="font-size: 1.1em; color: #d9534f;">${temporaryPassword}</strong></li>
+                </ul>
+                <p>
+                  Please <a href="https://beautyfeel.net/login" target="_blank" style="color: #007bff; text-decoration: none;">log in here</a> as soon as possible.
+                  You will be required to change this temporary password upon your first login.
+                </p>
+                <p>If you have any questions, please contact your administrator.</p>
+                <p style="margin-top: 20px; font-size: 0.9em; color: #777;">
+                  Best regards,<br/>
+                  The BeautyFeel App Team
+                </p>
+              </div>
+            `, // IMPORTANT: Replace YOUR_APPLICATION_LOGIN_URL with your actual login page URL
+        });
+
+        if (error) {
+          console.error("Resend API Error:", error);
+          emailErrorMessage = `Failed to send welcome email: ${error.message}`;
+        } else {
+          console.log(
+            "Welcome email sent successfully via Resend, ID:",
+            data?.id,
+          );
+          emailSentSuccessfully = true;
+        }
+      } catch (emailCatchError: any) {
+        console.error("Exception during email sending:", emailCatchError);
+        emailErrorMessage = `An exception occurred while sending the welcome email: ${emailCatchError.message}`;
+      }
+    } else {
+      emailErrorMessage =
+        "Email sending is not configured (RESEND_API_KEY missing). Welcome email not sent.";
+      console.warn(emailErrorMessage);
+    }
+
+    // Construct the success message based on email status
+    let successMessage = `Account for ${newAccount.username} created successfully.`;
+    if (emailSentSuccessfully) {
+      successMessage += ` A temporary password has been sent to ${newAccount.email}.`;
+    } else {
+      successMessage += ` ${emailErrorMessage} Please provide the password manually if needed.`;
+    }
+
+    return {
+      success: true,
+      message: successMessage,
+      account: {
+        id: newAccount.id,
+        username: newAccount.username,
+        email: newAccount.email,
+        name: newAccount.name,
+      },
+    };
+  } catch (error: any) {
+    console.error("Create Account Action - Unexpected Error:", error);
+
+    // Handle Prisma-specific unique constraint errors that might occur despite earlier checks (e.g., race conditions)
+    if (error.code === "P2002" && error.meta?.target) {
+      const targetField = (error.meta.target as string[]).join(", "); // e.g., "Account_username_key" or "Account_email_key"
+      if (targetField.includes("username")) {
+        return {
+          success: false,
+          message: "Username already exists.",
+          errors: { username: ["This username is already taken."] },
+        };
+      }
+      if (targetField.includes("email")) {
+        return {
+          success: false,
+          message: "Email already associated with an account.",
+          errors: { email: ["This email address is already in use."] },
+        };
+      }
+      return {
+        success: false,
+        message: `A data conflict occurred: ${targetField} must be unique.`,
+      };
+    }
+    return {
+      success: false,
+      message:
+        error.message ||
+        "An unexpected error occurred while creating the account.",
+    };
+  }
+}
+
+export async function updateUserPasswordAction(
+  newPassword: string,
+): Promise<ActionResult> {
+  // 1. Get the current session on the server
+  const session = await getServerSession(authOptions);
+
+  // 2. Ensure user is authenticated
+  if (!session?.user?.id) {
+    return {
+      success: false,
+      message: "User not authenticated. Please log in again.",
+    };
+  }
+
+  // 3. Validate the new password (e.g., length)
+  if (!newPassword || newPassword.length < 6) {
+    return {
+      success: false,
+      message: "Password must be at least 6 characters long.",
+    };
+  }
+
+  try {
+    // 4. Hash the new password
+    const hashedPassword = await bcrypt.hash(newPassword, 10); // Use appropriate salt rounds
+
+    // 5. Update the user's record in the database
+    await prisma.account.update({
+      where: { id: session.user.id },
+      data: {
+        password: hashedPassword,
+        mustChangePassword: false, // CRITICAL: Set the flag to false
+      },
+    });
+
+    console.log(`Password updated successfully for user: ${session.user.id}`);
+    return {
+      success: true,
+      message: "Password updated successfully! Redirecting...",
+    };
+  } catch (error) {
+    console.error("Error updating password in database:", error);
+    return {
+      success: false,
+      message: "An unexpected error occurred while updating your password.",
+    };
+  }
+}
+
+type CustomerWithNonNullEmail = Pick<Customer, "id" | "name"> & {
+  email: string;
+};
+
+export async function getCustomersForEmailAction(): Promise<
+  CustomerWithNonNullEmail[] // Use the new type here
+> {
+  try {
+    // Check cache first (as before)
+    const cachedData = getCachedData<CustomerWithNonNullEmail[]>( // Update cache type as well
+      CUSTOMERS_CACHE_KEY,
+    );
+    if (cachedData) {
+      console.log("Returning customers from cache...");
+      return cachedData;
+    }
+
+    console.log("Fetching customers from database...");
+
+    const customersWithEmails = await prisma.customer.findMany({
+      where: {
+        // --- CORRECTED SYNTAX FOR COMBINING FILTERS ---
+        AND: [
+          { email: { not: null } }, // Condition 1: email is not null
+          { email: { not: "" } }, // Condition 2: email is not an empty string
+        ],
+        // ---------------------------------------------
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+
+    // The data returned by Prisma *after* the AND filter will conform to CustomerWithNonNullEmail[]
+    // The type assertion is still needed because Prisma's default generated type for 'email' is 'string | null'.
+    const result = customersWithEmails as CustomerWithNonNullEmail[];
+
+    // Cache the fetched data (optional: set an expiry if needed)
+    setCachedData(CUSTOMERS_CACHE_KEY, result); // Cache the correctly typed result
+
+    console.log(`Fetched ${result.length} customers with emails.`);
+    return result;
+  } catch (error) {
+    console.error("Error fetching customers:", error);
+    // In a real app, you might want to log this error more robustly (e.g., to a logging service)
+    throw new Error("Failed to fetch customer list. Database error.");
+  }
+}
+
+function generateEmailHtml(
+  subject: string,
+  body: string,
+  logoUrl: string, // Added logoUrl parameter
+): string {
+  // This is where you would construct the full HTML email.
+  // You'd use the provided colors and structure similar to the example image.
+  // For simplicity, this placeholder just wraps the text in basic HTML.
+  // A real implementation would use a dedicated HTML email template file.
+
+  // Basic example structure (need to replace with a real template)
+  return `
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${subject}</title>
+  <style type="text/css">
+    /* Client-specific Styles */
+    #outlook a { padding:0; }
+    body{ width:100% !important; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%; margin:0; padding:0; }
+    .ExternalClass { width:100%; }
+    .ExternalClass, .ExternalClass p, .ExternalClass span, .ExternalClass font, .ExternalClass td, .ExternalClass div { line-height: 100%; }
+    #backgroundTable { margin:0; padding:0; width:100% !important; line-height: 100% !important; }
+
+    /* Custom Styles */
+    body {
+      background-color: #F6F4EB; /* customOffWhite */
+      font-family: sans-serif;
+      color: #2E2A2A; /* customBlack */
+    }
+    table { border-collapse: collapse; mso-table-lspace:0pt; mso-table-rspace:0pt; }
+    td { margin:0; padding:0; }
+    img { outline:none; text-decoration:none; -ms-interpolation-mode: bicubic; }
+    a img { border:none; }
+    .image_fix { display:block; }
+
+    /* Mobile Styles */
+    @media only screen and (max-width: 600px) {
+      table[class=full-width] { width: 100% !important; }
+      table[class=column] { width: 100% !important; float: none !important; margin-bottom: 15px; }
+      td[class=column-padding] { padding-left: 15px !important; padding-right: 15px !important; }
+      td[class=mobile-padding] { padding: 15px !important; }
+      td[class=align-center] { text-align: center !important; }
+      img[class=image-responsive] { width: 100% !important; height: auto !important; }
+    }
+
+    /* Colors */
+    .color-primary-dark { color: #C28583; } /* customDarkPink */
+    .color-text { color: #2E2A2A; } /* customBlack */
+    .bg-offwhite { background-color: #F6F4EB; } /* customOffWhite */
+    .bg-lightgray { background-color: #D9D9D9; } /* customGray */
+    .btn {
+        display: inline-block;
+        padding: 10px 20px;
+        margin-top: 15px;
+        background-color: #C28583; /* customDarkPink */
+        color: #FFFFFF;
+        text-decoration: none;
+        border-radius: 5px;
+    }
+
+  </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F6F4EB;">
+  <center>
+    <table border="0" cellpadding="0" cellspacing="0" width="100%" class="bg-offwhite" id="backgroundTable">
+      <tr>
+        <td align="center" valign="top">
+          <table border="0" cellpadding="0" cellspacing="0" width="600" class="full-width">
+            <tr>
+              <td align="center" valign="top" style="padding: 20px 0;">
+                <!-- Header / Logo -->
+                <!-- Use the passed logoUrl -->
+                <img src="${logoUrl}" alt="BEAUTYFEEL The Beauty Lounge" width="150" style="display:block;" />
+                <p style="font-size: 12px; color: #2E2A2A; margin-top: 5px;">FACE • SKIN • NAILS • MASSAGE</p>
+              </td>
+            </tr>
+            <tr>
+              <td align="left" valign="top" class="mobile-padding" style="padding: 20px; background-color: #FFFFFF; border-radius: 8px; box-shadow: 0px 4px 4px rgba(0, 0, 0, 0.1);">
+                <!-- Email Body Content -->
+                <h1 style="font-size: 20px; margin-bottom: 15px; color: #C28583;">${subject}</h1>
+
+                <p style="margin-bottom: 15px; line-height: 1.6;">
+                  ${body.replace(/\n/g, "<br />")}
+                  <!-- Basic line break conversion: You might want to add more complex markdown parsing here if needed -->
+                </p>
+
+                <!-- Optional: Add a button -->
+                <!-- <a href="#" class="btn">Book Now</a> -->
+
+              </td>
+            </tr>
+            <tr>
+              <td align="center" valign="top" style="padding: 20px;">
+                <!-- Footer -->
+                <p style="font-size: 12px; color: #2E2A2A/80; line-height: 1.5;">
+                  Best regards,<br/>
+                  The BeautyFeel Team
+                </p>
+                 <p style="font-size: 10px; color: #2E2A2A/60; margin-top: 15px;">
+                  This email was sent from BeautyFeel. Please do not reply directly to this email.
+                </p>
+                <!-- Optional: Social links, address -->
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>
+`;
+}
+
+export async function sendEmailsAction(
+  customerIds: string[],
+  subjectTemplate: string, // Renamed to indicate it's a template
+  bodyTemplate: string, // Renamed to indicate it's a template
+): Promise<{
+  success: boolean;
+  message: string;
+  details?: { sent: number; failed: number; errors: string[] };
+}> {
+  try {
+    console.log("Received send email request:", {
+      customerIds,
+      subjectTemplate,
+    });
+
+    if (!customerIds || customerIds.length === 0) {
+      return { success: false, message: "No recipients selected." };
+    }
+    if (!subjectTemplate?.trim()) {
+      return { success: false, message: "Subject template cannot be empty." };
+    }
+
+    if (!resendInstanceSA) {
+      console.error(
+        "Resend API key is missing or invalid. Emails cannot be sent.",
+      );
+      return {
+        success: false,
+        message: "Email sending service is not configured.",
+      };
+    }
+    if (!SENDER_EMAIL_SA) {
+      console.error("Sender email (SENDER_EMAIL_SA) is not configured.");
+      return {
+        success: false,
+        message:
+          "Sender email address is not configured for the email service.",
+      };
+    }
+
+    const allCustomers = await getCustomersForEmailAction(); // This should be efficient if cached
+    const recipients = allCustomers.filter(
+      (c) => customerIds.includes(c.id) && c.email && c.email.trim() !== "",
+    );
+
+    if (recipients.length === 0) {
+      return {
+        success: false,
+        message: "No valid recipients found with email addresses.",
+      };
+    }
+
+    let sentCount = 0;
+    let failedCount = 0;
+    const errorMessages: string[] = [];
+
+    console.log(
+      `Attempting to send emails to ${recipients.length} recipients individually...`,
+    );
+
+    // 2. Loop through each recipient, personalize, and send.
+    for (const customer of recipients) {
+      if (!customer.email) {
+        // Should be filtered, but good to double-check
+        failedCount++;
+        errorMessages.push(
+          `Skipped: Customer ${customer.name || customer.id} has no email.`,
+        );
+        continue;
+      }
+
+      const personalizedSubject = replacePlaceholders(
+        subjectTemplate,
+        customer,
+      );
+      const personalizedBody = replacePlaceholders(bodyTemplate, customer); // This is the plain text body
+
+      const htmlContent = generateEmailHtml(
+        personalizedSubject,
+        personalizedBody, // Pass the personalized plain text body for HTML generation
+        LOGO_URL_SA,
+      );
+
+      try {
+        console.log(
+          `Sending to: ${customer.email}, Subject: ${personalizedSubject}`,
+        );
+        const resendResponse = await resendInstanceSA.emails.send({
+          from: SENDER_EMAIL_SA,
+          to: customer.email, // Send to individual customer
+          subject: personalizedSubject,
+          text: personalizedBody, // Personalized plain text version
+          html: htmlContent, // Personalized HTML version
+        });
+
+        if (resendResponse?.data?.id) {
+          console.log(
+            `Email to ${customer.email} queued successfully: ${resendResponse.data.id}`,
+          );
+          sentCount++;
+        } else {
+          console.error(
+            `Resend call failed or unexpected response for ${customer.email}:`,
+            resendResponse,
+          );
+          failedCount++;
+          errorMessages.push(
+            `Failed for ${customer.email}: ${resendResponse?.error?.message || "Unexpected response"}`,
+          );
+        }
+      } catch (emailError: any) {
+        console.error(
+          `Error sending email to ${customer.email} via Resend:`,
+          emailError,
+        );
+        failedCount++;
+        errorMessages.push(
+          `Error for ${customer.email}: ${emailError.message || "Unknown error"}`,
+        );
+      }
+    }
+
+    let finalMessage = "";
+    if (sentCount > 0) {
+      finalMessage += `${sentCount} email(s) queued successfully. `;
+    }
+    if (failedCount > 0) {
+      finalMessage += `${failedCount} email(s) failed to send.`;
+      // You might want to log `errorMessages` on the server for admin review
+    }
+    if (sentCount === 0 && failedCount === 0) {
+      // Should not happen if recipients.length > 0
+      finalMessage =
+        "No emails were processed. Check recipient list and server logs.";
+    }
+
+    return {
+      success: sentCount > 0 && failedCount === 0, // Consider success true if at least one sent
+      message: finalMessage.trim(),
+      details: {
+        // Optional: provide more details back to the client if needed
+        sent: sentCount,
+        failed: failedCount,
+        errors: errorMessages,
+      },
+    };
+  } catch (error: any) {
+    console.error("Overall error in sendEmailsAction:", error);
+    return {
+      success: false,
+      message: `Failed to process email sending request: ${error.message || "An unknown error occurred."}`,
+    };
+  }
+}
+
+export async function getEmailTemplatesAction() {
+  const cachedTemplates = getCachedData<EmailTemplate[]>(TEMPLATES_CACHE_KEY);
+  if (cachedTemplates) {
+    return cachedTemplates;
+  }
+
+  try {
+    const templates = await prisma.emailTemplate.findMany({
+      orderBy: { name: "asc" },
+    });
+    setCachedData(TEMPLATES_CACHE_KEY, templates);
+    return templates;
+  } catch (error) {
+    console.error("Error fetching email templates:", error);
+    throw new Error("Could not fetch email templates.");
+  }
+}
+
+export async function getActiveEmailTemplatesAction() {
+  // This could also be cached with a different key if frequently accessed
+  try {
+    const templates = await prisma.emailTemplate.findMany({
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        subject: true,
+        body: true,
+        placeholders: true,
+      }, // Select only needed fields
+    });
+    return templates;
+  } catch (error) {
+    console.error("Error fetching active email templates:", error);
+    throw new Error("Could not fetch active email templates.");
+  }
+}
+
+export async function createEmailTemplateAction(
+  data: z.infer<typeof EmailTemplateSchema>,
+) {
+  try {
+    const validation = EmailTemplateSchema.safeParse(data);
+    if (!validation.success) {
+      return {
+        success: false,
+        message: "Validation failed.",
+        errors: validation.error.flatten().fieldErrors,
+      };
+    }
+
+    const existingTemplate = await prisma.emailTemplate.findFirst({
+      where: { name: { equals: validation.data.name, mode: "insensitive" } },
+    });
+    if (existingTemplate) {
+      return {
+        success: false,
+        message: "An email template with this name already exists.",
+      };
+    }
+
+    const newTemplate = await prisma.emailTemplate.create({
+      data: validation.data,
+    });
+    invalidateCache(TEMPLATES_CACHE_KEY);
+    revalidatePath("/dashboard/settings/email-templates"); // Adjust your path
+    return {
+      success: true,
+      message: "Email template created successfully.",
+      template: newTemplate,
+    };
+  } catch (error: any) {
+    console.error("Error creating email template:", error);
+    // Check for Prisma specific unique constraint error if name check above misses a race condition
+    if (error.code === "P2002" && error.meta?.target?.includes("name")) {
+      return {
+        success: false,
+        message: "An email template with this name already exists.",
+      };
+    }
+    return {
+      success: false,
+      message: error.message || "Could not create email template.",
+    };
+  }
+}
+
+// --- Action to update an existing template ---
+export async function updateEmailTemplateAction(
+  id: string,
+  data: z.infer<typeof EmailTemplateSchema>,
+) {
+  try {
+    const validation = EmailTemplateSchema.safeParse(data);
+    if (!validation.success) {
+      return {
+        success: false,
+        message: "Validation failed.",
+        errors: validation.error.flatten().fieldErrors,
+      };
+    }
+
+    // Check for unique name (case-insensitive, excluding self)
+    const existingTemplate = await prisma.emailTemplate.findFirst({
+      where: {
+        name: { equals: validation.data.name, mode: "insensitive" },
+        id: { not: id },
+      },
+    });
+    if (existingTemplate) {
+      return {
+        success: false,
+        message: "Another email template with this name already exists.",
+      };
+    }
+
+    const updatedTemplate = await prisma.emailTemplate.update({
+      where: { id },
+      data: validation.data,
+    });
+    invalidateCache(TEMPLATES_CACHE_KEY);
+    revalidatePath("/dashboard/settings/email-templates"); // Adjust your path
+    return {
+      success: true,
+      message: "Email template updated successfully.",
+      template: updatedTemplate,
+    };
+  } catch (error: any) {
+    console.error("Error updating email template:", error);
+    if (error.code === "P2002" && error.meta?.target?.includes("name")) {
+      return {
+        success: false,
+        message: "Another email template with this name already exists.",
+      };
+    }
+    return {
+      success: false,
+      message: error.message || "Could not update email template.",
+    };
+  }
+}
+
+// --- Action to delete a template ---
+export async function deleteEmailTemplateAction(id: string) {
+  try {
+    await prisma.emailTemplate.delete({
+      where: { id },
+    });
+    invalidateCache(TEMPLATES_CACHE_KEY);
+    revalidatePath("/dashboard/settings/email-templates"); // Adjust your path
+    return { success: true, message: "Email template deleted successfully." };
+  } catch (error) {
+    console.error("Error deleting email template:", error);
+    return { success: false, message: "Could not delete email template." };
+  }
+}
+
+export async function getCustomersAction(): Promise<CustomerForDisplay[]> {
+  // Add caching here if desired, similar to ManageAccounts
+  try {
+    const customers = await prisma.customer.findMany({
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        totalPaid: true,
+        nextAppointment: true,
+      },
+      orderBy: {
+        name: "asc",
+      },
+    });
+    // Note: Prisma returns Float for totalPaid. If your schema uses Int, adjust accordingly.
+    // If totalPaid is Int (minor units), convert it here:
+    // return customers.map(c => ({ ...c, totalPaid: c.totalPaid / 100 }));
+    return customers; // Assuming totalPaid is already in the desired unit or Float
+  } catch (error) {
+    console.error("Error fetching customers:", error);
+    throw new Error("Failed to fetch customers. Please try again.");
+  }
+}
+
+// 2. Create Customer Action
+export async function createCustomerAction(formData: FormData): Promise<{
+  success: boolean;
+  message?: string;
+  errors?: Record<string, string[]>;
+}> {
+  const rawData = {
+    name: formData.get("name"),
+    email: formData.get("email"),
+  };
+
+  const validation = CustomerSchema.safeParse(rawData);
+
+  if (!validation.success) {
+    return {
+      success: false,
+      message: "Validation failed. Please check your input.",
+      errors: validation.error.flatten().fieldErrors,
+    };
+  }
+
+  const { name, email } = validation.data;
+  const finalEmail = email?.trim() || null; // Trim and set to null if empty
+
+  try {
+    // Check email uniqueness before creating
+    if (finalEmail && !(await isEmailUnique(finalEmail))) {
+      return {
+        success: false,
+        message: "Validation failed.",
+        errors: { email: ["This email address is already in use."] },
+      };
+    }
+
+    await prisma.customer.create({
+      data: {
+        name,
+        email: finalEmail,
+        // totalPaid will default to 0
+      },
+    });
+
+    invalidateCache(CUSTOMERS_CACHE_KEY); // Invalidate cache on success
+    return { success: true, message: "Customer created successfully." };
+  } catch (error) {
+    console.error("Error creating customer:", error);
+    return {
+      success: false,
+      message: "An unexpected error occurred while creating the customer.",
+    };
+  }
+}
+
+// 3. Update Customer Action
+export async function updateCustomerAction(
+  id: string,
+  formData: FormData,
+): Promise<{
+  success: boolean;
+  message?: string;
+  errors?: Record<string, string[]>;
+}> {
+  const rawData = {
+    name: formData.get("name"),
+    email: formData.get("email"),
+  };
+
+  const validation = CustomerSchema.safeParse(rawData);
+
+  if (!validation.success) {
+    return {
+      success: false,
+      message: "Validation failed. Please check your input.",
+      errors: validation.error.flatten().fieldErrors,
+    };
+  }
+
+  const { name, email } = validation.data;
+  const finalEmail = email?.trim() || null; // Trim and set to null if empty
+
+  try {
+    // Check email uniqueness (excluding self) before updating
+    if (finalEmail && !(await isEmailUnique(finalEmail, id))) {
+      return {
+        success: false,
+        message: "Validation failed.",
+        errors: {
+          email: ["This email address is already in use by another customer."],
+        },
+      };
+    }
+
+    await prisma.customer.update({
+      where: { id },
+      data: {
+        name,
+        email: finalEmail,
+      },
+    });
+
+    invalidateCache(CUSTOMERS_CACHE_KEY); // Invalidate cache on success
+    return { success: true, message: "Customer updated successfully." };
+  } catch (error) {
+    console.error(`Error updating customer ${id}:`, error);
+    // Check for specific Prisma errors like P2025 (Record not found)
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      return { success: false, message: "Customer not found." };
+    }
+    return {
+      success: false,
+      message: "An unexpected error occurred while updating the customer.",
+    };
+  }
+}
+
+// 4. Delete Customer Action
+export async function deleteCustomerAction(id: string): Promise<{
+  success: boolean;
+  message?: string;
+}> {
+  try {
+    await prisma.customer.delete({
+      where: { id },
+    });
+
+    invalidateCache(CUSTOMERS_CACHE_KEY); // Invalidate cache on success
+    return { success: true, message: "Customer deleted successfully." };
+  } catch (error) {
+    console.error(`Error deleting customer ${id}:`, error);
+
+    // Check for Prisma's foreign key constraint violation error (P2003)
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2003"
+    ) {
+      return {
+        success: false,
+        message:
+          "Cannot delete this customer. They have associated records (e.g., transactions). Please remove those records first.",
+      };
+    }
+    // Check for record not found (P2025)
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      return { success: false, message: "Customer not found." };
+    }
+
+    return {
+      success: false,
+      message: "An unexpected error occurred while deleting the customer.",
     };
   }
 }

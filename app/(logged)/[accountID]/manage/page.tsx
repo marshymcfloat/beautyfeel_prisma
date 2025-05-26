@@ -10,7 +10,10 @@ import {
   MapPin,
   Gift,
   Receipt,
+  Bell,
   ListOrdered,
+  Mail,
+  BookUser,
 } from "lucide-react";
 
 import ManageServices from "@/components/ui/customize/ManageServices";
@@ -22,7 +25,10 @@ import ManageDiscounts from "@/components/ui/customize/ManageDiscounts";
 import ManageGiftCertificates from "@/components/ui/customize/ManageGiftCertificates";
 import ManagePayslip from "@/components/ui/customize/ManagePaySlip";
 import ManageTransactions from "@/components/ui/customize/ManageTransactions";
+import ManageAdvertisements from "@/components/ui/customize/ManageAdvertisements";
+import ManageEmailTemplates from "@/components/ui/customize/ManageEmailTemplate";
 import { TabConfig, ActiveTab } from "@/lib/Types";
+import ManageCustomers from "@/components/ui/customize/ManageCustomers";
 
 type ExtendedActiveTab = ActiveTab | "transactions";
 
@@ -30,12 +36,16 @@ const TABS: TabConfig[] = [
   { id: "services", label: "Services", icon: Settings },
   { id: "serviceSets", label: "Service Sets", icon: Layers },
   { id: "accounts", label: "Accounts", icon: Users },
+  { id: "customers", label: "Customers", icon: BookUser },
+
   { id: "transactions", label: "Transactions", icon: ListOrdered },
   { id: "payslips", label: "Payslips", icon: Receipt },
   { id: "vouchers", label: "Vouchers", icon: Ticket },
   { id: "giftCertificate", label: "Gift Certificates", icon: Gift },
   { id: "discounts", label: "Discounts", icon: Percent },
   { id: "branches", label: "Branches", icon: MapPin },
+  { id: "advertisements", label: "Advertisements", icon: Bell },
+  { id: "emailTemplate", label: "Email Template", icon: Mail },
 ];
 
 export default function CustomizePage() {
@@ -49,6 +59,8 @@ export default function CustomizePage() {
         return <ManageServiceSets />;
       case "accounts":
         return <ManageAccounts />;
+      case "customers":
+        return <ManageCustomers />;
       case "transactions":
         return <ManageTransactions />;
       case "payslips":
@@ -61,6 +73,10 @@ export default function CustomizePage() {
         return <ManageDiscounts />;
       case "branches":
         return <ManageBranches />;
+      case "advertisements":
+        return <ManageAdvertisements />;
+      case "emailTemplate":
+        return <ManageEmailTemplates />;
       default:
         return <ManageServices />;
     }
@@ -131,7 +147,6 @@ export default function CustomizePage() {
         </nav>
       </div>
 
-      {/* Active Component Area */}
       <div className="mt-4 rounded-lg bg-customOffWhite/80 p-4 shadow-inner backdrop-blur-sm sm:p-6">
         {renderActiveComponent()}
       </div>

@@ -1,21 +1,27 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+} from "react";
 import { useSession } from "next-auth/react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { Status, Role } from "@prisma/client"; // Your actual Role enum
+import { Status, Role } from "@prisma/client";
 import {
   AlertCircle,
   Loader2,
-  LayoutGrid, // Attendance
-  BarChart2, // Sales
-  ListChecks, // Claimed Services / Work Queue Link
-  Wallet, // Salary
-  Users, // Customer History
-  Gift, // Claim GC
-  Edit3, // Link to Work Queue for WORKER/CASHIER
-  FileText, // Link to Transactions for CASHIER
+  LayoutGrid,
+  BarChart2,
+  ListChecks,
+  Wallet,
+  Users,
+  Gift,
+  Edit3,
+  FileText,
 } from "lucide-react";
 import { io, Socket } from "socket.io-client";
 
@@ -30,10 +36,11 @@ import {
 
 import CalendarUI from "@/components/ui/Calendar";
 import UserServedTodayWidget from "@/components/ui/UserServedTodayWidget";
+
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
-import ExpandedListedServices from "@/components/ui/ExpandedListedServices";
+import ExpandedListedServices from "@/components/ui/ExpandedListedServices"; // Assuming this component exists and handles serve/unserve
 import PreviewListedServices from "@/components/ui/PreviewListedServices";
 import PreviewUserSalary from "@/components/ui/PreviewUserSalary";
 import CurrentSalaryDetailsModal from "@/components/ui/CurrentSalaryDetailsModal";
@@ -42,6 +49,8 @@ import ExpandedSales from "@/components/ui/ExpandedSales";
 import ManageAttendance from "@/components/ui/customize/ManageAttendance";
 import LoadingWidget from "@/components/ui/LoadingWidget";
 import PayslipHistoryModal from "@/components/ui/PayslipHistoryModal";
+import ManageTransactionsModal from "@/components/ui/ManageTransactionsModal";
+
 import {
   AccountData,
   SalesDataDetailed,
@@ -49,12 +58,12 @@ import {
   TransactionProps,
   PayslipData,
   CurrentSalaryDetailsData,
-  MobileWidgetKey, // Assuming this is correctly imported from Types.ts
+  MobileWidgetKey,
 } from "@/lib/Types";
 
 import CustomerHistoryWidget from "@/components/ui/CustomerHistoryWidget";
 import ClaimGiftCertificate from "@/components/ui/cashier/ClaimGiftCertificate";
-import { MobileWidgetIcon } from "@/components/ui/MobileWidget"; // Ensure MobileWidgetIcon.tsx is fixed for IconComponent type
+import { MobileWidgetIcon } from "@/components/ui/MobileWidget";
 
 export default function AccountDashboardPage() {
   const { data: session, status: sessionStatus } = useSession();
@@ -64,6 +73,7 @@ export default function AccountDashboardPage() {
     typeof params.accountID === "string" ? params.accountID : undefined;
 
   const [socket, setSocket] = useState<Socket | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const [socketError, setSocketError] = useState<string | null>(null);
   const [allPendingTransactions, setAllPendingTransactions] = useState<
     TransactionProps[]
@@ -92,6 +102,7 @@ export default function AccountDashboardPage() {
     useState<MobileWidgetKey | null>(null);
   const [isMobileViewModalOpen, setIsMobileViewModalOpen] = useState(false);
   const [isLikelyMobile, setIsLikelyMobile] = useState(false);
+  const [isTransactionsModalOpen, setIsTransactionsModalOpen] = useState(false);
 
   const loggedInUserId = session?.user?.id;
   const userRoles = useMemo(() => session?.user?.role || [], [session]);
@@ -122,34 +133,43 @@ export default function AccountDashboardPage() {
 
   useEffect(() => {
     if (!(sessionStatus === "authenticated" && loggedInUserId)) {
-      if (socket) {
-        socket.disconnect();
-        setSocket(null); // Clear the socket state
+      if (socketRef.current) {
+        console.log(
+          "[Socket Cleanup] Disconnecting due to auth status change:",
+          socketRef.current.id,
+        );
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setSocket(null);
       }
-      setSocketError(null); // Clear any socket errors
-      return; // Exit the effect
-    }
-
-    if (
-      socket &&
-      socket.connected &&
-      (socket.io.opts.query as { accountId: string })?.accountId ===
-        loggedInUserId
-    ) {
+      setSocketError(null);
       return;
     }
 
-    // If there's an old socket instance (e.g. from a previous user or failed attempt), disconnect it.
-    // This is important if loggedInUserId changes.
-    if (socket) {
-      socket.disconnect();
+    if (
+      socketRef.current &&
+      socketRef.current.connected &&
+      (socketRef.current.io.opts.query as { accountId: string })?.accountId ===
+        loggedInUserId
+    ) {
+      setSocket(socketRef.current);
+      return;
+    }
+
+    if (socketRef.current) {
+      console.log(
+        "[Socket Cleanup] Disconnecting old/stale socket from ref:",
+        socketRef.current.id,
+      );
+      socketRef.current.disconnect();
+      socketRef.current = null;
     }
 
     const backendUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
+      process.env.NEXT_PUBLIC_SOCKET_URL || "https://localhost:9000";
     if (!backendUrl) {
       setSocketError("Config Error: Socket URL missing.");
-      setSocket(null); // Ensure socket state is cleared
+      setSocket(null);
       return;
     }
 
@@ -160,8 +180,7 @@ export default function AccountDashboardPage() {
       query: { accountId: loggedInUserId },
       reconnectionAttempts: 3,
       timeout: 10000,
-      transports: ["websocket", "polling"], // Good to have polling as a fallback
-      // forceNew: true, // Consider this for debugging if issues persist, but usually not needed
+      transports: ["websocket", "polling"],
     });
 
     newSocketInstance.on("connect", () => {
@@ -175,11 +194,8 @@ export default function AccountDashboardPage() {
       console.log(
         `[Socket] Disconnected: ${newSocketInstance.id}, Reason: ${reason}`,
       );
-      // Only set error if it's not a manual client disconnect
       if (reason !== "io client disconnect") {
-        setSocketError(
-          `Socket Disconnected: ${reason}. Attempting to reconnect...`,
-        );
+        setSocketError(`Socket Disconnected: ${reason}.`);
       }
     });
 
@@ -188,41 +204,36 @@ export default function AccountDashboardPage() {
       setSocketError(`Socket Connection Failed: ${err.message}.`);
     });
 
+    socketRef.current = newSocketInstance;
     setSocket(newSocketInstance);
 
     return () => {
       console.log(
-        `[Socket Cleanup] Disconnecting socket: ${newSocketInstance.id}`,
+        `[Socket Cleanup] useEffect cleanup. Disconnecting: ${newSocketInstance.id}`,
       );
       newSocketInstance.disconnect();
-      // Optionally setSocket(null) here if you want to be very explicit about clearing state on cleanup,
-      // but the next run of the effect (if dependencies change) will handle it.
+      if (socketRef.current && socketRef.current.id === newSocketInstance.id) {
+        socketRef.current = null;
+      }
     };
-  }, [sessionStatus, loggedInUserId]); // REMOVED `socket` from dependencies
+  }, [sessionStatus, loggedInUserId]);
+
   const handleDashboardAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
       if (!updatedAvailedService?.id) return;
       setAllPendingTransactions((prev) =>
-        prev
-          .map((tx) =>
-            tx.id === updatedAvailedService.transactionId
-              ? {
-                  ...tx,
-                  availedServices: (tx.availedServices ?? []).map((s) =>
-                    s.id === updatedAvailedService.id
-                      ? { ...s, ...updatedAvailedService }
-                      : s,
-                  ),
-                }
-              : tx,
-          )
-          .filter(
-            (tx) =>
-              !(tx.availedServices ?? []).every(
-                (s) =>
-                  s.status === Status.DONE || s.status === Status.CANCELLED,
-              ),
-          ),
+        prev.map((tx) =>
+          tx.id === updatedAvailedService.transactionId
+            ? {
+                ...tx,
+                availedServices: (tx.availedServices ?? []).map((s) =>
+                  s.id === updatedAvailedService.id
+                    ? { ...s, ...updatedAvailedService }
+                    : s,
+                ),
+              }
+            : tx,
+        ),
       );
       setProcessingServeActions((prev) => {
         const next = new Set(prev);
@@ -256,9 +267,23 @@ export default function AccountDashboardPage() {
   const handleTransactionCompletionDashboard = useCallback(
     (completedTransaction: TransactionProps) => {
       if (!completedTransaction?.id) return;
+      console.log(
+        `[Socket TXN Complete] Received completion for TXN ${completedTransaction.id}`,
+      );
       setAllPendingTransactions((prev) =>
         prev.filter((tx) => tx.id !== completedTransaction.id),
       );
+      setProcessingServeActions((prev) => {
+        let changed = false;
+        const next = new Set(prev);
+        completedTransaction.availedServices?.forEach((as) => {
+          if (next.has(as.id)) {
+            next.delete(as.id);
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
     },
     [],
   );
@@ -282,7 +307,6 @@ export default function AccountDashboardPage() {
     handleTransactionCompletionDashboard,
   ]);
 
-  // FIX 2: fetchInitialData with proper Promise.allSettled handling
   const fetchInitialData = useCallback(async () => {
     if (!accountIdFromUrl || !loggedInUserId) {
       setIsLoadingAccount(false);
@@ -296,37 +320,38 @@ export default function AccountDashboardPage() {
     setDashboardError(null);
 
     try {
-      // Define an array of functions that return promises
-      const promiseFetchers: (() => Promise<any>)[] = [
-        () => getCurrentAccountData(accountIdFromUrl),
+      const accountResult = await getCurrentAccountData(accountIdFromUrl);
+      if (accountResult) {
+        setAccountData(accountResult as AccountData);
+        setIsLoadingAccount(false);
+      } else {
+        console.error("Account Data Error: No data returned.");
+        setDashboardError((prev) => prev || "Failed to load account details.");
+        setIsLoadingAccount(false);
+      }
+
+      const otherFetchers: (() => Promise<any>)[] = [
         () => getActiveTransactions(),
       ];
-
       if (isOwner) {
-        promiseFetchers.push(() => getSalesDataLast6Months());
+        otherFetchers.push(() => getSalesDataLast6Months());
       }
 
-      const results = await Promise.allSettled(promiseFetchers.map((f) => f()));
+      const otherResults = await Promise.allSettled(
+        otherFetchers.map((f) => f()),
+      );
 
-      // Process Account Data (index 0)
-      const accountResult = results[0];
-      if (accountResult.status === "fulfilled") {
-        setAccountData(accountResult.value as AccountData | null);
-      } else {
-        console.error("Account Data Error:", accountResult.reason);
-        setDashboardError("Failed to load account details.");
-      }
-
-      // Process Transactions Data (index 1)
-      const transactionsResult = results[1];
+      const transactionsResult =
+        otherFetchers.length > 0 ? otherResults[0] : null;
       if (
+        transactionsResult &&
         transactionsResult.status === "fulfilled" &&
         Array.isArray(transactionsResult.value)
       ) {
         setAllPendingTransactions(
           transactionsResult.value as TransactionProps[],
         );
-      } else {
+      } else if (transactionsResult) {
         console.error(
           "Transactions Error:",
           transactionsResult.status === "rejected"
@@ -334,33 +359,27 @@ export default function AccountDashboardPage() {
             : "Invalid format",
         );
         setAllPendingTransactions([]);
-        setDashboardError("Failed to load pending work.");
       }
+      setIsLoadingTransactions(false);
 
-      // Process Sales Data if Owner (index 2, if present)
       if (isOwner) {
-        const salesResultIfOwner = results[2]; // This will be the third result
+        const salesResultIfOwner =
+          otherFetchers.length > 1 ? otherResults[1] : null;
         if (salesResultIfOwner && salesResultIfOwner.status === "fulfilled") {
           setSalesData(salesResultIfOwner.value as SalesDataDetailed | null);
         } else if (salesResultIfOwner) {
-          // It exists but failed
           console.error("Sales Data Error:", salesResultIfOwner.reason);
-          setDashboardError("Failed to load sales data.");
         }
+        setIsLoadingSales(false);
       } else {
-        setSalesData(null); // Not owner, so no sales data
+        setSalesData(null);
+        setIsLoadingSales(false);
       }
     } catch (error: any) {
-      // This catch is for errors in setting up Promise.allSettled or other unexpected issues
-      // Individual promise rejections are handled by checking `result.status`
       console.error(
         "General Data Fetch Error in Promise.allSettled setup:",
         error,
       );
-      setDashboardError(
-        `Error loading dashboard: ${error.message || "Unknown error"}`,
-      );
-    } finally {
       setIsLoadingAccount(false);
       setIsLoadingSales(false);
       setIsLoadingTransactions(false);
@@ -378,24 +397,55 @@ export default function AccountDashboardPage() {
       setIsLoadingAccount(stillLoadingSession || !accountIdFromUrl);
       setIsLoadingSales(stillLoadingSession || !accountIdFromUrl || !isOwner);
       setIsLoadingTransactions(stillLoadingSession || !accountIdFromUrl);
+      setDashboardError(null);
     }
   }, [sessionStatus, accountIdFromUrl, fetchInitialData, isOwner]);
 
   const servicesCheckedByMe = useMemo(() => {
-    if (!loggedInUserId || !allPendingTransactions || !isWorker) return [];
-    return allPendingTransactions
-      .filter((tx) => tx.status === Status.PENDING)
-      .flatMap(
-        (tx) =>
-          tx.availedServices?.map((as) => ({
-            ...as,
-            transactionStatus: tx.status,
-          })) ?? [],
-      )
-      .filter(
-        (s) => s.checkedById === loggedInUserId && s.status === Status.PENDING,
-      );
-  }, [allPendingTransactions, loggedInUserId, isWorker]);
+    // FIX: Removed the explicit check for `isWorker`. Any user can claim services for themselves.
+    if (!loggedInUserId || !allPendingTransactions) return [];
+
+    const relevantServices: AvailedServicesProps[] = [];
+
+    for (const tx of allPendingTransactions) {
+      // Consider pending and cancelled transactions (though check/serve is usually only on PENDING)
+      if (tx.status === Status.PENDING || tx.status === Status.CANCELLED) {
+        if (tx.availedServices) {
+          for (const as of tx.availedServices) {
+            // Check if the service is pending AND checked by the logged-in user
+            const isPendingAndCheckedByMe =
+              as.status === Status.PENDING && as.checkedById === loggedInUserId;
+            // Check if the service is done AND served by the logged-in user
+            // (Displaying DONE services served by the user might be useful history)
+            const isDoneAndServedByMe =
+              as.status === Status.DONE && as.servedById === loggedInUserId;
+
+            if (isPendingAndCheckedByMe || isDoneAndServedByMe) {
+              // Include the parent transaction info for context in the modal
+              relevantServices.push({
+                ...as,
+                // Add transaction details if needed for display in the Expanded modal
+                // e.g., customer name, booked time.
+                // You'll need to update AvailedServicesProps type if adding this.
+                // transaction: { id: tx.id, customer: tx.customer, bookedFor: tx.bookedFor },
+              });
+            }
+          }
+        }
+      }
+    }
+    // Sort services? Maybe by transaction bookedFor or service order?
+    // Sorting by transaction bookedFor might group services from the same booking.
+    relevantServices.sort((a, b) => {
+      const txA = allPendingTransactions.find((t) => t.id === a.transactionId);
+      const txB = allPendingTransactions.find((t) => t.id === b.transactionId);
+      const bookedForA = txA?.bookedFor?.getTime() ?? 0;
+      const bookedForB = txB?.bookedFor?.getTime() ?? 0;
+      return bookedForA - bookedForB;
+    });
+
+    return relevantServices;
+  }, [allPendingTransactions, loggedInUserId]); // FIX: Removed isWorker from dependencies
 
   const openMyServicesModal = useCallback(
     () => setIsMyServicesModalOpen(true),
@@ -422,6 +472,15 @@ export default function AccountDashboardPage() {
     setActiveMobileWidget(null);
     setIsMobileViewModalOpen(false);
   }, []);
+
+  const openTransactionsModal = useCallback(
+    () => setIsTransactionsModalOpen(true),
+    [],
+  );
+  const closeTransactionsModal = useCallback(
+    () => setIsTransactionsModalOpen(false),
+    [],
+  );
 
   const handleViewCurrentDetails = useCallback(async () => {
     if (!loggedInUserId) return;
@@ -457,70 +516,53 @@ export default function AccountDashboardPage() {
     }
   }, [loggedInUserId]);
 
-  const handleRequestCurrentPayslip = useCallback(async (accountId: string) => {
-    try {
-      const result = await requestPayslipRelease(accountId);
-      alert(
-        result.message ||
-          (result.success
-            ? "Payslip release requested."
-            : `Request failed: ${result.error || "Unknown"}`),
-      );
-      return result;
-    } catch (error: any) {
-      alert(`Request error: ${error.message || "Unknown"}`);
-      return { success: false, error: error.message || "Unknown" };
-    }
-  }, []);
+  const handleRequestCurrentPayslip = useCallback(
+    async (accountId: string) => {
+      try {
+        const result = await requestPayslipRelease(accountId);
+        alert(
+          result.message ||
+            (result.success
+              ? "Payslip release requested."
+              : `Request failed: ${result.error || "Unknown"}`),
+        );
+        if (result.success) {
+          handleViewCurrentDetails();
+        }
+        return result;
+      } catch (error: any) {
+        alert(`Request error: ${error.message || "Unknown"}`);
+        return { success: false, error: error.message || "Unknown" };
+      }
+    },
+    [handleViewCurrentDetails],
+  );
 
   const isOverallDashboardLoading = useMemo(() => {
     return (
       sessionStatus === "loading" ||
       !accountIdFromUrl ||
-      (isLoadingAccount && !accountData) ||
-      (isOwner &&
-        isLoadingSales &&
-        !salesData &&
-        sessionStatus === "authenticated") ||
-      (isLoadingTransactions && sessionStatus === "authenticated")
+      (isLoadingAccount && !accountData && sessionStatus === "authenticated")
     );
-  }, [
-    sessionStatus,
-    accountIdFromUrl,
-    isLoadingAccount,
-    accountData,
-    isLoadingSales,
-    salesData,
-    isOwner,
-    isLoadingTransactions,
-  ]);
+  }, [sessionStatus, accountIdFromUrl, isLoadingAccount, accountData]);
 
   const mobileWidgetsConfig = useMemo(() => {
     const widgets: Array<{
       key: MobileWidgetKey;
       title: string;
-      Icon: React.ElementType; // Assuming MobileWidgetIcon.tsx is fixed for this
+      Icon: React.ElementType;
       isLoading: boolean;
       component?: React.ReactNode;
       link?: string;
       onDetailsClick?: () => void;
       notificationCount?: number;
-      roles: Role[];
+      roles: Role[]; // Roles that can see this widget
     }> = [
       {
         key: "attendance",
         title: "Attendance",
         Icon: LayoutGrid,
         isLoading: isOverallDashboardLoading,
-        component:
-          loggedInUserId && accountIdFromUrl ? (
-            <ManageAttendance
-              viewedAccountId={accountIdFromUrl}
-              checkerId={loggedInUserId}
-            />
-          ) : (
-            <LoadingWidget text="Loading..." />
-          ),
         roles: [Role.OWNER, Role.ATTENDANCE_CHECKER],
       },
       {
@@ -528,13 +570,6 @@ export default function AccountDashboardPage() {
         title: "Sales Overview",
         Icon: BarChart2,
         isLoading: isLoadingSales,
-        component: (
-          <PreviewSales
-            monthlyData={salesData?.monthlySales ?? []}
-            isLoading={isLoadingSales}
-            onViewDetails={openSalesDetailsModal}
-          />
-        ),
         onDetailsClick: openSalesDetailsModal,
         roles: [Role.OWNER],
       },
@@ -542,9 +577,9 @@ export default function AccountDashboardPage() {
         key: "workQueueLink",
         title: "Work Queue",
         Icon: Edit3,
-        isLoading: false,
-        link: `/${accountIdFromUrl}/work`,
-        roles: [Role.WORKER, Role.CASHIER],
+        isLoading: false, // Link components don't block on data loading typically
+        link: `/${accountIdFromUrl}/work`, // Direct link
+        roles: [Role.WORKER, Role.CASHIER, Role.OWNER], // Allow Owner/Cashier to go to work queue too
       },
       {
         key: "claimedServices",
@@ -552,40 +587,31 @@ export default function AccountDashboardPage() {
         Icon: ListChecks,
         notificationCount: servicesCheckedByMe.length,
         isLoading: isLoadingTransactions,
-        component: (
-          <PreviewListedServices
-            checkedServices={servicesCheckedByMe}
-            onOpenModal={openMyServicesModal}
-            isLoading={isLoadingTransactions}
-          />
-        ),
         onDetailsClick: openMyServicesModal,
-        roles: [Role.WORKER],
+        roles: isViewingOwnDashboard ? [Role.WORKER, Role.OWNER] : [], // Allow OWNER/WORKER to see *their own* claims
       },
       {
         key: "salary",
         title: "My Salary",
         Icon: Wallet,
         isLoading: isLoadingAccount,
-        component: (
-          <PreviewUserSalary
-            salary={accountData?.salary ?? 0}
-            onOpenDetails={handleViewCurrentDetails}
-            onOpenHistory={handleViewHistory}
-            isLoading={isLoadingAccount}
-          />
-        ),
-        roles: userRoles.filter(
-          (role) => role !== Role.OWNER && isViewingOwnDashboard,
-        ),
+        roles: isViewingOwnDashboard
+          ? userRoles.filter((r) => r !== Role.OWNER) // Any role except owner (owner salary is different)
+          : [],
       },
-
+      {
+        key: "transactionsLink",
+        title: "Transactions",
+        Icon: FileText,
+        isLoading: false,
+        onDetailsClick: openTransactionsModal,
+        roles: [Role.CASHIER, Role.OWNER],
+      },
       {
         key: "claimGC",
         title: "Claim GC",
         Icon: Gift,
         isLoading: false,
-        component: <ClaimGiftCertificate />,
         roles: [Role.OWNER, Role.CASHIER],
       },
       {
@@ -593,10 +619,10 @@ export default function AccountDashboardPage() {
         title: "Customers",
         Icon: Users,
         isLoading: isOverallDashboardLoading,
-        component: <CustomerHistoryWidget />,
-        roles: [Role.OWNER, Role.CASHIER],
+        roles: [Role.OWNER],
       },
     ];
+    // Filter widgets based on the logged-in user's roles
     return widgets.filter((w) =>
       w.roles.some((role) => userRoles.includes(role)),
     );
@@ -605,47 +631,163 @@ export default function AccountDashboardPage() {
     loggedInUserId,
     accountIdFromUrl,
     isLoadingSales,
-    salesData,
     openSalesDetailsModal,
-    servicesCheckedByMe,
+    servicesCheckedByMe.length, // Dependency now uses length
     isLoadingTransactions,
     openMyServicesModal,
     isLoadingAccount,
-    accountData,
-    handleViewCurrentDetails,
-    handleViewHistory,
     userRoles,
-    isWorker,
-    isCashier,
-    isOwner,
     isViewingOwnDashboard,
+    openTransactionsModal,
   ]);
 
   const onMobileWidgetIconClick = useCallback(
     (widgetKey: MobileWidgetKey) => {
       const config = mobileWidgetsConfig.find((w) => w.key === widgetKey);
-      if (config?.link && accountIdFromUrl) {
+      if (!config) return;
+
+      if (config.link && accountIdFromUrl) {
+        // Use router.push for Next.js navigation
         router.push(config.link);
         return;
       }
-      setActiveMobileWidget((prevActiveWidget) => {
-        if (prevActiveWidget === widgetKey && isMobileViewModalOpen) {
-          if (config?.onDetailsClick) {
-            setIsMobileViewModalOpen(false);
-            config.onDetailsClick();
-            return null;
-          } else {
-            setIsMobileViewModalOpen(false);
-            return null;
-          }
-        } else {
-          setIsMobileViewModalOpen(!!config?.component);
-          return widgetKey;
-        }
-      });
+
+      // Handle dedicated modal clicks first
+      if (config.onDetailsClick) {
+        config.onDetailsClick();
+        // Close the general mobile preview modal if it was open
+        setIsMobileViewModalOpen(false);
+        setActiveMobileWidget(null); // Clear active widget state if it triggered a *separate* modal
+        return;
+      }
+
+      // If no dedicated link or modal click, render component in the general mobile preview modal
+      const componentRenderKeys: MobileWidgetKey[] = [
+        "attendance",
+        "claimGC",
+        "customerHistory",
+        "salary",
+      ];
+      if (componentRenderKeys.includes(widgetKey)) {
+        setActiveMobileWidget(widgetKey);
+        setIsMobileViewModalOpen(true);
+      } else {
+        console.warn(
+          `Clicked widget key "${widgetKey}" has no defined action (link, dedicated modal handler, or mobile component render).`,
+        );
+      }
     },
-    [isMobileViewModalOpen, mobileWidgetsConfig, router, accountIdFromUrl],
+    [
+      mobileWidgetsConfig,
+      router,
+      accountIdFromUrl,
+      // Include all specific modal openers as dependencies
+      openTransactionsModal,
+      openSalesDetailsModal,
+      openMyServicesModal,
+      handleViewCurrentDetails, // Salary details modal
+      handleViewHistory, // Payslip history modal
+    ],
   );
+
+  const renderMobileWidgetComponent = useCallback(() => {
+    if (!activeMobileWidget) return null;
+
+    // Note: These components are rendered INSIDE the general mobile preview modal.
+    // Some components already have their own dedicated modals (like Sales Details, My Claims, Salary Details, Payslip History)
+    // For those, onMobileWidgetIconClick should open the *dedicated* modal and NOT set activeMobileWidget
+    // The component rendered here should be one that fits directly within the mobile preview modal structure.
+    // Based on the `onMobileWidgetIconClick` logic, the keys handled here are "attendance", "claimGC", "customerHistory", "salary".
+
+    const widgetConfig = mobileWidgetsConfig.find(
+      (w) => w.key === activeMobileWidget,
+    );
+    // Add a loading state check here, although individual components should handle their own loading
+    if (widgetConfig?.isLoading) {
+      return <LoadingWidget text={`Loading ${widgetConfig.title}...`} />;
+    }
+
+    switch (activeMobileWidget) {
+      case "attendance":
+        return (isOwner || isAttendanceChecker) &&
+          loggedInUserId &&
+          accountIdFromUrl ? (
+          <ManageAttendance
+            viewedAccountId={accountIdFromUrl}
+            checkerId={loggedInUserId}
+          />
+        ) : (
+          <div className="p-4 text-center text-red-600">
+            Access Denied or data missing.
+          </div>
+        );
+      // "sales" is handled by a dedicated modal now
+      // case "sales": ... (removed)
+      // "claimedServices" is handled by a dedicated modal now
+      // case "claimedServices": ... (removed)
+      case "salary":
+        // The "salary" component is a preview with buttons that trigger dedicated modals.
+        // This is acceptable here if the preview itself fits well.
+        // Ensure you are viewing your *own* dashboard for salary.
+        if (
+          isViewingOwnDashboard &&
+          !isOwner &&
+          loggedInUserId &&
+          accountData
+        ) {
+          return (
+            <PreviewUserSalary
+              salary={accountData.salary ?? 0}
+              onOpenDetails={handleViewCurrentDetails} // This will open the dedicated modal
+              onOpenHistory={handleViewHistory} // This will open the dedicated modal
+              isLoading={isLoadingAccount}
+              onRefresh={fetchInitialData}
+            />
+          );
+        } else {
+          return (
+            <div className="p-4 text-center text-red-600">
+              Access Denied or data missing.
+            </div>
+          );
+        }
+
+      case "claimGC":
+        return isOwner || isCashier ? (
+          <ClaimGiftCertificate />
+        ) : (
+          <div className="p-4 text-center text-red-600">Access Denied.</div>
+        );
+      case "customerHistory":
+        return isOwner ? (
+          <CustomerHistoryWidget />
+        ) : (
+          <div className="p-4 text-center text-red-600">Access Denied.</div>
+        );
+
+      default:
+        // Fallback for any key added that wasn't handled or if config was missing
+        return (
+          <div className="p-4 text-center text-gray-500">
+            Widget component not available for mobile preview.
+          </div>
+        );
+    }
+  }, [
+    activeMobileWidget,
+    mobileWidgetsConfig, // Added dependency
+    isOwner,
+    isAttendanceChecker,
+    loggedInUserId,
+    accountIdFromUrl,
+    isViewingOwnDashboard,
+    isCashier,
+    accountData, // Added dependency
+    isLoadingAccount, // Added dependency
+    handleViewCurrentDetails, // Added dependency
+    handleViewHistory, // Added dependency
+    fetchInitialData, // Added dependency
+  ]);
 
   if (sessionStatus === "loading") {
     return (
@@ -658,6 +800,15 @@ export default function AccountDashboardPage() {
     router.replace("/auth/signin");
     return null;
   }
+
+  if (sessionStatus === "authenticated" && isOverallDashboardLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center p-4">
+        <LoadingWidget text="Loading Dashboard..." />
+      </div>
+    );
+  }
+
   if (sessionStatus === "authenticated" && !isLoadingAccount && !accountData) {
     return (
       <div className="flex h-screen flex-col items-center justify-center p-6 text-center text-red-700">
@@ -669,10 +820,10 @@ export default function AccountDashboardPage() {
         </p>
         <Button
           onClick={fetchInitialData}
-          disabled={isLoadingAccount || isLoadingTransactions}
+          disabled={isLoadingAccount || isLoadingTransactions || isLoadingSales}
           className="mr-2 mt-4"
         >
-          {isLoadingAccount ? (
+          {isLoadingAccount || isLoadingTransactions || isLoadingSales ? (
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
           ) : null}{" "}
           Try Again
@@ -693,19 +844,12 @@ export default function AccountDashboardPage() {
       </div>
     );
   }
-  if (isOverallDashboardLoading && sessionStatus === "authenticated") {
-    return (
-      <div className="flex h-screen items-center justify-center p-4">
-        <LoadingWidget text="Loading Dashboard..." />
-      </div>
-    );
-  }
 
   return (
     <>
       <div className="mb-6 flex flex-shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h1 className="truncate text-xl font-semibold text-customBlack sm:text-2xl md:text-3xl">
-          Welcome, {session?.user?.name ?? "User"}!
+          Welcome, {accountData?.name ?? session?.user?.name ?? "User"}!
           {accountData &&
             loggedInUserId !== accountData.id &&
             (isOwner || isAttendanceChecker) && (
@@ -722,121 +866,111 @@ export default function AccountDashboardPage() {
       </div>
 
       <div className="hidden xl:block">
-        {isOwner ? (
-          <div className="grid grid-cols-1 xl:grid-cols-3 xl:gap-8">
-            <div className="space-y-6 xl:col-span-2">
-              {(isOwner || isAttendanceChecker) && ( // Kept broad for now, can be refined if ManageAttendance differs for Owner
-                <div className="min-h-[300px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                  <h3 className="mb-3 text-base font-semibold text-customBlack">
-                    Daily Attendance
-                  </h3>
-                  {loggedInUserId && accountIdFromUrl ? (
-                    <ManageAttendance
-                      viewedAccountId={accountIdFromUrl}
-                      checkerId={loggedInUserId}
-                    />
-                  ) : (
-                    <LoadingWidget text="Loading Attendance..." />
-                  )}
-                </div>
-              )}
-              {/* Sales Preview - OWNER only */}
-              <div className="w-full">
-                <PreviewSales
-                  monthlyData={salesData?.monthlySales ?? []}
-                  isLoading={isLoadingSales}
-                  onViewDetails={openSalesDetailsModal}
-                />
-              </div>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3 xl:gap-8">
+          {(isOwner || isAttendanceChecker) &&
+          accountIdFromUrl &&
+          loggedInUserId ? (
+            <div className="min-h-[300px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm md:col-span-2 xl:col-span-2">
+              <h3 className="mb-3 text-base font-semibold text-customBlack">
+                Daily Attendance
+              </h3>
+              <ManageAttendance
+                viewedAccountId={accountIdFromUrl}
+                checkerId={loggedInUserId}
+              />
             </div>
-            <div className="flex flex-col space-y-6 xl:col-span-1">
-              <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-between md:gap-6">
-                <CalendarUI />
-                {loggedInUserId && (
-                  <UserServedTodayWidget loggedInUserId={loggedInUserId} />
-                )}
-              </div>
+          ) : null}
 
-              <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                <ClaimGiftCertificate />
-              </div>
-              {loggedInUserId && (
-                <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                  <CustomerHistoryWidget />
-                </div>
-              )}
+          {isOwner ? (
+            <div className="w-full md:col-span-2 xl:col-span-1">
+              <PreviewSales
+                monthlyData={salesData?.monthlySales ?? []}
+                isLoading={isLoadingSales}
+                onViewDetails={openSalesDetailsModal}
+              />
             </div>
+          ) : null}
+
+          <div
+            className={`flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-between md:col-span-2 md:gap-6 xl:col-span-1 xl:flex-row xl:flex-wrap xl:gap-4 ${isOwner || isAttendanceChecker ? "xl:col-start-3 xl:row-start-1" : "xl:col-start-1 xl:row-start-1"}`}
+          >
+            <CalendarUI className="aspect-square w-full sm:w-auto xl:flex-1" />
+            {loggedInUserId && (
+              <UserServedTodayWidget
+                loggedInUserId={loggedInUserId}
+                className="aspect-square w-full sm:w-auto xl:flex-1"
+              />
+            )}
+
+            {(isOwner || isCashier) && loggedInUserId ? (
+              <button
+                onClick={openTransactionsModal}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-customOffWhite p-4 text-center text-sm font-medium text-customDarkPink shadow-custom transition-all duration-150 hover:bg-customDarkPink/70 hover:text-customOffWhite"
+              >
+                <FileText size={18} />
+                View Transactions
+              </button>
+            ) : null}
           </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:gap-8">
-            <div className="space-y-6">
-              {isAttendanceChecker && (
-                <div className="min-h-[300px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                  <h3 className="mb-3 text-base font-semibold text-customBlack">
-                    Daily Attendance
-                  </h3>
-                  {loggedInUserId && accountIdFromUrl ? (
-                    <ManageAttendance
-                      viewedAccountId={accountIdFromUrl}
-                      checkerId={loggedInUserId}
-                    />
-                  ) : (
-                    <LoadingWidget text="Loading Attendance..." />
-                  )}
-                </div>
-              )}
 
-              {isWorker && isViewingOwnDashboard && (
-                <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-0 shadow-custom backdrop-blur-sm sm:p-4">
-                  <PreviewListedServices
-                    checkedServices={servicesCheckedByMe}
-                    onOpenModal={openMyServicesModal}
-                    isLoading={isLoadingTransactions}
-                  />
-                </div>
-              )}
-
-              {isOwner && loggedInUserId && (
-                <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                  <CustomerHistoryWidget />
-                </div>
-              )}
+          {/* FIX: Allow OWNER or WORKER to see their claimed services preview */}
+          {(isWorker || isOwner) && isViewingOwnDashboard ? (
+            <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite p-0 shadow-custom backdrop-blur-sm sm:p-4 md:col-span-1 xl:col-span-1">
+              <PreviewListedServices
+                checkedServices={servicesCheckedByMe}
+                onOpenModal={openMyServicesModal}
+                isLoading={isLoadingTransactions}
+                onRefresh={fetchInitialData}
+              />
             </div>
+          ) : null}
 
-            <div className="space-y-6">
-              <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-between md:gap-6">
-                <CalendarUI />
-                {loggedInUserId && (
-                  <UserServedTodayWidget loggedInUserId={loggedInUserId} />
-                )}
-              </div>
-
-              {isViewingOwnDashboard &&
-                !isOwner &&
-                accountData && ( // All non-owners (Cashier, Worker, AC) see their salary
-                  <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-0 shadow-custom backdrop-blur-sm sm:p-4">
-                    <PreviewUserSalary
-                      salary={accountData.salary ?? 0}
-                      onOpenDetails={handleViewCurrentDetails}
-                      onOpenHistory={handleViewHistory}
-                      isLoading={isLoadingAccount}
-                    />
-                  </div>
-                )}
-
-              {isCashier && ( // Owner also sees this but in their own layout section
-                <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
-                  <ClaimGiftCertificate />
-                </div>
-              )}
+          {/* Keep salary preview logic the same */}
+          {!isOwner && isViewingOwnDashboard && accountData ? (
+            <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-0 shadow-custom backdrop-blur-sm sm:p-4 md:col-span-1 xl:col-span-1">
+              <PreviewUserSalary
+                salary={accountData.salary ?? 0}
+                onOpenDetails={handleViewCurrentDetails}
+                onOpenHistory={handleViewHistory}
+                isLoading={isLoadingAccount}
+                onRefresh={fetchInitialData}
+              />
             </div>
-          </div>
-        )}
+          ) : null}
+
+          {(isWorker || isCashier || isOwner) && accountIdFromUrl ? ( // Allow OWNER to go to work queue
+            <Link
+              href={`/${accountIdFromUrl}/work`}
+              className="flex items-center justify-center gap-2 rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 text-center text-sm font-medium text-customDarkPink shadow-custom backdrop-blur-sm hover:bg-customDarkPink/10 md:col-span-1 xl:col-span-1"
+            >
+              <Edit3 size={18} /> Go to Work Queue
+            </Link>
+          ) : null}
+
+          {isOwner || isCashier ? (
+            <div className="rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm md:col-span-1 xl:col-span-1">
+              <ClaimGiftCertificate />
+            </div>
+          ) : null}
+
+          {isOwner ? (
+            <div className="min-h-[170px] rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm md:col-span-1 xl:col-span-1">
+              <CustomerHistoryWidget />
+            </div>
+          ) : null}
+        </div>
       </div>
 
+      {/* Mobile View */}
       <div className="block xl:hidden">
         {(!activeMobileWidget || !isMobileViewModalOpen) && (
           <div className="grid grid-cols-2 gap-3 p-2 sm:grid-cols-3 sm:gap-4">
+            {/* Calendar and Served Today remain directly rendered */}
+            <CalendarUI />
+            {loggedInUserId && (
+              <UserServedTodayWidget loggedInUserId={loggedInUserId} />
+            )}
+            {/* Mobile Widget Icons */}
             {mobileWidgetsConfig.map((widget) => (
               <MobileWidgetIcon
                 key={widget.key}
@@ -845,6 +979,7 @@ export default function AccountDashboardPage() {
                 widgetKey={widget.key}
                 onClick={onMobileWidgetIconClick}
                 notificationCount={widget.notificationCount}
+                // isActive state is managed by parent
                 isActive={
                   activeMobileWidget === widget.key && isMobileViewModalOpen
                 }
@@ -853,6 +988,9 @@ export default function AccountDashboardPage() {
             ))}
           </div>
         )}
+
+        {/* General Modal for Mobile Widget Components */}
+        {/* This modal is only for widgets whose content is rendered directly inside it */}
         <Modal
           isOpen={isMobileViewModalOpen && !!activeMobileWidget}
           onClose={closeMobilePreview}
@@ -865,82 +1003,60 @@ export default function AccountDashboardPage() {
           containerClassName="m-auto max-h-[85vh] w-full max-w-md overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col"
           contentClassName="p-0 flex-grow"
         >
-          <div className="h-full overflow-y-auto bg-white p-3 sm:p-4">
-            {
-              mobileWidgetsConfig.find((w) => w.key === activeMobileWidget)
-                ?.component
-            }
-            {mobileWidgetsConfig.find((w) => w.key === activeMobileWidget)
-              ?.onDetailsClick && (
-              <div className="mt-6 flex justify-center border-t border-customGray/20 pb-4 pt-4">
-                <Button
-                  onClick={() => {
-                    const config = mobileWidgetsConfig.find(
-                      (w) => w.key === activeMobileWidget,
-                    );
-                    if (config?.onDetailsClick) {
-                      closeMobilePreview();
-                      config.onDetailsClick();
-                    }
-                  }}
-                  variant="primary"
-                  className="w-full max-w-xs"
-                >
-                  View Full Details
-                </Button>
-              </div>
-            )}
+          <div className="h-full overflow-y-auto p-3 sm:p-4">
+            {renderMobileWidgetComponent()}
           </div>
         </Modal>
       </div>
 
-      {isWorker && isViewingOwnDashboard && (
-        <Modal
-          isOpen={isMyServicesModalOpen}
-          onClose={closeMyServicesModal}
-          title={<DialogTitle>Manage Claimed Services</DialogTitle>}
-          size="lg"
-        >
-          {loggedInUserId && socket && !isLoadingTransactions ? (
+      {/* Dedicated Modals (can be triggered from desktop or mobile widget click) */}
+
+      {/* FIX: Allow OWNER or WORKER to open the Expanded Listed Services modal */}
+      {loggedInUserId &&
+        socket &&
+        (isWorker || isOwner) &&
+        isViewingOwnDashboard && (
+          <Modal
+            isOpen={isMyServicesModalOpen}
+            onClose={closeMyServicesModal}
+            title={<DialogTitle>Manage Claimed Services</DialogTitle>}
+            size="lg"
+          >
             <ExpandedListedServices
               services={servicesCheckedByMe}
               accountId={loggedInUserId}
               socket={socket}
               onClose={closeMyServicesModal}
+              onRefresh={fetchInitialData}
+              isLoading={isLoadingTransactions}
               processingServeActions={processingServeActions}
               setProcessingServeActions={setProcessingServeActions}
             />
-          ) : (
-            <LoadingWidget text="Loading services..." />
-          )}
-        </Modal>
-      )}
-      {isViewingOwnDashboard &&
-        !isOwner &&
-        loggedInUserId &&
-        isDetailsModalOpen && (
-          <CurrentSalaryDetailsModal
-            isOpen={isDetailsModalOpen}
-            onClose={closeCurrentDetailsModal}
-            isLoading={isLoadingDetails}
-            error={detailsError}
-            currentBreakdownItems={currentDetails?.breakdownItems ?? []}
-            currentAttendanceRecords={currentDetails?.attendanceRecords ?? []}
-            accountData={currentDetails?.accountData ?? null}
-            currentPeriodStartDate={
-              currentDetails?.currentPeriodStartDate ?? null
-            }
-            currentPeriodEndDate={currentDetails?.currentPeriodEndDate ?? null}
-            lastReleasedPayslipEndDate={
-              currentDetails?.lastReleasedPayslipEndDate ?? null
-            }
-            lastReleasedTimestamp={
-              currentDetails?.lastReleasedTimestamp ?? null
-            }
-            onRequestCurrentPayslip={handleRequestCurrentPayslip}
-          />
+          </Modal>
         )}
-      {isOwner && isSalesDetailsModalOpen && loggedInUserId && (
+
+      {isViewingOwnDashboard && !isOwner && loggedInUserId && (
+        <CurrentSalaryDetailsModal
+          isOpen={isDetailsModalOpen}
+          onClose={closeCurrentDetailsModal}
+          isLoading={isLoadingDetails}
+          error={detailsError}
+          currentBreakdownItems={currentDetails?.breakdownItems ?? []}
+          currentAttendanceRecords={currentDetails?.attendanceRecords ?? []}
+          accountData={currentDetails?.accountData ?? null}
+          currentPeriodStartDate={
+            currentDetails?.currentPeriodStartDate ?? null
+          }
+          currentPeriodEndDate={currentDetails?.currentPeriodEndDate ?? null}
+          lastReleasedPayslipEndDate={
+            currentDetails?.lastReleasedPayslipEndDate ?? null
+          }
+          lastReleasedTimestamp={currentDetails?.lastReleasedTimestamp ?? null}
+          onRequestCurrentPayslip={handleRequestCurrentPayslip as any}
+        />
+      )}
+
+      {isOwner && loggedInUserId && salesData && (
         <Modal
           isOpen={isSalesDetailsModalOpen}
           onClose={closeSalesDetailsModal}
@@ -948,38 +1064,43 @@ export default function AccountDashboardPage() {
           size="xl"
         >
           <ExpandedSales
-            monthlyData={salesData?.monthlySales ?? []}
+            monthlyData={salesData.monthlySales ?? []}
             paymentTotals={
-              salesData?.paymentMethodTotals ?? {
+              salesData.paymentMethodTotals ?? {
                 cash: 0,
                 ewallet: 0,
                 bank: 0,
                 unknown: 0,
               }
             }
-            grandTotal={salesData?.grandTotal ?? 0}
-            overallTotalExpenses={salesData?.overallTotalExpenses ?? 0}
+            grandTotal={salesData.grandTotal ?? 0}
+            overallTotalExpenses={salesData.overallTotalExpenses ?? 0}
             isLoading={isLoadingSales}
             onClose={closeSalesDetailsModal}
             isOwner={isOwner}
-            branches={salesData?.branches ?? []}
+            branches={salesData.branches ?? []}
             onDataRefresh={fetchInitialData}
-            loggedInUserId={loggedInUserId}
+            loggedInUserId={loggedInUserId!}
           />
         </Modal>
       )}
-      {isViewingOwnDashboard &&
-        !isOwner &&
-        loggedInUserId &&
-        isHistoryModalOpen && (
-          <PayslipHistoryModal
-            isOpen={isHistoryModalOpen}
-            onClose={closeHistoryModal}
-            isLoading={isLoadingHistory}
-            error={historyError}
-            payslips={payslipHistory}
-          />
-        )}
+
+      {isViewingOwnDashboard && !isOwner && loggedInUserId && (
+        <PayslipHistoryModal
+          isOpen={isHistoryModalOpen}
+          onClose={closeHistoryModal}
+          isLoading={isLoadingHistory}
+          error={historyError}
+          payslips={payslipHistory}
+        />
+      )}
+
+      {(isOwner || isCashier) && (
+        <ManageTransactionsModal
+          isOpen={isTransactionsModalOpen}
+          onClose={closeTransactionsModal}
+        />
+      )}
     </>
   );
 }

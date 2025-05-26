@@ -1,11 +1,9 @@
-// components/Modal.tsx
 "use client";
 
 import React, { useEffect, useState, useRef } from "react";
 import ReactDOM from "react-dom";
 import { X } from "lucide-react";
 
-// Define standard size options
 type ModalSize =
   | "sm"
   | "md"
@@ -25,14 +23,12 @@ interface ModalProps {
   backgroundClassName?: string;
   containerClassName?: string;
   size?: ModalSize;
-  // --- NEW PROPS ---
   hideDefaultHeader?: boolean; // Completely hide the default header section
   hideDefaultCloseButton?: boolean; // Hide only the default 'X' button (useful if title is string but want custom close)
   titleClassName?: string; // Style the container div for the title (default or custom)
   contentClassName?: string; // Style the container div for the children (e.g., remove padding)
 }
 
-// Helper to map size prop to Tailwind class (no changes needed)
 const getSizeClass = (size?: ModalSize): string => {
   switch (size) {
     case "sm":
@@ -64,13 +60,12 @@ export default function Modal({
   onClose,
   title,
   backgroundClassName = "fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4 backdrop-blur-sm",
-  containerClassName = "relative m-auto max-h-[90vh] w-full bg-customOffWhite rounded-lg shadow-xl flex flex-col", // Base container classes
+  containerClassName = "relative m-auto max-h-[90vh] w-full bg-customOffWhite rounded-lg shadow-xl flex flex-col",
   size,
-  // --- Destructure new props ---
   hideDefaultHeader = false,
   hideDefaultCloseButton = false,
-  titleClassName = "flex-shrink-0 border-b border-customGray/30 p-4", // Default title container style
-  contentClassName = "flex-grow overflow-y-auto p-4 sm:p-6", // Default content container style
+  titleClassName = "flex-shrink-0 border-b border-customGray/30 p-4",
+  contentClassName = "flex-grow overflow-y-auto p-4 sm:p-6",
 }: ModalProps) {
   const [portalNode, setPortalNode] = useState<Element | null>(null);
   const originalBodyOverflowRef = useRef<string | null>(null);
@@ -132,10 +127,8 @@ export default function Modal({
     event.stopPropagation();
   };
 
-  // Calculate final container class including size
   const finalContainerClassName = `${containerClassName} ${getSizeClass(size)}`;
 
-  // --- MODAL CONTENT RENDERING ---
   const modalContent = (
     <div
       className={backgroundClassName}
@@ -145,54 +138,42 @@ export default function Modal({
       <div
         role="dialog"
         aria-modal="true"
-        // Use title if string for aria-labelledby, otherwise fallback
         aria-labelledby={
           typeof title === "string" ? "dialog-title-id" : undefined
         }
-        className={finalContainerClassName} // Apply size and base styles
-        onClick={handleDialogClick} // Prevent background click when clicking dialog
+        className={finalContainerClassName}
+        onClick={handleDialogClick}
       >
-        {/* --- Conditional Header Rendering --- */}
-        {!hideDefaultHeader &&
-          title && ( // Render header area only if not hidden AND title exists
-            <div
-              className={`flex items-start justify-between ${titleClassName}`}
-            >
-              {" "}
-              {/* Apply title container style */}
-              {/* Render title: either default h2 or custom ReactNode */}
-              {typeof title === "string" ? (
-                <h2
-                  id="dialog-title-id"
-                  className="text-lg font-semibold text-customBlack"
-                >
-                  {title}
-                </h2>
-              ) : (
-                // Render the custom title component directly
-                title
-              )}
-              {/* Render default close button only if not hidden */}
-              {!hideDefaultCloseButton && (
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="-m-1.5 ml-4 flex-shrink-0 rounded-full p-1.5 text-customBlack/60 transition-colors hover:bg-customGray/50 hover:text-customBlack"
-                  aria-label="Close dialog"
-                >
-                  <X size={20} />
-                </button>
-              )}
-            </div>
-          )}
+        {!hideDefaultHeader && title && (
+          <div className={`flex items-start justify-between ${titleClassName}`}>
+            {typeof title === "string" ? (
+              <h2
+                id="dialog-title-id"
+                className="text-lg font-semibold text-customBlack"
+              >
+                {title}
+              </h2>
+            ) : (
+              title
+            )}
+            {!hideDefaultCloseButton && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="-m-1.5 ml-4 flex-shrink-0 rounded-full p-1.5 text-customBlack/60 transition-colors hover:bg-customGray/50 hover:text-customBlack"
+                aria-label="Close dialog"
+              >
+                <X size={20} />
+              </button>
+            )}
+          </div>
+        )}
 
-        {/* Children Content Area - Apply custom or default styling */}
         <div className={contentClassName}>{children}</div>
-      </div>{" "}
-      {/* End Dialog */}
-    </div> // End Background
+      </div>
+    </div>
   );
 
-  if (!isOpen || !portalNode) return null; // Don't render if not open or portal not ready
-  return ReactDOM.createPortal(modalContent, portalNode); // Render into the portal node
+  if (!isOpen || !portalNode) return null;
+  return ReactDOM.createPortal(modalContent, portalNode);
 }

@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageTransactions.tsx
 "use client";
 
 import React, {
@@ -15,12 +14,24 @@ import {
 import Button from "@/components/Buttons/Button"; // Adjust path
 import { TransactionListData, ServerActionResponse } from "@/lib/Types"; // Adjust path
 import { Status } from "@prisma/client";
-import { Eye, XCircle, RotateCcw, SlidersHorizontal } from "lucide-react";
+import {
+  Eye,
+  XCircle,
+  SlidersHorizontal,
+  RotateCcw as RefreshIcon,
+} from "lucide-react";
 import Modal from "@/components/Dialog/Modal"; // Adjust path
 import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
 import { format } from "date-fns";
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache";
 
 const ALL_STATUSES = Object.values(Status);
+const TRANSACTIONS_CACHE_KEY: CacheKey = "transactions_ManageTransactions";
 
 export default function ManageTransactions() {
   const [transactions, setTransactions] = useState<TransactionListData[]>([]);
@@ -43,36 +54,65 @@ export default function ManageTransactions() {
 
   const filterFormRef = useRef<HTMLFormElement>(null);
 
-  const loadData = useCallback(async (currentFilters: typeof filters) => {
-    setIsLoading(true);
-    setListError(null);
-    setActionError(null);
-    try {
-      const transactionsRes = await getTransactionsAction({
-        startDate: currentFilters.startDate || undefined,
-        endDate: currentFilters.endDate || undefined,
-        status: currentFilters.status
-          ? (currentFilters.status as Status)
-          : undefined,
-      });
+  const loadData = useCallback(
+    async (currentFilters: typeof filters, forceRefresh = false) => {
+      setIsLoading(true);
+      setListError(null);
+      setActionError(null);
 
-      if (transactionsRes.success && transactionsRes.data) {
-        setTransactions(transactionsRes.data);
-      } else {
-        throw new Error(
-          transactionsRes.message || "Failed to load transactions.",
+      if (!forceRefresh) {
+        const cachedData = getCachedData<TransactionListData[]>(
+          TRANSACTIONS_CACHE_KEY,
+          currentFilters,
         );
+        if (cachedData) {
+          setTransactions(cachedData);
+          setIsLoading(false);
+          // console.log("[Cache] Transactions loaded from cache for filters:", currentFilters);
+          return;
+        }
       }
-    } catch (err: any) {
-      setListError(err.message || "Failed to load data.");
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+      // console.log("[Cache] Fetching transactions for filters:", currentFilters);
+      try {
+        const transactionsRes = await getTransactionsAction({
+          startDate: currentFilters.startDate || undefined,
+          endDate: currentFilters.endDate || undefined,
+          status: currentFilters.status
+            ? (currentFilters.status as Status)
+            : undefined,
+        });
+
+        if (transactionsRes.success && transactionsRes.data) {
+          setTransactions(transactionsRes.data);
+          setCachedData(
+            TRANSACTIONS_CACHE_KEY,
+            transactionsRes.data,
+            currentFilters,
+          );
+        } else {
+          throw new Error(
+            transactionsRes.message || "Failed to load transactions.",
+          );
+        }
+      } catch (err: any) {
+        setListError(err.message || "Failed to load data.");
+        setTransactions([]); // Clear data on error
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     loadData(filters);
   }, [filters, loadData]);
+
+  const handleRefresh = () => {
+    // console.log("[Cache] Refreshing transactions data");
+    invalidateCache(TRANSACTIONS_CACHE_KEY);
+    loadData(filters, true);
+  };
 
   const handleFilterChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
@@ -83,7 +123,8 @@ export default function ManageTransactions() {
 
   const handleFilterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    console.log("Applying filters:", filters);
+    // Data loading is handled by useEffect on filters change
+    // console.log("Applying filters:", filters);
   };
 
   const resetFilters = () => {
@@ -127,7 +168,8 @@ export default function ManageTransactions() {
       const res = await cancelTransactionAction(transactionId);
       if (res.success) {
         closeModal();
-        await loadData(filters);
+        invalidateCache(TRANSACTIONS_CACHE_KEY);
+        await loadData(filters, true); // Force refresh after invalidation
       } else {
         setActionError(res.message);
       }
@@ -211,20 +253,34 @@ export default function ManageTransactions() {
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Transactions
         </h2>
-        <Button
-          onClick={() => setShowFilters(!showFilters)}
-          size="sm"
-          invert
-          className="flex w-full items-center justify-center gap-1.5 sm:hidden"
-          aria-controls="transaction-filters"
-          aria-expanded={showFilters}
-        >
-          <SlidersHorizontal size={16} />
-          {showFilters ? "Hide Filters" : "Show Filters"}
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button
+            onClick={handleRefresh}
+            size="sm"
+            variant="outline"
+            className="flex w-full items-center justify-center gap-1.5 sm:w-auto"
+            disabled={isLoading || isPending}
+            title="Refresh Data"
+          >
+            <RefreshIcon size={16} />
+            <span className="sm:hidden">Refresh</span>
+            <span className="hidden sm:inline">Refresh Data</span>
+          </Button>
+          <Button
+            onClick={() => setShowFilters(!showFilters)}
+            size="sm"
+            invert
+            className="flex w-full items-center justify-center gap-1.5 sm:hidden" // Keep sm:hidden for mobile toggle
+            aria-controls="transaction-filters"
+            aria-expanded={showFilters}
+          >
+            <SlidersHorizontal size={16} />
+            {showFilters ? "Hide Filters" : "Show Filters"}
+          </Button>
+        </div>
       </div>
 
-      {/* Filters Form - Conditionally rendered/hidden */}
+      {/* Filters Form */}
       <form
         id="transaction-filters"
         ref={filterFormRef}
@@ -234,8 +290,7 @@ export default function ManageTransactions() {
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
             <label htmlFor="startDate" className={labelStyle}>
-              {" "}
-              From Date{" "}
+              From Date
             </label>
             <input
               type="date"
@@ -249,8 +304,7 @@ export default function ManageTransactions() {
           </div>
           <div>
             <label htmlFor="endDate" className={labelStyle}>
-              {" "}
-              To Date{" "}
+              To Date
             </label>
             <input
               type="date"
@@ -265,8 +319,7 @@ export default function ManageTransactions() {
           </div>
           <div>
             <label htmlFor="status" className={labelStyle}>
-              {" "}
-              Status{" "}
+              Status
             </label>
             <select
               id="status"
@@ -278,8 +331,7 @@ export default function ManageTransactions() {
               <option value="">All Statuses</option>
               {ALL_STATUSES.map((s) => (
                 <option key={s} value={s}>
-                  {" "}
-                  {formatStatus(s)}{" "}
+                  {formatStatus(s)}
                 </option>
               ))}
             </select>
@@ -294,7 +346,8 @@ export default function ManageTransactions() {
               className="w-full justify-center !py-1.5"
               title="Reset Filters"
             >
-              <RotateCcw size={16} />
+              <RefreshIcon size={16} />{" "}
+              {/* Changed icon here for variety from main refresh */}
             </Button>
           </div>
         </div>
@@ -311,8 +364,7 @@ export default function ManageTransactions() {
       )}
       {!isLoading && !listError && transactions.length === 0 && (
         <p className="py-10 text-center text-customBlack/60">
-          {" "}
-          No transactions found matching your filters.{" "}
+          No transactions found matching your filters.
         </p>
       )}
 
@@ -323,7 +375,6 @@ export default function ManageTransactions() {
           <div className="hidden sm:block">
             <table className="min-w-full divide-y divide-customGray/30">
               <thead className="bg-customGray/10">
-                {/* Ensure no extra spaces/newlines between <th> tags */}
                 <tr>
                   <th className={thStyleBase}>Date</th>
                   <th className={thStyleBase}>Customer</th>
@@ -334,7 +385,6 @@ export default function ManageTransactions() {
               </thead>
               <tbody className="divide-y divide-customGray/30">
                 {transactions.map((t) => (
-                  // Ensure no extra spaces/newlines between <td> tags
                   <tr key={t.id} className="hover:bg-customLightBlue/10">
                     <td className={`${tdStyleBase} whitespace-nowrap`}>
                       {formatShortDate(t.createdAt)}
@@ -435,7 +485,7 @@ export default function ManageTransactions() {
         </div>
       )}
 
-      {/* Modal (remains the same) */}
+      {/* Modal */}
       <Modal
         isOpen={isModalOpen && selectedTransaction !== null}
         onClose={closeModal}
@@ -443,72 +493,56 @@ export default function ManageTransactions() {
         containerClassName="relative m-auto max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
       >
         {selectedTransaction && (
-          // Modal Content... (remains the same)
           <div className="space-y-4 text-sm">
             {actionError && <p className={modalErrorStyle}>{actionError}</p>}
             {/* Basic Info Grid */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded border border-customGray/20 p-3 md:grid-cols-3">
               <div>
-                {" "}
-                <span className="font-medium text-customBlack/70">
-                  ID:
-                </span>{" "}
+                <span className="font-medium text-customBlack/70">ID:</span>
                 <span className="font-mono text-xs text-customBlack">
                   {selectedTransaction.id.substring(0, 8)}...
-                </span>{" "}
+                </span>
               </div>
               <div>
-                {" "}
-                <span className="font-medium text-customBlack/70">
-                  Date:
-                </span>{" "}
-                {formatDate(selectedTransaction.createdAt)}{" "}
+                <span className="font-medium text-customBlack/70">Date:</span>
+                {formatDate(selectedTransaction.createdAt)}
               </div>
               <div>
-                {" "}
-                <span className="font-medium text-customBlack/70">
-                  Booked:
-                </span>{" "}
-                {formatDate(selectedTransaction.bookedFor)}{" "}
+                <span className="font-medium text-customBlack/70">Booked:</span>
+                {formatDate(selectedTransaction.bookedFor)}
               </div>
               <div>
-                {" "}
-                <span className="font-medium text-customBlack/70">
-                  Status:
-                </span>{" "}
+                <span className="font-medium text-customBlack/70">Status:</span>
                 <span
                   className={`rounded-full px-2 py-0.5 text-xs font-semibold ${getStatusColor(selectedTransaction.status)}`}
                 >
                   {formatStatus(selectedTransaction.status)}
-                </span>{" "}
+                </span>
               </div>
               <div>
-                {" "}
                 <span className="font-medium text-customBlack/70">
                   Payment:
-                </span>{" "}
-                {selectedTransaction.paymentMethod?.toString() ?? "N/A"}{" "}
+                </span>
+                {selectedTransaction.paymentMethod?.toString() ?? "N/A"}
               </div>
               {selectedTransaction.voucherUsed && (
                 <div>
-                  {" "}
                   <span className="font-medium text-customBlack/70">
                     Voucher:
-                  </span>{" "}
+                  </span>
                   <span className="font-mono">
                     {selectedTransaction.voucherUsed.code}
-                  </span>{" "}
+                  </span>
                 </div>
               )}
               {selectedTransaction.discount > 0 && (
                 <div>
-                  {" "}
                   <span className="font-medium text-customBlack/70">
                     Discount:
-                  </span>{" "}
+                  </span>
                   <span className="text-red-600">
                     ({formatCurrency(selectedTransaction.discount)})
-                  </span>{" "}
+                  </span>
                 </div>
               )}
             </div>
@@ -518,11 +552,11 @@ export default function ManageTransactions() {
                 Customer
               </h4>
               <p>
-                <span className="font-medium">Name:</span>{" "}
+                <span className="font-medium">Name:</span>
                 {selectedTransaction.customer?.name ?? "N/A"}
               </p>
               <p>
-                <span className="font-medium">Email:</span>{" "}
+                <span className="font-medium">Email:</span>
                 {selectedTransaction.customer?.email ?? "N/A"}
               </p>
             </div>
@@ -597,8 +631,7 @@ export default function ManageTransactions() {
                 invert
                 className="w-full sm:w-auto"
               >
-                {" "}
-                Close{" "}
+                Close
               </Button>
               {selectedTransaction.status !== Status.CANCELLED &&
                 selectedTransaction.status !== Status.DONE && (

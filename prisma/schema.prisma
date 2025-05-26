@@ -5,7 +5,7 @@ generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
   binaryTargets   = ["native", "debian-openssl-1.1.x", "rhel-openssl-1.1.x"]
-  //output          = "../backend/node_modules/.prisma/client"
+  // output          = "../backend/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -40,8 +40,7 @@ enum PaymentMethod {
   ewallet
   cash
   bank
-  // Consider adding 'unknown' here if it's a valid method,
-  // otherwise handle null or a separate flag
+  GIFT_CERTIFICATE
 }
 
 enum PayslipStatus {
@@ -161,6 +160,9 @@ model RecommendedAppointment {
   reminder1DayAfterSentAt DateTime?
   reminder7DaySentAt      DateTime?
 
+  reminder7DayAfterSentAt  DateTime?
+  reminder14DayAfterSentAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -241,10 +243,10 @@ model Account {
   payslipRequests        PayslipRequest[] @relation("AccountRequests") // Requests made BY this user
   managedPayslipRequests PayslipRequest[] @relation("AdminManagedRequests") // Requests managed BY this user (if admin)
 
-  // --- NEW RELATIONS ---
   manualSales ManualSale[] @relation("RecordedByAccountManualSales")
   expenses    Expense[]    @relation("RecordedByAccountExpenses")
-  // --- END NEW RELATIONS ---
+
+  mustChangePassword Boolean @default(false)
 
   @@index([branchId])
 }
@@ -322,6 +324,9 @@ model Transaction {
 
   bookingReminderSentAt DateTime? // Timestamp when the 1-hour reminder was sent
 
+  giftCertificateId   String? // New nullable field for GC ID
+  giftCertificateUsed GiftCertificate? @relation(fields: [giftCertificateId], references: [id])
+
   originatingRecommendations RecommendedAppointment[] @relation("OriginatingTransaction")
   attendedAppointment        RecommendedAppointment?  @relation("AttendedTransaction")
 
@@ -385,6 +390,8 @@ model GiftCertificate {
 
   usedAt DateTime?
 
+  transactions Transaction[]
+
   @@index([purchaserCustomerId])
 }
 
@@ -432,3 +439,18 @@ model Expense {
 }
 
 // --- END NEW MODELS ---
+
+model EmailTemplate {
+  id           String   @id @default(uuid())
+  name         String   @unique // Unique name for easy identification (e.g., "Welcome Email", "Appointment Reminder")
+  subject      String // Default subject line
+  body         String   @db.Text // Email body, can be HTML. Use @db.Text for longer content.
+  placeholders String[] // List of suggested/available placeholders (e.g., ["{{customerName}}", "{{customerEmail}}"]) - for user guidance
+  isActive     Boolean  @default(true) // To enable/disable templates without deleting
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name])
+  @@index([isActive])
+}

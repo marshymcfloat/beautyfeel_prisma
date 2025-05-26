@@ -18,17 +18,31 @@ import {
 import Button from "@/components/Buttons/Button";
 import { AccountForManagement, BranchForSelect } from "@/lib/Types";
 import { Role } from "@prisma/client";
-import { Plus, Edit3, Trash2 } from "lucide-react";
+import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache"; // Adjust path
 
 const ALL_ROLES = Object.values(Role);
+const isValidEmail = (email: string): boolean =>
+  /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+
+const ACCOUNTS_CACHE_KEY: CacheKey = "accounts_ManageAccounts";
+const BRANCHES_ACCOUNTS_CACHE_KEY: CacheKey = "branches_ManageAccounts";
 
 export default function ManageAccounts() {
   const [accounts, setAccounts] = useState<AccountForManagement[]>([]);
   const [branches, setBranches] = useState<BranchForSelect[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [formError, setFormError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<
+    Record<string, string[] | undefined>
+  >({});
   const [listError, setListError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] =
@@ -36,189 +50,289 @@ export default function ManageAccounts() {
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
-  const loadData = useCallback(async () => {
+  const resetFormState = () => {
+    setFormError(null);
+    setFieldErrors({});
+  };
+
+  const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setListError(null);
+
+    let accData = !forceRefresh
+      ? getCachedData<AccountForManagement[]>(ACCOUNTS_CACHE_KEY)
+      : null;
+    let brData = !forceRefresh
+      ? getCachedData<BranchForSelect[]>(BRANCHES_ACCOUNTS_CACHE_KEY)
+      : null;
+
+    if (accData && brData && !forceRefresh) {
+      setAccounts(accData);
+      setBranches(brData);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      const [fetchedAccounts, fetchedBranches] = await Promise.all([
-        getAccountsAction(),
-        getBranchesForSelectAction(),
-      ]);
+      const promises: [
+        Promise<AccountForManagement[]>,
+        Promise<BranchForSelect[]>,
+      ] = [
+        accData && !forceRefresh
+          ? Promise.resolve(accData)
+          : getAccountsAction().then((data) => {
+              setCachedData<AccountForManagement[]>(ACCOUNTS_CACHE_KEY, data);
+              return data;
+            }),
+        brData && !forceRefresh
+          ? Promise.resolve(brData)
+          : getBranchesForSelectAction().then((data) => {
+              setCachedData<BranchForSelect[]>(
+                BRANCHES_ACCOUNTS_CACHE_KEY,
+                data,
+              );
+              return data;
+            }),
+      ];
+      const [fetchedAccounts, fetchedBranches] = await Promise.all(promises);
       setAccounts(fetchedAccounts);
       setBranches(fetchedBranches);
     } catch (err: any) {
-      setListError(err.message || "Failed load.");
+      setListError(err.message || "Failed to load accounts or branches.");
+      setAccounts(accData || []);
+      setBranches(brData || []);
     } finally {
       setIsLoading(false);
     }
   }, []);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
 
+  const handleRefresh = useCallback(() => {
+    loadData(true);
+  }, [loadData]);
+
   const handleAdd = () => {
     setEditingAccount(null);
-    setFormError(null);
+    resetFormState();
     setIsModalOpen(true);
-    formRef.current?.reset();
+    // formRef.current?.reset(); // Will be handled by key change or useEffect on modal open
     setTimeout(() => {
-      const input = formRef.current?.elements.namedItem(
-        "dailyRate",
-      ) as HTMLInputElement | null;
-      if (input && !input.value) input.value = "350";
+      // Ensure form is rendered
+      if (formRef.current) {
+        formRef.current.reset(); // Explicit reset for new item
+        const input = formRef.current.elements.namedItem(
+          "dailyRate",
+        ) as HTMLInputElement | null;
+        if (input && !input.value) input.value = "350"; // Default value after reset
+      }
     }, 0);
   };
+
   const handleEdit = (account: AccountForManagement) => {
     setEditingAccount(account);
-    setFormError(null);
+    resetFormState();
     setIsModalOpen(true);
+    // Form values will be set by `defaultValue` in inputs due to `key` prop on form or manual prefill if not using key
   };
+
   const closeModal = () => {
     setIsModalOpen(false);
-    setEditingAccount(null);
-    setFormError(null);
-    formRef.current?.reset();
+    // setEditingAccount(null); // Handled by useEffect on modal close
+    // resetFormState(); // Handled by useEffect on modal close
+    // formRef.current?.reset(); // Implicitly handled by key change or explicit reset elsewhere
   };
+
+  useEffect(() => {
+    // Handles state when modal visibility or editingAccount changes
+    if (!isModalOpen) {
+      setEditingAccount(null);
+      resetFormState();
+    }
+    // `formRef.current?.reset()` for add can be done in `handleAdd` or here conditionally.
+    // For edit, `defaultValue` or a `key` on the form is generally preferred.
+  }, [isModalOpen]);
+
   const handleDelete = (accountId: string) => {
-    if (!window.confirm("Delete?")) return;
+    if (
+      !window.confirm(
+        "Are you sure you want to delete this account? This action cannot be undone.",
+      )
+    )
+      return;
     setListError(null);
     startTransition(async () => {
       const res = await deleteAccountAction(accountId);
-      if (!res.success) setListError(res.message);
-      else await loadData();
+      if (!res.success)
+        setListError(res.message || "Failed to delete account.");
+      else {
+        invalidateCache(ACCOUNTS_CACHE_KEY);
+        await loadData();
+      }
     });
   };
+
   const handleSave = () => {
-    if (!formRef.current) return setFormError("Form error.");
-    setFormError(null);
+    if (!formRef.current) {
+      setFormError("Form reference error. Please try again.");
+      return;
+    }
+    resetFormState();
     const fd = new FormData(formRef.current);
-    if (!fd.get("username") || !fd.get("name"))
-      return setFormError("Username/Name required.");
-    if (
-      !editingAccount &&
-      (!fd.get("password") || (fd.get("password") as string).length < 6)
-    )
-      return setFormError("Password (min 6) required.");
+    const username = fd.get("username") as string;
+    const name = fd.get("name") as string;
+    const email = fd.get("email") as string;
     const rate = fd.get("dailyRate");
+
+    let currentFieldErrors: Record<string, string[]> = {};
+    if (!username?.trim())
+      currentFieldErrors.username = ["Username is required."];
+    if (!name?.trim()) currentFieldErrors.name = ["Full Name is required."];
+    if (!editingAccount) {
+      if (!email?.trim())
+        currentFieldErrors.email = ["Email is required for new accounts."];
+      else if (!isValidEmail(email))
+        currentFieldErrors.email = ["Please enter a valid email address."];
+    } else {
+      if (email?.trim() && !isValidEmail(email))
+        currentFieldErrors.email = ["Please enter a valid email address."];
+    }
     if (!rate || isNaN(Number(rate)) || Number(rate) < 0)
-      return setFormError("Valid rate required.");
+      currentFieldErrors.dailyRate = [
+        "A valid, non-negative daily rate is required.",
+      ];
     if (
       ALL_ROLES.filter((role) => fd.get(`role-${role}`) === "on").length === 0
     )
-      return setFormError("Select role.");
+      currentFieldErrors.roles = ["At least one role must be selected."];
+
+    if (Object.keys(currentFieldErrors).length > 0) {
+      setFieldErrors(currentFieldErrors);
+      setFormError("Please correct the errors in the form.");
+      return;
+    }
+
     startTransition(async () => {
       try {
         const action = editingAccount
           ? updateAccountAction(editingAccount.id, fd)
           : createAccountAction(fd);
         const res = await action;
-        if (!res) throw new Error("No result");
+        if (!res) throw new Error("No response from server action.");
         if (res.success) {
           closeModal();
+          invalidateCache(ACCOUNTS_CACHE_KEY);
           await loadData();
+          alert(res.message || "Account saved successfully!");
         } else {
-          let msg = res.message;
-          if (res.errors)
-            msg += ` (${Object.entries(res.errors)
-              .map(([f, e]) => `${f}: ${e?.join(",")}`)
-              .join("; ")})`;
-          setFormError(msg);
+          setFormError(res.message || "An error occurred.");
+          if (res.errors) setFieldErrors(res.errors);
         }
       } catch (err: any) {
-        setFormError(err.message || "Error");
+        setFormError(
+          err.message || "An unexpected error occurred during save.",
+        );
       }
     });
   };
 
   const isSaving = isPending;
-  const formatPHP = (value: number | null | undefined): string => {
-    return (value ?? 0).toLocaleString("en-PH", {
+  const formatPHP = (value: number | null | undefined): string =>
+    (value ?? 0).toLocaleString("en-PH", {
       style: "currency",
       currency: "PHP",
-      minimumFractionDigits: 0, // Show whole pesos for rate for brevity
+      minimumFractionDigits: 0,
       maximumFractionDigits: 0,
     });
-  };
 
-  // --- Styles ---
   const thStyleBase =
     "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
-  const inputStyle =
-    "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
+  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top";
+  const inputStyle = (hasError?: boolean) =>
+    `mt-1 block w-full rounded border ${hasError ? "border-red-500" : "border-customGray"} p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed`;
   const labelStyle = "block text-sm font-medium text-customBlack/80";
   const checkboxStyle =
     "h-4 w-4 rounded border-customGray text-customDarkPink focus:ring-customDarkPink";
   const checkboxLabelStyle = "ml-2 block text-sm text-customBlack";
   const errorMsgStyle =
     "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
-  const modalErrorStyle = "text-xs text-red-600 mb-3";
+  const modalErrorStyle =
+    "text-sm text-red-600 mb-3 p-3 bg-red-100 border border-red-300 rounded";
+  const fieldErrorStyle = "mt-1 text-xs text-red-600";
 
   return (
     <div className="p-1">
-      {/* Header */}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Accounts
         </h2>
-        <Button
-          onClick={handleAdd}
-          disabled={isPending || isLoading}
-          size="sm"
-          className="w-full sm:w-auto"
-        >
-          <Plus size={16} className="mr-1" /> Add New Account
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            onClick={handleRefresh}
+            disabled={isLoading || isPending}
+            size="sm"
+            variant="outline"
+            className="w-full sm:w-auto"
+          >
+            <RefreshCw
+              size={16}
+              className={`mr-1 ${isLoading ? "animate-spin" : ""}`}
+            />{" "}
+            Refresh
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={isLoading || isPending}
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            <Plus size={16} className="mr-1" /> Add New Account
+          </Button>
+        </div>
       </div>
 
       {listError && !isModalOpen && (
         <p className={errorMsgStyle}>{listError}</p>
       )}
 
-      {/* Table */}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
-        {isLoading ? (
-          <p className="py-10 text-center text-customBlack/70">Loading...</p>
+        {isLoading && accounts.length === 0 ? (
+          <p className="py-10 text-center text-customBlack/70">
+            Loading accounts...
+          </p>
         ) : !listError && accounts.length === 0 ? (
-          <p className="py-10 text-center text-customBlack/60">No accounts.</p>
+          <p className="py-10 text-center text-customBlack/60">
+            No accounts found.
+          </p>
         ) : (
           <table className="min-w-full divide-y divide-customGray/30">
             <thead className="bg-customGray/10">
               <tr>
-                {/* User: Always Visible */}
                 <th className={thStyleBase}>User</th>
-                {/* Name: Hidden on xs, visible sm+ */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>Name</th>
-                {/* Email: Hidden on xs, visible sm+ */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>Email</th>
-                {/* Roles: Hidden on xs, visible sm+ */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>Roles</th>
-                {/* Rate: Always Visible */}
                 <th className={thStyleBase}>Rate</th>
-                {/* Branch: Hidden on xs, visible sm+ */}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Branch
                 </th>
-                {/* Actions: Always Visible */}
                 <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-customGray/30">
               {accounts.map((a) => (
                 <tr key={a.id} className="hover:bg-customLightBlue/10">
-                  {/* User: medium weight, can wrap */}
                   <td className={`${tdStyleBase} font-medium`}>{a.username}</td>
-                  {/* Name: Hidden on xs */}
                   <td className={`${tdStyleBase} hidden sm:table-cell`}>
                     {a.name}
                   </td>
-                  {/* Email: Hidden on xs */}
                   <td className={`${tdStyleBase} hidden sm:table-cell`}>
                     {a.email ?? (
                       <span className="italic text-gray-400">N/A</span>
                     )}
                   </td>
-                  {/* Roles: Hidden on xs, capitalize */}
                   <td
                     className={`${tdStyleBase} hidden capitalize sm:table-cell`}
                   >
@@ -226,17 +340,14 @@ export default function ManageAccounts() {
                       .map((r) => r.toLowerCase().replace("_", " "))
                       .join(", ") || "-"}
                   </td>
-                  {/* Rate: Always visible, no wrap */}
                   <td className={`${tdStyleBase} whitespace-nowrap`}>
                     {formatPHP(a.dailyRate)}
                   </td>
-                  {/* Branch: Hidden on xs */}
                   <td className={`${tdStyleBase} hidden sm:table-cell`}>
                     {a.branch?.title ?? (
                       <span className="italic text-gray-400">N/A</span>
                     )}
                   </td>
-                  {/* Actions: Always visible, no wrap, right aligned */}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(a)}
@@ -266,7 +377,6 @@ export default function ManageAccounts() {
         )}
       </div>
 
-      {/* Modal (No changes needed here for table responsiveness) */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
@@ -279,12 +389,11 @@ export default function ManageAccounts() {
       >
         {formError && <p className={modalErrorStyle}>{formError}</p>}
         <form
-          key={editingAccount?.id ?? "new"}
+          key={editingAccount?.id ?? "new-account-form"}
           ref={formRef}
           onSubmit={(e) => e.preventDefault()}
           className="space-y-4"
         >
-          {/* Modal Form Fields... (keep existing) */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
               <label htmlFor="username" className={labelStyle}>
@@ -297,8 +406,17 @@ export default function ManageAccounts() {
                 required
                 maxLength={20}
                 defaultValue={editingAccount?.username ?? ""}
-                className={inputStyle}
+                className={inputStyle(!!fieldErrors.username)}
+                aria-invalid={!!fieldErrors.username}
+                aria-describedby={
+                  fieldErrors.username ? "username-error" : undefined
+                }
               />
+              {fieldErrors.username && (
+                <p id="username-error" className={fieldErrorStyle}>
+                  {fieldErrors.username.join(", ")}
+                </p>
+              )}
               <p className="mt-1 text-xs text-gray-500">Max 20 chars.</p>
             </div>
             <div>
@@ -311,36 +429,40 @@ export default function ManageAccounts() {
                 id="name"
                 required
                 defaultValue={editingAccount?.name ?? ""}
-                className={inputStyle}
+                className={inputStyle(!!fieldErrors.name)}
+                aria-invalid={!!fieldErrors.name}
+                aria-describedby={fieldErrors.name ? "name-error" : undefined}
               />
+              {fieldErrors.name && (
+                <p id="name-error" className={fieldErrorStyle}>
+                  {fieldErrors.name.join(", ")}
+                </p>
+              )}
             </div>
-            {!editingAccount && (
-              <div>
-                <label htmlFor="password" className={labelStyle}>
-                  Password*
-                </label>
-                <input
-                  type="password"
-                  name="password"
-                  id="password"
-                  required
-                  minLength={6}
-                  className={inputStyle}
-                />
-                <p className="mt-1 text-xs text-gray-500">Min 6 chars.</p>
-              </div>
-            )}
             <div>
               <label htmlFor="email" className={labelStyle}>
-                Email
+                Email{editingAccount ? "" : "*"}
               </label>
               <input
                 type="email"
                 name="email"
                 id="email"
+                required={!editingAccount}
                 defaultValue={editingAccount?.email ?? ""}
-                className={inputStyle}
+                className={inputStyle(!!fieldErrors.email)}
+                aria-invalid={!!fieldErrors.email}
+                aria-describedby={fieldErrors.email ? "email-error" : undefined}
               />
+              {fieldErrors.email && (
+                <p id="email-error" className={fieldErrorStyle}>
+                  {fieldErrors.email.join(", ")}
+                </p>
+              )}
+              {!editingAccount && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Required. A temporary password will be sent.
+                </p>
+              )}
             </div>
             <div>
               <label htmlFor="dailyRate" className={labelStyle}>
@@ -354,9 +476,18 @@ export default function ManageAccounts() {
                 min="0"
                 step="1"
                 defaultValue={editingAccount?.dailyRate?.toString() ?? "350"}
-                className={inputStyle}
+                className={inputStyle(!!fieldErrors.dailyRate)}
                 placeholder="e.g., 350"
+                aria-invalid={!!fieldErrors.dailyRate}
+                aria-describedby={
+                  fieldErrors.dailyRate ? "dailyRate-error" : undefined
+                }
               />
+              {fieldErrors.dailyRate && (
+                <p id="dailyRate-error" className={fieldErrorStyle}>
+                  {fieldErrors.dailyRate.join(", ")}
+                </p>
+              )}
               <p className="mt-1 text-xs text-gray-500">
                 e.g., 350 for ₱350.00
               </p>
@@ -369,7 +500,11 @@ export default function ManageAccounts() {
                 name="branchId"
                 id="branchId"
                 defaultValue={editingAccount?.branchId ?? ""}
-                className={`${inputStyle} bg-white`}
+                className={`${inputStyle(!!fieldErrors.branchId)} bg-white`}
+                aria-invalid={!!fieldErrors.branchId}
+                aria-describedby={
+                  fieldErrors.branchId ? "branchId-error" : undefined
+                }
               >
                 <option value="">-- No Branch --</option>
                 {branches.map((b) => (
@@ -378,10 +513,19 @@ export default function ManageAccounts() {
                   </option>
                 ))}
               </select>
+              {fieldErrors.branchId && (
+                <p id="branchId-error" className={fieldErrorStyle}>
+                  {fieldErrors.branchId.join(", ")}
+                </p>
+              )}
             </div>
           </div>
           <fieldset className="pt-2">
-            <legend className={labelStyle}>Roles*</legend>
+            <legend
+              className={`${labelStyle} ${fieldErrors.roles ? "text-red-600" : ""}`}
+            >
+              Roles*
+            </legend>
             <div className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3">
               {ALL_ROLES.map((role) => (
                 <div key={role} className="flex items-center">
@@ -402,6 +546,9 @@ export default function ManageAccounts() {
                 </div>
               ))}
             </div>
+            {fieldErrors.roles && (
+              <p className={fieldErrorStyle}>{fieldErrors.roles.join(", ")}</p>
+            )}
           </fieldset>
           <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
             <Button

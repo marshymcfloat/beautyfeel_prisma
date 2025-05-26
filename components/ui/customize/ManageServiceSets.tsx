@@ -1,10 +1,11 @@
+// src/components/ui/customize/ManageServiceSets.tsx
 "use client";
 import React, {
   useState,
   useEffect,
   useTransition,
   useRef,
-  useCallback, // Added useCallback
+  useCallback,
 } from "react";
 import {
   createServiceSetAction,
@@ -15,107 +16,158 @@ import type {
   ServiceSet as PrismaServiceSet,
   Service as PrismaService,
 } from "@prisma/client";
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache"; // Adjust path
 
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
-import { Plus, Edit3, Trash2 } from "lucide-react"; // Import icons
+import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
 
-type Service = Pick<PrismaService, "id" | "title" | "price">; // Only need these fields
+type Service = Pick<PrismaService, "id" | "title" | "price">;
 type ServiceSet = PrismaServiceSet & { services?: Service[] };
 
+// Mocking API calls as server actions are preferred, but keeping structure if using APIs
 const fetchServiceSets = async (): Promise<ServiceSet[]> => {
+  // Replace with actual server action or ensure API is robust
   const response = await fetch("/api/service-sets");
   if (!response.ok)
     throw new Error(`Failed to fetch service sets: ${response.statusText}`);
-  const data = await response.json();
-  return data as ServiceSet[];
+  return response.json();
 };
 
 const fetchAvailableServices = async (): Promise<Service[]> => {
-  const response = await fetch("/api/services");
+  // Replace with actual server action or ensure API is robust
+  const response = await fetch("/api/services"); // This might fetch all services
   if (!response.ok)
     throw new Error(`Failed to fetch services: ${response.statusText}`);
-  const data = await response.json();
-  return data as Service[];
+  return response.json();
 };
-// --- End API Fetch / Server Action ---
+
+const SERVICE_SETS_CACHE_KEY: CacheKey = "serviceSets_ManageServiceSets";
+const AVAILABLE_SERVICES_CACHE_KEY: CacheKey =
+  "availableServices_ManageServiceSets";
 
 export default function ManageServiceSets() {
   const [serviceSets, setServiceSets] = useState<ServiceSet[]>([]);
   const [availableServices, setAvailableServices] = useState<Service[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [formError, setFormError] = useState<string | null>(null); // Modal Error
-  const [listError, setListError] = useState<string | null>(null); // List Error
+  const [formError, setFormError] = useState<string | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSet, setEditingSet] = useState<ServiceSet | null>(null);
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
-  // Use useCallback for loadData
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setListError(null);
+
+    let setsData = !forceRefresh
+      ? getCachedData<ServiceSet[]>(SERVICE_SETS_CACHE_KEY)
+      : null;
+    let servicesData = !forceRefresh
+      ? getCachedData<Service[]>(AVAILABLE_SERVICES_CACHE_KEY)
+      : null;
+
+    if (setsData && servicesData && !forceRefresh) {
+      setServiceSets(setsData);
+      setAvailableServices(servicesData);
+      setIsLoading(false);
+      return;
+    }
+
     try {
-      // Consider using server actions if available
-      const [fetchedSets, fetchedServices] = await Promise.all([
-        fetchServiceSets(),
-        fetchAvailableServices(),
-      ]);
+      const promises: [Promise<ServiceSet[]>, Promise<Service[]>] = [
+        setsData && !forceRefresh
+          ? Promise.resolve(setsData)
+          : fetchServiceSets().then((data) => {
+              setCachedData<ServiceSet[]>(SERVICE_SETS_CACHE_KEY, data);
+              return data;
+            }),
+        servicesData && !forceRefresh
+          ? Promise.resolve(servicesData)
+          : fetchAvailableServices().then((data) => {
+              setCachedData<Service[]>(AVAILABLE_SERVICES_CACHE_KEY, data);
+              return data;
+            }),
+      ];
+      const [fetchedSets, fetchedAvailServices] = await Promise.all(promises);
       setServiceSets(fetchedSets);
-      setAvailableServices(fetchedServices);
+      setAvailableServices(fetchedAvailServices);
     } catch (err: any) {
       console.error("Failed to load service set data:", err);
       setListError(err.message || "Failed to load data. Please refresh.");
+      setServiceSets(setsData || []);
+      setAvailableServices(servicesData || []);
     } finally {
       setIsLoading(false);
     }
-  }, []); // Empty dependency array means it runs once on mount
+  }, []);
 
   useEffect(() => {
     loadData();
-  }, [loadData]); // Dependency array includes loadData
+  }, [loadData]);
+
+  const handleRefresh = useCallback(() => {
+    loadData(true);
+  }, [loadData]);
 
   const handleAdd = () => {
     setEditingSet(null);
     setFormError(null);
     setIsModalOpen(true);
-    formRef.current?.reset(); // Reset form on add
+    formRef.current?.reset();
   };
 
   const handleEdit = (serviceSet: ServiceSet) => {
     setEditingSet(serviceSet);
     setFormError(null);
     setIsModalOpen(true);
-    // Form will populate via defaultValue
+    // Form populates via defaultValue, ensure formRef.current?.reset() is not called after setting editingSet if you want defaultValue to work immediately.
+    // Or, explicitly set values if formRef.current.reset() was called in modal opening logic.
   };
 
+  useEffect(() => {
+    // To handle form reset and prefill when modal opens/editingSet changes
+    if (isModalOpen) {
+      formRef.current?.reset(); // Reset first
+      if (editingSet) {
+        // Prefill logic for standard inputs if not using defaultValue directly
+        // For checkboxes, defaultChecked handles it well if key of form changes or if form is not reset AFTER setting editingSet.
+        // If issues persist, manually set defaultValue or checked state here.
+      }
+    } else {
+      setEditingSet(null); // Clear editing state when modal closes
+    }
+  }, [isModalOpen, editingSet]);
+
   const handleDelete = (setId: string) => {
-    // Keep async for potential await inside confirm
     if (!window.confirm("Delete this Service Set permanently?")) return;
-    setListError(null); // Clear list error before action
+    setListError(null);
     startTransition(async () => {
       const result = await deleteServiceSetAction(setId);
       if (!result.success) {
-        setListError(result.message); // Show error in the list area
+        setListError(result.message);
       } else {
-        // Success: Reload data to reflect deletion
+        invalidateCache(SERVICE_SETS_CACHE_KEY);
         await loadData();
-        // Optionally show a temporary success message
       }
     });
   };
 
   const handleSave = () => {
-    // Keep async for potential await inside
     if (!formRef.current) {
       setFormError("Form reference error.");
       return;
     }
-    setFormError(null); // Clear previous modal error
+    setFormError(null);
     const formData = new FormData(formRef.current);
 
-    // Client-side check
     if (!formData.get("title") || !formData.get("price")) {
       setFormError("Set Title and Set Price are required.");
       return;
@@ -139,8 +191,9 @@ export default function ManageServiceSets() {
 
         if (result.success) {
           setIsModalOpen(false);
-          setEditingSet(null);
-          await loadData(); // Reload data on successful save
+          // setEditingSet(null); // Done by useEffect on modal close
+          invalidateCache(SERVICE_SETS_CACHE_KEY);
+          await loadData();
         } else {
           let errorMsg = result.message;
           if (result.errors) {
@@ -149,7 +202,7 @@ export default function ManageServiceSets() {
               .join("; ");
             errorMsg += ` (${fieldErrors})`;
           }
-          setFormError(errorMsg); // Show error inside the modal
+          setFormError(errorMsg);
         }
       } catch (err) {
         console.error("Unexpected error during save action:", err);
@@ -163,7 +216,7 @@ export default function ManageServiceSets() {
 
   const thStyleBase =
     "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Added align-top
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top";
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink";
   const labelStyle = "block text-sm font-medium text-customBlack/80";
@@ -180,18 +233,33 @@ export default function ManageServiceSets() {
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Service Sets
         </h2>
-        <Button
-          onClick={handleAdd}
-          disabled={isPending || isLoading}
-          size="sm"
-          className="w-full sm:w-auto"
-        >
-          <Plus size={16} className="mr-1" /> Add New Set
-        </Button>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            onClick={handleRefresh}
+            disabled={isLoading || isPending}
+            size="sm"
+            variant="outline"
+            className="w-full sm:w-auto"
+          >
+            <RefreshCw
+              size={16}
+              className={`mr-1 ${isLoading ? "animate-spin" : ""}`}
+            />{" "}
+            Refresh
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={isLoading || isPending}
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            <Plus size={16} className="mr-1" /> Add New Set
+          </Button>
+        </div>
       </div>
       {listError && <p className={listErrorMsgStyle}>{listError}</p>}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
-        {isLoading ? (
+        {isLoading && serviceSets.length === 0 ? (
           <p className="py-10 text-center text-customBlack/70">
             Loading service sets...
           </p>
@@ -266,8 +334,8 @@ export default function ManageServiceSets() {
         containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
       >
         {formError && <p className={modalErrorStyle}>{formError}</p>}
-
         <form
+          key={editingSet?.id || "new-set"}
           ref={formRef}
           onSubmit={(e) => e.preventDefault()}
           className="space-y-4"
@@ -307,7 +375,7 @@ export default function ManageServiceSets() {
               Include Services <span className="text-red-500">*</span>
             </label>
             <div className="mt-2 max-h-60 space-y-2 overflow-y-auto rounded border border-customGray bg-white p-3">
-              {isLoading ? (
+              {isLoading && availableServices.length === 0 ? ( // Show loading if availableServices are specifically being fetched and not yet ready
                 <p className="text-xs text-gray-500">Loading services...</p>
               ) : availableServices.length === 0 ? (
                 <p className="text-xs text-gray-500">No services available.</p>
@@ -319,7 +387,6 @@ export default function ManageServiceSets() {
                       name="serviceIds"
                       type="checkbox"
                       value={service.id}
-                      // Check if service is in the editing set's services array
                       defaultChecked={editingSet?.services?.some(
                         (s: Service) => s.id === service.id,
                       )}
@@ -330,7 +397,7 @@ export default function ManageServiceSets() {
                       htmlFor={`service-${service.id}`}
                       className={checkboxLabelStyle}
                     >
-                      {service.title}
+                      {service.title}{" "}
                       <span className="text-xs text-gray-500">
                         ({service.price})
                       </span>
@@ -343,7 +410,6 @@ export default function ManageServiceSets() {
               Select one or more services.
             </p>
           </div>
-
           <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
             <Button
               type="button"
@@ -356,7 +422,9 @@ export default function ManageServiceSets() {
             <Button
               type="button"
               onClick={handleSave}
-              disabled={isSaving || isLoading}
+              disabled={
+                isSaving || (isLoading && availableServices.length === 0)
+              }
             >
               {isSaving
                 ? "Saving..."

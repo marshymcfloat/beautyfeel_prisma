@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManagePayslips.tsx
 "use client";
 
 import React, { useState, useCallback, useEffect, useTransition } from "react";
@@ -17,7 +16,8 @@ import {
   ListFilter,
   ToggleLeft,
   ToggleRight,
-} from "lucide-react"; // Added ToggleLeft, ToggleRight
+  RotateCcw as RefreshIcon,
+} from "lucide-react";
 import { format } from "date-fns";
 import {
   PayslipData,
@@ -38,9 +38,20 @@ import {
   getPayslipRequests,
   approvePayslipRequest,
   rejectPayslipRequest,
-  toggleAllCanRequestPayslipAction, // <-- Import new action
+  toggleAllCanRequestPayslipAction,
 } from "@/lib/ServerAction";
 import { useSession } from "next-auth/react";
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache";
+
+// Cache Keys
+const PAYSLIPS_LIST_CACHE_KEY: CacheKey = "payslips_ManagePayslips";
+const ACCOUNTS_LIST_CACHE_KEY: CacheKey = "accounts_ManagePayslips";
+const REQUESTS_LIST_CACHE_KEY: CacheKey = "requests_ManagePayslips";
 
 const formatCurrency = (value: number | null | undefined): string => {
   if (
@@ -90,6 +101,7 @@ export default function ManagePayslips() {
   const [isLoadingList, setIsLoadingList] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<string>("PENDING");
+
   const [selectedPayslip, setSelectedPayslip] = useState<PayslipData | null>(
     null,
   );
@@ -118,7 +130,7 @@ export default function ManagePayslips() {
   const [updatingAccountId, setUpdatingAccountId] = useState<string | null>(
     null,
   );
-  const [isTogglingAll, startToggleAllTransition] = useTransition(); // New transition for toggle all
+  const [isTogglingAll, startToggleAllTransition] = useTransition();
 
   const [requests, setRequests] = useState<PayslipRequestData[]>([]);
   const [isLoadingRequests, setIsLoadingRequests] = useState(true);
@@ -135,26 +147,56 @@ export default function ManagePayslips() {
     null,
   );
 
-  const loadPayslips = useCallback(async (statusFilter: string) => {
-    setIsLoadingList(true);
-    setListError(null);
-    try {
-      const data = await getPayslips(statusFilter);
-      setPayslips(data);
-    } catch (error: any) {
-      setListError(error.message || "Could not load payslips.");
-      setPayslips([]);
-    } finally {
-      setIsLoadingList(false);
-    }
-  }, []);
+  const loadPayslips = useCallback(
+    async (statusFilterParam: string, forceRefresh = false) => {
+      setIsLoadingList(true);
+      setListError(null);
+      const cacheParams = { statusFilter: statusFilterParam };
 
-  const loadAccounts = useCallback(async () => {
+      if (!forceRefresh) {
+        const cached = getCachedData<PayslipData[]>(
+          PAYSLIPS_LIST_CACHE_KEY,
+          cacheParams,
+        );
+        if (cached) {
+          setPayslips(cached);
+          setIsLoadingList(false);
+          // console.log("[Cache] Payslips loaded from cache for status:", statusFilterParam);
+          return;
+        }
+      }
+      // console.log("[Cache] Fetching Payslips for status:", statusFilterParam);
+      try {
+        const data = await getPayslips(statusFilterParam);
+        setPayslips(data);
+        setCachedData(PAYSLIPS_LIST_CACHE_KEY, data, cacheParams);
+      } catch (error: any) {
+        setListError(error.message || "Could not load payslips.");
+        setPayslips([]);
+      } finally {
+        setIsLoadingList(false);
+      }
+    },
+    [],
+  );
+
+  const loadAccounts = useCallback(async (forceRefresh = false) => {
     setIsLoadingAccounts(true);
     setAccountsError(null);
+    if (!forceRefresh) {
+      const cached = getCachedData<BasicAccountInfo[]>(ACCOUNTS_LIST_CACHE_KEY);
+      if (cached) {
+        setAccounts(cached);
+        setIsLoadingAccounts(false);
+        // console.log("[Cache] Accounts loaded from cache");
+        return;
+      }
+    }
+    // console.log("[Cache] Fetching Accounts");
     try {
       const data = await getAllAccountsWithBasicInfo();
       setAccounts(data);
+      setCachedData(ACCOUNTS_LIST_CACHE_KEY, data);
     } catch (error: any) {
       setAccountsError(error.message || "Could not load accounts.");
       setAccounts([]);
@@ -163,14 +205,30 @@ export default function ManagePayslips() {
     }
   }, []);
 
-  const loadPayslipRequests = useCallback(async () => {
+  const loadPayslipRequests = useCallback(async (forceRefresh = false) => {
     setIsLoadingRequests(true);
     setRequestsError(null);
     setRequestProcessingError(null);
     setRequestProcessingSuccess(null);
+    const cacheParams = { status: PayslipRequestStatus.PENDING };
+
+    if (!forceRefresh) {
+      const cached = getCachedData<PayslipRequestData[]>(
+        REQUESTS_LIST_CACHE_KEY,
+        cacheParams,
+      );
+      if (cached) {
+        setRequests(cached);
+        setIsLoadingRequests(false);
+        // console.log("[Cache] Payslip Requests loaded from cache");
+        return;
+      }
+    }
+    // console.log("[Cache] Fetching Payslip Requests");
     try {
       const data = await getPayslipRequests(PayslipRequestStatus.PENDING);
       setRequests(data);
+      setCachedData(REQUESTS_LIST_CACHE_KEY, data, cacheParams);
     } catch (error: any) {
       setRequestsError(error.message || "Could not load pending requests.");
       setRequests([]);
@@ -180,10 +238,25 @@ export default function ManagePayslips() {
   }, []);
 
   useEffect(() => {
-    loadPayslips(filterStatus);
     loadAccounts();
     loadPayslipRequests();
-  }, [filterStatus, loadPayslips, loadAccounts, loadPayslipRequests]);
+  }, [loadAccounts, loadPayslipRequests]);
+
+  useEffect(() => {
+    loadPayslips(filterStatus);
+  }, [filterStatus, loadPayslips]);
+
+  const handleRefreshAllData = () => {
+    // console.log("[Cache] Refreshing all data for ManagePayslips");
+    invalidateCache([
+      PAYSLIPS_LIST_CACHE_KEY,
+      ACCOUNTS_LIST_CACHE_KEY,
+      REQUESTS_LIST_CACHE_KEY,
+    ]);
+    loadPayslips(filterStatus, true);
+    loadAccounts(true);
+    loadPayslipRequests(true);
+  };
 
   const handleOpenModal = useCallback(async (payslip: PayslipData) => {
     setSelectedPayslip(payslip);
@@ -237,7 +310,8 @@ export default function ManagePayslips() {
       startReleaseTransition(async () => {
         try {
           await releaseSalary(payslipId, adminId);
-          await loadPayslips(filterStatus);
+          invalidateCache(PAYSLIPS_LIST_CACHE_KEY);
+          await loadPayslips(filterStatus, true);
           handleCloseModal();
         } catch (error: any) {
           setReleaseError(error.message || "Failed to release salary.");
@@ -252,8 +326,6 @@ export default function ManagePayslips() {
       setPermissionUpdateError(null);
       setPermissionUpdateSuccess(null);
       setUpdatingAccountId(account.id);
-
-      // Optimistic update
       const originalAccounts = [...accounts];
       const newPermissionValue = !account.canRequestPayslip;
       setAccounts((prevAccounts) =>
@@ -272,17 +344,18 @@ export default function ManagePayslips() {
           );
           if (result.success) {
             setPermissionUpdateSuccess(result.message || "Permission updated.");
-            // Optionally re-fetch if server might have other changes, or trust optimistic state for a bit
-            // await loadAccounts(); // Re-fetch for server truth
+            invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
+            // Optionally force reload, but optimistic should be fine
+            // await loadAccounts(true);
           } else {
             setPermissionUpdateError(
               result.error || result.message || "Failed to update.",
             );
-            setAccounts(originalAccounts); // Revert on error
+            setAccounts(originalAccounts);
           }
         } catch (error: any) {
           setPermissionUpdateError(error.message || "Unexpected error.");
-          setAccounts(originalAccounts); // Revert on error
+          setAccounts(originalAccounts);
         } finally {
           setUpdatingAccountId(null);
           setTimeout(() => {
@@ -292,15 +365,13 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts, startPermissionTransition],
-  ); // Removed loadAccounts to rely on optimistic for smoother UI
+    [accounts, startPermissionTransition /*, loadAccounts (if needed) */],
+  );
 
   const handleToggleAllPermissions = useCallback(
     async (newStatus: boolean) => {
       setPermissionUpdateError(null);
       setPermissionUpdateSuccess(null);
-
-      // Optimistic Update
       const originalAccounts = [...accounts];
       setAccounts((prevAccounts) =>
         prevAccounts.map((acc) => ({ ...acc, canRequestPayslip: newStatus })),
@@ -308,7 +379,6 @@ export default function ManagePayslips() {
 
       startToggleAllTransition(async () => {
         try {
-          // Get IDs of all currently listed accounts (could be filtered view later)
           const accountIdsToUpdate = accounts.map((acc) => acc.id);
           const result = await toggleAllCanRequestPayslipAction(
             newStatus,
@@ -319,18 +389,19 @@ export default function ManagePayslips() {
               result.message ||
                 `All permissions set to ${newStatus ? "Enabled" : "Disabled"}.`,
             );
-            // await loadAccounts(); // Re-fetch for server truth or trust optimistic
+            invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
+            // await loadAccounts(true);
           } else {
             setPermissionUpdateError(
               result.error || "Failed to update all permissions.",
             );
-            setAccounts(originalAccounts); // Revert on error
+            setAccounts(originalAccounts);
           }
         } catch (error: any) {
           setPermissionUpdateError(
             error.message || "An unexpected error occurred.",
           );
-          setAccounts(originalAccounts); // Revert on error
+          setAccounts(originalAccounts);
         } finally {
           setTimeout(() => {
             setPermissionUpdateSuccess(null);
@@ -339,8 +410,8 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts, startToggleAllTransition],
-  ); // Removed loadAccounts for optimistic
+    [accounts, startToggleAllTransition /*, loadAccounts (if needed) */],
+  );
 
   const isSpecificAccountUpdating = (accountId: string) =>
     isUpdatingPermission && updatingAccountId === accountId;
@@ -359,10 +430,13 @@ export default function ManagePayslips() {
           const result = await approvePayslipRequest(requestId, adminId);
           if (result.success) {
             setRequestProcessingSuccess(result.message || "Request approved.");
-            await loadPayslipRequests();
-            await loadPayslips(PayslipStatus.PENDING);
-            if (filterStatus !== PayslipStatus.PENDING)
-              setFilterStatus(PayslipStatus.PENDING);
+            invalidateCache([REQUESTS_LIST_CACHE_KEY, PAYSLIPS_LIST_CACHE_KEY]);
+            await loadPayslipRequests(true);
+            // If the current filter is PENDING, or if we want to ensure PENDING payslips are up-to-date:
+            await loadPayslips(PayslipStatus.PENDING, true);
+            // If the main payslip filter was NOT pending, it will stay on its current filter,
+            // but the PENDING cache entry for payslips will be updated.
+            // If the main filter WAS pending, it will correctly refresh.
           } else {
             throw new Error(result.error || "Failed to approve request.");
           }
@@ -405,7 +479,8 @@ export default function ManagePayslips() {
           );
           if (result.success) {
             setRequestProcessingSuccess(result.message || "Request rejected.");
-            await loadPayslipRequests();
+            invalidateCache(REQUESTS_LIST_CACHE_KEY);
+            await loadPayslipRequests(true);
           } else {
             throw new Error(result.error || "Failed to reject request.");
           }
@@ -428,8 +503,27 @@ export default function ManagePayslips() {
   const tdStyleBase = "px-3 py-2 text-sm text-gray-700 align-top";
   const errorMsgStyle = "flex items-center gap-2 rounded border p-2 text-sm";
 
+  const anyLoading = isLoadingList || isLoadingAccounts || isLoadingRequests;
+  const anyPendingAction =
+    isReleasing || isProcessingRequest || isUpdatingPermission || isTogglingAll;
+
   return (
     <div className="space-y-8 p-1 md:p-4">
+      <div className="flex flex-col items-start justify-between gap-2 border-b border-gray-200 pb-3 sm:flex-row sm:items-center">
+        <h1 className="text-xl font-semibold text-gray-900">Manage Payslips</h1>
+        <Button
+          onClick={handleRefreshAllData}
+          size="sm"
+          variant="outline"
+          className="flex w-full items-center justify-center gap-1.5 sm:w-auto"
+          disabled={anyLoading || anyPendingAction}
+          title="Refresh All Data"
+        >
+          <RefreshIcon size={16} />
+          Refresh All
+        </Button>
+      </div>
+
       <section className="space-y-3">
         <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
           Pending Payslip Requests
@@ -606,7 +700,7 @@ export default function ManagePayslips() {
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value)}
               className="rounded border-gray-300 text-xs shadow-sm focus:border-customDarkPink focus:ring-customDarkPink sm:text-sm"
-              disabled={isLoadingList}
+              disabled={isLoadingList || isReleasing}
             >
               <option value="ALL">All</option>
               <option value="PENDING">Pending</option>
@@ -773,6 +867,7 @@ export default function ManagePayslips() {
               onClick={() => handleToggleAllPermissions(true)}
               disabled={
                 isTogglingAll ||
+                isLoadingAccounts ||
                 accounts.length === 0 ||
                 accounts.every((acc) => acc.canRequestPayslip)
               }
@@ -787,6 +882,7 @@ export default function ManagePayslips() {
               onClick={() => handleToggleAllPermissions(false)}
               disabled={
                 isTogglingAll ||
+                isLoadingAccounts ||
                 accounts.length === 0 ||
                 accounts.every((acc) => !acc.canRequestPayslip)
               }

@@ -1,4 +1,3 @@
-// components/ui/ExpandedListedServices.tsx
 "use client";
 
 import React, { useEffect, useCallback } from "react";
@@ -12,8 +11,8 @@ import {
   Loader2,
   Tag,
   Info,
+  RefreshCcw, // Added RefreshCcw
 } from "lucide-react";
-// import { toast } from 'react-hot-toast'; // Consider using toasts
 
 interface ExpandedListedServicesProps {
   services: AvailedServicesProps[];
@@ -22,6 +21,8 @@ interface ExpandedListedServicesProps {
   onClose: () => void;
   processingServeActions: Set<string>;
   setProcessingServeActions: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onRefresh: () => void; // Added onRefresh prop
+  isLoading: boolean; // Added isLoading prop (for the refresh button)
 }
 
 export default function ExpandedListedServices({
@@ -31,8 +32,9 @@ export default function ExpandedListedServices({
   onClose,
   processingServeActions,
   setProcessingServeActions,
+  onRefresh, // Destructure onRefresh
+  isLoading, // Destructure isLoading
 }: ExpandedListedServicesProps) {
-  // --- Listener Effect ---
   useEffect(() => {
     if (!socket) {
       console.warn(
@@ -43,7 +45,6 @@ export default function ExpandedListedServices({
     console.log("ExpandedListedServices: Attaching listeners.");
 
     const handleUpdate = (updatedService: AvailedServicesProps) => {
-      // Check if the update is for a service currently displayed in this modal
       const isRelevant = services.some((s) => s.id === updatedService.id);
       if (isRelevant) {
         console.log(
@@ -52,9 +53,8 @@ export default function ExpandedListedServices({
           " Status:",
           updatedService.status,
         );
-        // Ensure spinner stops if this service was being processed
         setProcessingServeActions((prev) => {
-          if (!prev.has(updatedService.id)) return prev; // No change needed
+          if (!prev.has(updatedService.id)) return prev;
           console.log(
             `ExpandedListedServices: Clearing processing state for ${updatedService.id} due to update.`,
           );
@@ -62,8 +62,6 @@ export default function ExpandedListedServices({
           next.delete(updatedService.id);
           return next;
         });
-      } else {
-        // console.log("ExpandedListedServices: Irrelevant update received for service:", updatedService.id);
       }
     };
 
@@ -72,16 +70,14 @@ export default function ExpandedListedServices({
       message?: string;
     }) => {
       if (!error?.availedServiceId) return;
-      // Check if the error is for a service currently displayed
       const isRelevant = services.some((s) => s.id === error.availedServiceId);
       if (isRelevant) {
         console.error(
           "ExpandedListedServices: Serve/Unserve Error Received:",
           error,
         );
-        // alert(`Error: ${error.message || 'Unknown server error'}`); // Replace with toast
         setProcessingServeActions((prev) => {
-          if (!prev.has(error.availedServiceId!)) return prev; // No change needed
+          if (!prev.has(error.availedServiceId!)) return prev;
           console.log(
             `ExpandedListedServices: Clearing processing state for ${error.availedServiceId} due to error.`,
           );
@@ -96,20 +92,14 @@ export default function ExpandedListedServices({
     socket.on("serviceMarkServedError", handleError);
     socket.on("serviceUnmarkServedError", handleError);
 
-    // Cleanup function
     return () => {
       console.log("ExpandedListedServices: Removing listeners.");
       socket.off("availedServiceUpdated", handleUpdate);
       socket.off("serviceMarkServedError", handleError);
       socket.off("serviceUnmarkServedError", handleError);
     };
-    // Dependencies: Re-run if socket changes or the function to update state changes.
-    // Including `services` ensures handlers reference the latest list if logic inside depends on it,
-    // but can cause re-attachment if `services` prop reference changes frequently.
-    // If performance issues arise, memoize `servicesCheckedByMe` in the parent.
   }, [socket, setProcessingServeActions, services]);
 
-  // --- Mark/Unmark Handlers ---
   const handleMarkServed = useCallback(
     (availedService: AvailedServicesProps) => {
       if (
@@ -118,7 +108,6 @@ export default function ExpandedListedServices({
         processingServeActions.has(availedService.id) ||
         availedService.servedById
       ) {
-        // Prevent if already served by anyone
         console.warn("Mark Served prevented:", {
           processing: processingServeActions.has(availedService.id),
           served: !!availedService.servedById,
@@ -136,7 +125,7 @@ export default function ExpandedListedServices({
       });
     },
     [socket, accountId, processingServeActions, setProcessingServeActions],
-  ); // Ensure all dependencies are listed
+  );
 
   const handleUnmarkServed = useCallback(
     (availedService: AvailedServicesProps) => {
@@ -150,9 +139,9 @@ export default function ExpandedListedServices({
           availedService.servedById !== accountId &&
           availedService.servedById
         ) {
-          alert("Cannot unmark: Service was marked served by someone else."); // Replace with toast
+          alert("Cannot unmark: Service was marked served by someone else.");
         } else if (!availedService.servedById) {
-          alert("Cannot unmark: Service is not marked as served."); // Replace with toast
+          alert("Cannot unmark: Service is not marked as served.");
         }
         console.warn("Unmark Served prevented:", {
           processing: processingServeActions.has(availedService.id),
@@ -172,9 +161,8 @@ export default function ExpandedListedServices({
       });
     },
     [socket, accountId, processingServeActions, setProcessingServeActions],
-  ); // Ensure all dependencies are listed
+  );
 
-  // --- Helper ---
   const formatCurrency = (value: number | null | undefined): string => {
     if (
       value == null ||
@@ -183,7 +171,6 @@ export default function ExpandedListedServices({
       !isFinite(value)
     )
       value = 0;
-    // Assuming PHP main unit display
     return value.toLocaleString("en-PH", {
       style: "currency",
       currency: "PHP",
@@ -192,31 +179,27 @@ export default function ExpandedListedServices({
     });
   };
 
-  // --- Render ---
   return (
     <div className="flex h-full flex-col">
-      {/* List Container */}
       <div className="flex-grow space-y-3 overflow-y-auto border-y border-gray-200 bg-gray-50 px-4 py-4 md:max-h-[calc(75vh-80px)]">
         {services.length > 0 ? (
           services.map((service) => {
-            // Re-calculate states inside map for clarity
             const isProcessing = processingServeActions.has(service.id);
             const isServed = !!service.servedById;
             const servedByMe = isServed && service.servedById === accountId;
             const servedByOther = isServed && !servedByMe;
 
-            const canMark = !isServed; // Can mark if not served by anyone
-            const canUnmark = servedByMe; // Can only unmark if served by me
+            const canMark = !isServed;
+            const canUnmark = servedByMe;
 
-            const markDisabled = isProcessing || isServed; // Disable if processing or already served
-            const unmarkDisabled = isProcessing || !servedByMe; // Disable if processing or not served by me
+            const markDisabled = isProcessing || isServed;
+            const unmarkDisabled = isProcessing || !servedByMe;
 
             return (
               <div
                 key={service.id}
                 className={`relative flex flex-col gap-3 rounded-lg border bg-white p-4 shadow-sm transition-opacity duration-150 sm:flex-row sm:items-center sm:justify-between ${isProcessing ? "animate-pulse opacity-60" : ""} ${servedByMe ? "border-green-300 bg-green-50" : "border-gray-200"} ${servedByOther ? "border-yellow-300 bg-yellow-50 opacity-80" : ""}`}
               >
-                {/* Details */}
                 <div className="flex-grow space-y-2">
                   <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1">
                     <span className="flex items-center gap-1.5 text-base font-semibold text-gray-800">
@@ -248,7 +231,7 @@ export default function ExpandedListedServices({
                         />
                       ) : (
                         <Circle size={14} className="text-gray-400" />
-                      )}{" "}
+                      )}
                       Served by:
                       <span
                         className={`ml-1 font-medium ${isServed ? (servedByMe ? "text-green-700" : "text-yellow-700") : "text-gray-700"}`}
@@ -311,11 +294,24 @@ export default function ExpandedListedServices({
           </div>
         )}
       </div>
-      {/* Footer */}
-      <div className="flex shrink-0 items-center justify-end border-t border-gray-200 bg-gray-100 px-4 py-3">
+      <div className="flex shrink-0 items-center justify-between border-t border-gray-200 bg-gray-100 px-4 py-3">
+        <Button
+          type="button"
+          onClick={onRefresh}
+          disabled={isLoading}
+          size="sm"
+          className="flex items-center gap-1.5"
+          aria-label="Refresh claimed services list"
+        >
+          {isLoading ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : (
+            <RefreshCcw size={16} />
+          )}
+          Refresh
+        </Button>
         <Button type="button" onClick={onClose} invert size="sm">
-          {" "}
-          Close{" "}
+          Close
         </Button>
       </div>
     </div>

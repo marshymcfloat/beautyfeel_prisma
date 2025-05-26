@@ -74,7 +74,7 @@ export default function SideBar({
         href: loggedInUserId ? `/${loggedInUserId}/manage` : "#",
         label: "Manage",
         icon: Settings2,
-        requiredRoles: [Role.OWNER, Role.ATTENDANCE_CHECKER],
+        requiredRoles: [Role.OWNER],
       },
     ],
     [baseDashboardPath, loggedInUserId],
@@ -98,14 +98,10 @@ export default function SideBar({
     (href: string) => {
       if (sessionStatus === "loading" || href === "#") return false;
 
-      // 1. Exact match has the highest priority and works for all links.
       if (pathname === href) {
         return true;
       }
 
-      // 2. For the Home link (baseDashboardPath), it should ONLY be active on an exact match.
-      // If we've reached this point and href is baseDashboardPath, it means pathname !== href,
-      // so the Home link is not active.
       if (href === baseDashboardPath) {
         return false;
       }

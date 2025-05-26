@@ -32,7 +32,6 @@ import {
 
 const PHT_TIMEZONE = "Asia/Manila";
 
-// Helper function for formatting dates in PHT using Intl
 const formatDateInPHT = (
   dateInput: Date | string | number | null | undefined,
   options: Intl.DateTimeFormatOptions = {}, // Allow passing Intl options
@@ -142,9 +141,7 @@ export default function CurrentSalaryDetailsModal({
 
   console.log(currentBreakdownItems);
 
-  // Determine PHT's "today" for DayPicker highlighting
   const phtToday = useMemo(() => {
-    // Get current date parts in PHT
     const formatter = new Intl.DateTimeFormat("en-US", {
       year: "numeric",
       month: "numeric",
@@ -158,8 +155,6 @@ export default function CurrentSalaryDetailsModal({
       },
       {} as Record<string, string>,
     );
-    // Construct a local Date object that matches PHT's current date.
-    // DayPicker compares this with its day cells (which are local Date objects at client's local midnight)
     return new Date(
       parseInt(parts.year),
       parseInt(parts.month) - 1,

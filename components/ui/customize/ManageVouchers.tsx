@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageVouchers.tsx
 "use client";
 import React, {
   useState,
@@ -17,9 +16,23 @@ import { Voucher as PrismaVoucher } from "@prisma/client";
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
-import { Plus, Edit3, Trash2, CheckCircle, XCircle } from "lucide-react";
+import {
+  Plus,
+  Edit3,
+  Trash2,
+  CheckCircle,
+  XCircle,
+  RotateCcw as RefreshIcon,
+} from "lucide-react";
+import {
+  getCachedData,
+  setCachedData,
+  invalidateCache,
+  CacheKey,
+} from "@/lib/cache";
 
 type Voucher = PrismaVoucher;
+const VOUCHERS_CACHE_KEY: CacheKey = "vouchers_ManageVouchers";
 
 export default function ManageVouchers() {
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
@@ -31,21 +44,41 @@ export default function ManageVouchers() {
   const [isPending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setListError(null);
+
+    if (!forceRefresh) {
+      const cachedData = getCachedData<Voucher[]>(VOUCHERS_CACHE_KEY);
+      if (cachedData) {
+        setVouchers(cachedData);
+        setIsLoading(false);
+        // console.log("[Cache] Vouchers loaded from cache");
+        return;
+      }
+    }
+    // console.log("[Cache] Fetching vouchers");
     try {
       const fetched = await getAllVouchers();
       setVouchers(fetched);
+      setCachedData(VOUCHERS_CACHE_KEY, fetched); // No params needed for this cache
     } catch (err: any) {
       setListError(err.message || "Failed load.");
+      setVouchers([]);
     } finally {
       setIsLoading(false);
     }
   }, []);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const handleRefresh = () => {
+    // console.log("[Cache] Refreshing vouchers data");
+    invalidateCache(VOUCHERS_CACHE_KEY);
+    loadData(true);
+  };
 
   const handleAdd = () => {
     setEditingVoucher(null);
@@ -54,7 +87,7 @@ export default function ManageVouchers() {
     formRef.current?.reset();
   };
   const handleEdit = (voucher: Voucher) => {
-    if (voucher.usedAt) return alert("Cannot edit a used voucher."); // More user-friendly than just returning
+    if (voucher.usedAt) return alert("Cannot edit a used voucher.");
     setEditingVoucher(voucher);
     setFormError(null);
     setIsModalOpen(true);
@@ -65,7 +98,10 @@ export default function ManageVouchers() {
     startTransition(async () => {
       const res = await deleteVoucherAction(voucherId);
       if (!res.success) setListError(res.message);
-      else await loadData();
+      else {
+        invalidateCache(VOUCHERS_CACHE_KEY);
+        await loadData(true); // force refresh
+      }
     });
   };
   const handleSave = () => {
@@ -85,7 +121,8 @@ export default function ManageVouchers() {
         if (res.success) {
           setIsModalOpen(false);
           setEditingVoucher(null);
-          await loadData();
+          invalidateCache(VOUCHERS_CACHE_KEY);
+          await loadData(true); // force refresh
         } else {
           let msg = res.message;
           if (res.errors) msg += ` (${Object.values(res.errors).join(", ")})`;
@@ -119,14 +156,28 @@ export default function ManageVouchers() {
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Vouchers
         </h2>
-        <Button
-          onClick={handleAdd}
-          disabled={isPending || isLoading}
-          size="sm"
-          className="w-full sm:w-auto"
-        >
-          <Plus size={16} className="mr-1" /> Add New Voucher
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+          <Button
+            onClick={handleRefresh}
+            size="sm"
+            variant="outline"
+            className="flex w-full items-center justify-center gap-1.5 sm:w-auto"
+            disabled={isLoading || isPending}
+            title="Refresh Data"
+          >
+            <RefreshIcon size={16} />
+            <span className="sm:hidden">Refresh</span>
+            <span className="hidden sm:inline">Refresh Data</span>
+          </Button>
+          <Button
+            onClick={handleAdd}
+            disabled={isPending || isLoading}
+            size="sm"
+            className="w-full sm:w-auto"
+          >
+            <Plus size={16} className="mr-1" /> Add New Voucher
+          </Button>
+        </div>
       </div>
 
       {listError && !isModalOpen && (
@@ -216,7 +267,7 @@ export default function ManageVouchers() {
         )}
       </div>
 
-      {/* Modal (No changes needed here for table responsiveness) */}
+      {/* Modal */}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}
@@ -233,7 +284,6 @@ export default function ManageVouchers() {
           onSubmit={(e) => e.preventDefault()}
           className="space-y-4"
         >
-          {/* Modal Form Fields... (keep existing) */}
           <div>
             <label htmlFor="code" className={labelStyle}>
               Voucher Code{" "}

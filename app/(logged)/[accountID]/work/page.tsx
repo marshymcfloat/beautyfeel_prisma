@@ -55,8 +55,9 @@ export default function WorkPage() {
       return;
     }
     const backendUrl =
-      process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:9000";
+      process.env.NEXT_PUBLIC_SOCKET_URL || "https://localhost:9000";
 
+    console.log(backendUrl);
     if (!backendUrl) {
       setError("Server Connection Error: URL not configured.");
       setLoading(false);

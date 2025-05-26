@@ -1,4 +1,3 @@
-// app/(dashboard)/components/CustomerHistoryWidget.tsx
 "use client"; // This makes this component a Client Component
 
 import React, { useState, useEffect, ChangeEvent, useRef } from "react";

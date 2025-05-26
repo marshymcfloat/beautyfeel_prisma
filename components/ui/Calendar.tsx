@@ -1,9 +1,13 @@
-// components/ui/Calendar.tsx (or CalendarUI.tsx if that's your filename)
 "use client";
 
 import React from "react";
 
-const CalendarComponent: React.FC = () => {
+interface CalendarComponentProps {
+  className?: string; // Accept className prop
+}
+
+const CalendarComponent: React.FC<CalendarComponentProps> = ({ className }) => {
+  // Destructure className prop
   const today = new Date();
 
   const phtOptionsDate: Intl.DateTimeFormatOptions = {
@@ -12,7 +16,7 @@ const CalendarComponent: React.FC = () => {
   };
   const phtOptionsMonth: Intl.DateTimeFormatOptions = {
     timeZone: "Asia/Manila",
-    month: "short", // Using 'short' for mobile friendliness, e.g., "Dec"
+    month: "short",
   };
 
   const day = new Intl.DateTimeFormat("en-US", phtOptionsDate).format(today);
@@ -20,21 +24,27 @@ const CalendarComponent: React.FC = () => {
     .format(today)
     .toUpperCase();
 
+  // Merge the passed className
+  const calendarClasses = `
+    flex aspect-[4/3] w-full flex-col items-center justify-center
+    rounded-lg border border-customGray/30 bg-customOffWhite/70 p-3 text-center
+    shadow-custom transition-all duration-150 ease-in-out hover:border-customGray/50 hover:shadow-md active:scale-95
+    sm:aspect-square sm:p-4 md:max-w-none
+    ${className || ""} // Merge the passed className
+  `;
+
   return (
-    // Adjust max-width and padding for modal context.
-    // The parent div in AccountDashboardPage for CalendarUI might also need adjustment for mobile.
-    // This component itself uses bg-customOffWhite.
-    <div className="flex aspect-square w-full max-w-[150px] flex-col items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-2 shadow-custom sm:max-w-[160px] sm:p-3 md:max-w-[180px] lg:h-44 lg:w-44 lg:p-4">
-      <p className="mb-0.5 text-xs font-medium uppercase tracking-wider text-customDarkPink sm:text-sm md:mb-1 md:text-base lg:text-lg">
+    <div className={calendarClasses}>
+      <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-customDarkPink sm:text-xs">
         {month}
       </p>
-      <p className="text-4xl font-bold text-customBlack sm:text-5xl md:text-6xl">
-        {day}
-      </p>
+      <p className="text-4xl font-bold text-customBlack sm:text-4xl">{day}</p>
+      {/* Placeholder for bottom spacing */}
+      <div className="h-[10px] sm:h-[12px]"></div>
     </div>
   );
 };
 
 CalendarComponent.displayName = "Calendar";
-const CalendarUI = React.memo(CalendarComponent); // Exporting as CalendarUI if that's what dashboard expects
+const CalendarUI = React.memo(CalendarComponent);
 export default CalendarUI;
