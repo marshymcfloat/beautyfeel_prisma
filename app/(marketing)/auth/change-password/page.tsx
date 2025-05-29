@@ -3,7 +3,7 @@
 import { useState, FormEvent, useEffect, useCallback } from "react";
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import Button from "@/components/Buttons/Button"; // Assuming you have this Button component
+import Button from "@/components/Buttons/Button";
 import { Loader2, LogOut, KeyRound } from "lucide-react";
 import { updateUserPasswordAction } from "@/lib/ServerAction";
 
@@ -17,7 +17,6 @@ export default function ChangePasswordPage() {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Effect to handle redirection based on session state (remains the same)
   useEffect(() => {
     if (status === "loading") {
       return;
@@ -37,9 +36,7 @@ export default function ChangePasswordPage() {
     console.log("ChangePasswordPage: User on page. Session:", session);
   }, [session, status, router]);
 
-  // Renamed from handleSubmit to handlePasswordUpdateClick for clarity
   const handlePasswordUpdateClick = useCallback(async () => {
-    // No event parameter needed
     setError(null);
     setSuccessMessage(null);
 
@@ -75,11 +72,7 @@ export default function ChangePasswordPage() {
       console.error("ChangePasswordPage submit error:", err);
       setError("An unexpected error occurred. Please try again.");
     } finally {
-      // setIsSubmitting will be set to false only if there's no success message,
-      // because on success we navigate away after a timeout.
-      // If you want it to always reset, move it outside the setTimeout in success case.
       if (!successMessage) {
-        // Or more simply, just always set it
         setIsSubmitting(false);
       }
     }
@@ -90,9 +83,8 @@ export default function ChangePasswordPage() {
     updateSession,
     session?.user?.id,
     successMessage,
-  ]); // Added successMessage dependency
+  ]);
 
-  // Loading and unauthenticated states remain the same
   if (status === "loading") {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-100 to-sky-100 p-4 text-center">
@@ -150,11 +142,11 @@ export default function ChangePasswordPage() {
                   name="newPassword"
                   type="password"
                   autoComplete="new-password"
-                  required // Still good for client-side UX, though our JS handles it
+                  required
                   className="block w-full rounded-md border-0 px-3 py-2.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 disabled:cursor-not-allowed disabled:bg-gray-50 sm:text-sm sm:leading-6"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  disabled={isSubmitting || !!successMessage} // Disable if submitting or on success
+                  disabled={isSubmitting || !!successMessage}
                   minLength={6}
                 />
               </div>
@@ -176,11 +168,11 @@ export default function ChangePasswordPage() {
                   name="confirmPassword"
                   type="password"
                   autoComplete="new-password"
-                  required // Still good for client-side UX
+                  required
                   className="block w-full rounded-md border-0 px-3 py-2.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 disabled:cursor-not-allowed disabled:bg-gray-50 sm:text-sm sm:leading-6"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
-                  disabled={isSubmitting || !!successMessage} // Disable if submitting or on success
+                  disabled={isSubmitting || !!successMessage}
                 />
               </div>
             </div>
@@ -204,8 +196,8 @@ export default function ChangePasswordPage() {
 
             <div className="pt-2">
               <Button
-                type="button" // CHANGE: Set type to "button" to prevent default form submission
-                onClick={handlePasswordUpdateClick} // NEW: Call our handler on click
+                type="button"
+                onClick={handlePasswordUpdateClick}
                 disabled={isSubmitting || !!successMessage}
                 className="w-full"
                 aria-live="polite"
@@ -221,7 +213,7 @@ export default function ChangePasswordPage() {
               </Button>
             </div>
           </form>
-          {!successMessage && ( // Log out button remains the same
+          {!successMessage && (
             <div className="mt-8 text-center">
               <button
                 onClick={() => signOut({ callbackUrl: "/login" })}

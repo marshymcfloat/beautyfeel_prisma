@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageAccounts.tsx
 "use client";
 
 import React, {
@@ -26,7 +25,7 @@ import {
   setCachedData,
   invalidateCache,
   CacheKey,
-} from "@/lib/cache"; // Adjust path
+} from "@/lib/cache";
 
 const ALL_ROLES = Object.values(Role);
 const isValidEmail = (email: string): boolean =>
@@ -118,15 +117,14 @@ export default function ManageAccounts() {
     setEditingAccount(null);
     resetFormState();
     setIsModalOpen(true);
-    // formRef.current?.reset(); // Will be handled by key change or useEffect on modal open
+
     setTimeout(() => {
-      // Ensure form is rendered
       if (formRef.current) {
-        formRef.current.reset(); // Explicit reset for new item
+        formRef.current.reset();
         const input = formRef.current.elements.namedItem(
           "dailyRate",
         ) as HTMLInputElement | null;
-        if (input && !input.value) input.value = "350"; // Default value after reset
+        if (input && !input.value) input.value = "350";
       }
     }, 0);
   };
@@ -135,24 +133,17 @@ export default function ManageAccounts() {
     setEditingAccount(account);
     resetFormState();
     setIsModalOpen(true);
-    // Form values will be set by `defaultValue` in inputs due to `key` prop on form or manual prefill if not using key
   };
 
   const closeModal = () => {
     setIsModalOpen(false);
-    // setEditingAccount(null); // Handled by useEffect on modal close
-    // resetFormState(); // Handled by useEffect on modal close
-    // formRef.current?.reset(); // Implicitly handled by key change or explicit reset elsewhere
   };
 
   useEffect(() => {
-    // Handles state when modal visibility or editingAccount changes
     if (!isModalOpen) {
       setEditingAccount(null);
       resetFormState();
     }
-    // `formRef.current?.reset()` for add can be done in `handleAdd` or here conditionally.
-    // For edit, `defaultValue` or a `key` on the form is generally preferred.
   }, [isModalOpen]);
 
   const handleDelete = (accountId: string) => {

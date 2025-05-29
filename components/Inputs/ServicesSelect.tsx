@@ -8,17 +8,16 @@ import { RootState } from "@/lib/reduxStore";
 import { useEffect, useRef, useState } from "react";
 import { FetchedItem } from "@/lib/Types";
 
-// Added disabled prop to the type definition
 export default function ServicesSelect({
   isLoading,
   data,
   error,
-  disabled, // Accept the disabled prop
+  disabled,
 }: {
   isLoading: boolean;
   data: FetchedItem[] | null;
   error?: string | null;
-  disabled?: boolean; // Define the disabled prop
+  disabled?: boolean;
 }) {
   const dispatch = useDispatch();
   const [showDropdown, setShowDropdown] = useState(false);
@@ -28,13 +27,11 @@ export default function ServicesSelect({
   );
 
   function handleToggleDropdown() {
-    // Only toggle if not disabled
     if (!disabled) {
       setShowDropdown((prev) => !prev);
     }
   }
   function handleSelectItem(item: FetchedItem) {
-    // Allow selecting only if not disabled (redundant check as button is disabled, but good practice)
     if (!disabled) {
       dispatch(
         cashierActions.selectItem({
@@ -44,8 +41,6 @@ export default function ServicesSelect({
           type: item.type,
         }),
       );
-      // Optionally close dropdown after selection
-      // setShowDropdown(false);
     }
   }
 
@@ -62,7 +57,7 @@ export default function ServicesSelect({
     return () => {
       document.removeEventListener("mousedown", handleClickOutside);
     };
-  }, [showDropdown]); // Added showDropdown as dependency for effect cleanup logic correctness
+  }, [showDropdown]);
 
   const hasError = !!error;
   const buttonText =
@@ -88,11 +83,11 @@ export default function ServicesSelect({
           <button
             id="service-select-button"
             type="button"
-            className={`flex ${inputHeight} w-full items-center justify-between rounded-md border-2 ${hasError ? "border-red-500" : "border-customDarkPink/60"} bg-white p-2 pl-3 text-left shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100`} // Added disabled styles
+            className={`flex ${inputHeight} w-full items-center justify-between rounded-md border-2 ${hasError ? "border-red-500" : "border-customDarkPink/60"} bg-white p-2 pl-3 text-left shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100`}
             onClick={handleToggleDropdown}
             aria-haspopup="listbox"
             aria-expanded={showDropdown}
-            disabled={disabled} // Apply the disabled prop
+            disabled={disabled}
           >
             <span
               className={
@@ -109,7 +104,7 @@ export default function ServicesSelect({
             />
           </button>
 
-          {/* Only show dropdown if not disabled AND showDropdown is true */}
+          {}
           {showDropdown && !disabled && (
             <div
               className="absolute left-0 top-full z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-customGray bg-white py-1 shadow-lg"
@@ -121,9 +116,6 @@ export default function ServicesSelect({
                     (a) => a.id === item.id,
                   );
                   return (
-                    // List items don't need a disabled prop directly,
-                    // their click handler is guarded by the parent button's state,
-                    // and we added a check inside handleSelectItem as well.
                     <div
                       key={item.id}
                       role="option"

@@ -1,12 +1,11 @@
-// components/ui/dashboard/MobileWidgetIcon.tsx
-"use client"; // Add this if it's a client component, which it is due to onClick
+"use client";
 
 import React, { useCallback } from "react";
 import { LucideProps, Loader2 } from "lucide-react";
 import { MobileWidgetKey } from "@/lib/Types";
 
 interface MobileWidgetIconProps {
-  IconComponent: React.ElementType; // General ElementType for flexibility
+  IconComponent: React.ElementType;
   title: string;
   widgetKey: MobileWidgetKey;
   onClick: (key: MobileWidgetKey) => void;
@@ -25,12 +24,8 @@ export const MobileWidgetIcon: React.FC<MobileWidgetIconProps> = React.memo(
     isActive = false,
     isLoading = false,
   }) => {
-    // This useCallback ensures that handleClick has a stable identity
-    // as long as `onClick` (from props, which should be stable) and `widgetKey` (stable per instance)
-    // do not change.
     const handleClick = useCallback(() => {
       if (!isLoading) {
-        // Prevent action if already loading
         onClick(widgetKey);
       }
     }, [onClick, widgetKey, isLoading]);
@@ -39,7 +34,7 @@ export const MobileWidgetIcon: React.FC<MobileWidgetIconProps> = React.memo(
       <button
         onClick={handleClick}
         disabled={isLoading}
-        aria-label={title} // For accessibility
+        aria-label={title}
         className={`relative flex aspect-[4/3] w-full flex-col items-center justify-center space-y-1 rounded-lg border p-3 text-center transition-all duration-150 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-customDarkPink focus-visible:ring-opacity-75 sm:aspect-square sm:space-y-2 sm:p-4 ${
           isActive
             ? "scale-105 border-customDarkPink bg-customDarkPink/10 shadow-lg ring-1 ring-customDarkPink"
@@ -77,4 +72,4 @@ export const MobileWidgetIcon: React.FC<MobileWidgetIconProps> = React.memo(
   },
 );
 
-MobileWidgetIcon.displayName = "MobileWidgetIcon"; // Good practice for dev tools
+MobileWidgetIcon.displayName = "MobileWidgetIcon";

@@ -1,4 +1,3 @@
-// app/login/page.tsx
 "use client";
 
 import {
@@ -8,13 +7,13 @@ import {
   FormEvent,
   useEffect,
 } from "react";
-import Button from "@/components/Buttons/Button"; // Ensure this path and component props are correct
+import Button from "@/components/Buttons/Button";
 import { signIn } from "next-auth/react";
-import { useRouter, useSearchParams } from "next/navigation"; // useRouter for potential future use (e.g., link to register)
-import { Loader2, X } from "lucide-react"; // Assuming X might be used if you add a "close" or "back" concept
+import { useRouter, useSearchParams } from "next/navigation";
+import { Loader2, X } from "lucide-react";
 
 export default function LoginPage() {
-  const router = useRouter(); // Keep for potential navigation like "back to home" or "to register page"
+  const router = useRouter();
   const searchParams = useSearchParams();
   const [callbackUrl, setCallbackUrl] = useState("/");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -58,8 +57,8 @@ export default function LoginPage() {
         });
 
         if (result?.ok && !result.error) {
-          window.location.href = callbackUrl; // Navigate after successful sign-in
-          return; // Will navigate away
+          window.location.href = callbackUrl;
+          return;
         } else {
           if (result?.error === "CredentialsSignin") {
             setErrorMessage("Invalid username or password.");
@@ -72,30 +71,26 @@ export default function LoginPage() {
           "An unexpected error occurred. Please try again later.",
         );
       }
-      setIsSubmitting(false); // Only reached on failure
+      setIsSubmitting(false);
     },
     [inputs, callbackUrl],
   );
 
   return (
-    // Mimic the modal's backdrop and centering behavior
-    // Use the same background color/gradient as your page where the modal appears.
-    // For this example, I'll use a neutral dark semi-transparent background,
-    // similar to a modal backdrop. Replace with your actual page background.
     <div className="fixed inset-0 z-40 flex min-h-screen items-center justify-center bg-gray-900/70 p-4 backdrop-blur-sm">
       {/* This div is the "dialog" card itself */}
       <div
         className="relative w-full max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl sm:p-8"
-        role="dialog" // Add role for accessibility
+        role="dialog"
         aria-labelledby="login-page-title"
-        aria-modal="false" // It's not a true modal technically, but takes over the screen
+        aria-modal="false"
       >
         {/* Optional: If you want a "back to home" or similar link, you could adapt the X button logic */}
         {/* For a standalone login page, a close button like the modal's might not make sense
             unless it navigates to a public home page.
         <button
           type="button"
-          onClick={() => router.push('/')} // Example: Go to homepage
+          onClick={() => router.push('/')}
           className="absolute right-3 top-3 rounded-full p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
           aria-label="Go to homepage"
         >
@@ -105,7 +100,7 @@ export default function LoginPage() {
 
         <form onSubmit={handleLoginSubmit}>
           <h1
-            id="login-page-title" // For aria-labelledby
+            id="login-page-title"
             className="mb-6 text-center text-2xl font-semibold tracking-tight text-gray-900"
           >
             Member Login
@@ -114,10 +109,10 @@ export default function LoginPage() {
           {/* Username Input - Styled like your modal's input */}
           <div className="relative mb-5">
             <input
-              id="username-loginpage" // Unique ID
+              id="username-loginpage"
               type="text"
               className="peer h-12 w-full rounded-md border border-gray-300 px-3 pt-3 text-gray-900 shadow-sm outline-none transition-colors focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-50"
-              placeholder=" " // Required for floating label animation
+              placeholder=" "
               name="username"
               required
               value={inputs.username}
@@ -139,10 +134,10 @@ export default function LoginPage() {
           {/* Password Input - Styled like your modal's input */}
           <div className="relative mb-6">
             <input
-              id="password-loginpage" // Unique ID
+              id="password-loginpage"
               type="password"
               className="peer h-12 w-full rounded-md border border-gray-300 px-3 pt-3 text-gray-900 shadow-sm outline-none transition-colors focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-50"
-              placeholder=" " // Required for floating label animation
+              placeholder=" "
               name="password"
               required
               value={inputs.password}
@@ -164,7 +159,7 @@ export default function LoginPage() {
           {/* Error Message Display Area - Styled like your modal */}
           {errorMessage && (
             <p
-              id="error-message-loginpage" // Unique ID
+              id="error-message-loginpage"
               className="mb-4 rounded-md bg-red-50 p-3 text-center text-sm text-red-600 ring-1 ring-inset ring-red-200"
               role="alert"
             >
@@ -177,7 +172,7 @@ export default function LoginPage() {
             <Button
               type="submit"
               disabled={isSubmitting}
-              className="w-full" // Assuming Button takes className for full width and has modal-like styling
+              className="w-full"
               aria-live="polite"
             >
               {isSubmitting ? (

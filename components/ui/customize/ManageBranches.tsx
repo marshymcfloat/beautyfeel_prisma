@@ -10,13 +10,13 @@ import {
   createBranchAction,
   updateBranchAction,
   deleteBranchAction,
-  getBranchesForSelectAction, // Assuming this is the one that returns full Branch objects
+  getBranchesForSelectAction,
 } from "@/lib/ServerAction";
 import { Branch as PrismaBranch } from "@prisma/client";
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
-import { Plus, Edit3, Trash2, RotateCcw as RefreshIcon } from "lucide-react"; // Added RefreshIcon
+import { Plus, Edit3, Trash2, RotateCcw as RefreshIcon } from "lucide-react";
 
 import {
   getCachedData,
@@ -25,7 +25,6 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-// --- Cache Key ---
 const BRANCHES_LIST_CACHE_KEY: CacheKey = "branches_ManageBranches";
 
 type Branch = PrismaBranch;
@@ -51,7 +50,7 @@ export default function ManageBranches() {
       }
     }
     try {
-      const fetchedBranches = await getBranchesForSelectAction(); // Ensure this returns full Branch objects
+      const fetchedBranches = await getBranchesForSelectAction();
       setBranches(fetchedBranches as Branch[]);
       setCachedData(BRANCHES_LIST_CACHE_KEY, fetchedBranches as Branch[]);
     } catch (err: any) {

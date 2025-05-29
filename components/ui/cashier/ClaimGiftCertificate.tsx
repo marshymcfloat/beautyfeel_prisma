@@ -8,26 +8,17 @@ import React, {
   useTransition,
   useRef,
 } from "react";
-// Ensure these imports point to your ServerAction file(s)
+
 import {
   validateGiftCertificateCode,
   createTransactionFromGiftCertificate,
-  type GCValidationDetails, // Make sure this type is exported from your ServerAction or Types file
-} from "@/lib/ServerAction"; // Adjust the path if needed
+  type GCValidationDetails,
+} from "@/lib/ServerAction";
 
-// Ensure these imports point to your Types file
-import type {
-  CustomerWithRecommendations as CustomerData, // Make sure this type is defined and exported
-} from "@/lib/Types"; // Adjust the path if needed
+import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types";
 
-// Ensure these imports are correct if used directly (Status is used in the server action)
-// import { PaymentMethod, Status } from "@prisma/client";
-
-import CustomerInput from "@/components/Inputs/CustomerInput"; // Assuming CustomerInput component exists
-import Button from "@/components/Buttons/Button"; // Assuming Button component exists
-// Assuming Modal and DialogTitle components exist and are imported elsewhere if this is used within a modal structure
-// import Modal from "@/components/Dialog/Modal";
-// import DialogTitle from "@/components/Dialog/DialogTitle";
+import CustomerInput from "@/components/Inputs/CustomerInput";
+import Button from "@/components/Buttons/Button";
 
 import {
   AlertCircle,
@@ -35,39 +26,13 @@ import {
   Gift,
   CalendarDays,
   RotateCcw,
-} from "lucide-react"; // Added RotateCcw for reset
+} from "lucide-react";
 
-// --- Assuming these style constants are defined and accessible ---
 const inputStyle =
   "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm text-customBlack focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink placeholder-customGray-500";
 const labelStyle = "block text-sm font-medium text-customBlack/80";
-// --- End of style constants ---
-
-// --- Type Definitions (Ensure these match your actual Types file) ---
-// Example GCValidationDetails based on server action usage:
-// export type GCValidationDetails = {
-//   id: string;
-//   code: string;
-//   recipientName: string | null;
-//   expiresAt: Date | null;
-//   usedAt: Date | null; // Needed for validation check in component
-//   services: { id: string; title: string; price: number; }[]; // Need price for display/context?
-//   serviceSets: { id: string; title: string; price: number; }[]; // Need price for display/context?
-//   purchaserCustomer: { id: string; name: string; email: string | null; } | null;
-// };
-
-// Example CustomerWithRecommendations based on component usage:
-// export type CustomerWithRecommendations = {
-//   id: string;
-//   name: string;
-//   email: string | null;
-//   recommendedAppointments: any[]; // Or match the actual RecommendedAppointmentData type
-//   // Add other properties if needed by CustomerInput or other parts of your app
-// };
-// --- End of assumed type definitions ---
 
 const ClaimGiftCertificateComponent: React.FC = () => {
-  // State declarations
   const [gcCode, setGcCode] = useState("");
   const [gcDetails, setGcDetails] = useState<GCValidationDetails | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<CustomerData | null>(
@@ -79,11 +44,10 @@ const ClaimGiftCertificateComponent: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [isClaiming, startClaimTransition] = useTransition();
 
-  // Messages and Errors
   const [error, setError] = useState<string | null>(null);
-  // This will hold the final success message AFTER the claim transaction is created
+
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
-  // This will hold the temporary message AFTER GC code validation
+
   const [validationSuccessMessage, setValidationSuccessMessage] = useState<
     string | null
   >(null);
@@ -91,33 +55,28 @@ const ClaimGiftCertificateComponent: React.FC = () => {
     null,
   );
 
-  // Ref declaration
   const gcCodeInputRef = useRef<HTMLInputElement>(null);
 
-  // --- useCallback declarations ---
-
-  // Declare resetForm first as it's used by handleClaimGC and render logic
   const resetForm = useCallback(() => {
-    // Reset all form state
-    setGcCode(""); // Clear state holding the input value
-    setGcDetails(null); // Clear GC details to show code input section again
+    setGcCode("");
+    setGcDetails(null);
     setSelectedCustomer(null);
-    setBookedForDate(new Date().toISOString().split("T")[0]); // Reset to today
+    setBookedForDate(new Date().toISOString().split("T")[0]);
     setError(null);
-    setSuccessMessage(null); // Clear the final success message
-    setValidationSuccessMessage(null); // Clear the temporary validation message
+    setSuccessMessage(null);
+    setValidationSuccessMessage(null);
     setCustomerInputError(null);
-    // Clear the input field using the ref
+
     if (gcCodeInputRef.current) {
       gcCodeInputRef.current.value = "";
-      gcCodeInputRef.current.focus(); // Focus the input for the next code
+      gcCodeInputRef.current.focus();
     }
-  }, []); // No dependencies needed as state setters and ref are stable
+  }, []);
 
   const handleCustomerSelected = useCallback(
     (customer: CustomerData | null) => {
       setSelectedCustomer(customer);
-      // Clear customer input error when a customer is selected (or selection is cleared)
+
       setCustomerInputError(null);
     },
     [],
@@ -126,30 +85,29 @@ const ClaimGiftCertificateComponent: React.FC = () => {
   const handleCodeCheck = useCallback(async () => {
     if (!gcCode.trim()) {
       setError("Please enter a Gift Certificate code.");
-      // Clear state related to previous checks
+
       setGcDetails(null);
       setSelectedCustomer(null);
       setSuccessMessage(null);
-      setValidationSuccessMessage(null); // Clear temporary message
+      setValidationSuccessMessage(null);
       setCustomerInputError(null);
-      // Ensure input is cleared if it was only whitespace
+
       if (gcCodeInputRef.current) gcCodeInputRef.current.value = "";
-      setGcCode(""); // Also clear the state
+      setGcCode("");
       return;
     }
 
     setIsLoading(true);
-    setError(null); // Clear previous errors/successes
-    setSuccessMessage(null); // Clear any previous final success message
-    setValidationSuccessMessage(null); // Clear previous temporary message
-    setGcDetails(null); // Reset GC details
-    setSelectedCustomer(null); // Reset selected customer
-    setCustomerInputError(null); // Reset customer error
+    setError(null);
+    setSuccessMessage(null);
+    setValidationSuccessMessage(null);
+    setGcDetails(null);
+    setSelectedCustomer(null);
+    setCustomerInputError(null);
 
     const result = await validateGiftCertificateCode(gcCode);
 
     if (result.success && result.gcDetails) {
-      // Check if GC is already used or expired client-side after fetch
       if (result.gcDetails.usedAt) {
         const usedDate = new Date(result.gcDetails.usedAt).toLocaleDateString(
           "en-US",
@@ -170,7 +128,7 @@ const ClaimGiftCertificateComponent: React.FC = () => {
         setError(
           `Gift Certificate already used on ${usedDate} at ${usedTime}.`,
         );
-        setGcDetails(null); // Ensure details are cleared if already used
+        setGcDetails(null);
       } else if (
         result.gcDetails.expiresAt &&
         new Date(result.gcDetails.expiresAt) < new Date()
@@ -183,115 +141,96 @@ const ClaimGiftCertificateComponent: React.FC = () => {
           day: "numeric",
         });
         setError(`Gift Certificate expired on ${expiryDate}.`);
-        setGcDetails(null); // Ensure details are cleared if expired
+        setGcDetails(null);
       } else {
-        // Validation successful and GC is usable
-        setGcDetails(result.gcDetails); // Set GC details to show the next section
-        setValidationSuccessMessage("Gift Certificate validated!"); // Set temporary message
-        setError(null); // Ensure no error message is displayed now
+        setGcDetails(result.gcDetails);
+        setValidationSuccessMessage("Gift Certificate validated!");
+        setError(null);
 
-        // Attempt to pre-select the purchaser customer if available
-        // This uses the CustomerInput's initialValue and onCustomerSelect callback
         if (result.gcDetails.purchaserCustomer) {
-          // Call the handler directly to simulate selection and update parent state
           handleCustomerSelected({
             id: result.gcDetails.purchaserCustomer.id,
             name: result.gcDetails.purchaserCustomer.name,
             email: result.gcDetails.purchaserCustomer.email,
-            recommendedAppointments: [], // Initialize as empty array if required by type
+            recommendedAppointments: [],
           });
         } else {
-          setSelectedCustomer(null); // Explicitly set to null if no purchaser
+          setSelectedCustomer(null);
         }
       }
     } else {
-      // Handle validation failure
       setError(result.message || "Gift Certificate validation failed.");
-      // Ensure related states are reset on error
+
       setGcDetails(null);
-      setSelectedCustomer(null); // Clear customer state on validation failure
-      setValidationSuccessMessage(null); // No validation success on failure
+      setSelectedCustomer(null);
+      setValidationSuccessMessage(null);
     }
 
-    // Clear the input field after check, regardless of result, for next entry
     if (gcCodeInputRef.current) {
       gcCodeInputRef.current.value = "";
     }
-    // Also clear the state holding the input value
+
     setGcCode("");
 
     setIsLoading(false);
-  }, [gcCode, handleCustomerSelected]); // Dependency includes gcCode state and handleCustomerSelected
+  }, [gcCode, handleCustomerSelected]);
 
   const handleClaimGC = useCallback(() => {
     if (!gcDetails) {
-      // Should not happen if UI state is managed correctly, but good safeguard
       setError("Internal error: GC details missing for claim.");
       return;
     }
     if (!selectedCustomer) {
       setCustomerInputError("Please select a customer for this booking.");
-      // Focus the customer input field?
+
       return;
     }
     if (!bookedForDate) {
-      setError("Please select a date for the booking."); // Use main error state for claim issues
+      setError("Please select a date for the booking.");
       return;
     }
 
-    // Clear previous messages and errors before starting claim
     setError(null);
-    setSuccessMessage(null); // Clear previous final success message
-    setCustomerInputError(null); // Clear customer input error
-    setValidationSuccessMessage(null); // Clear validation message as we start claiming
+    setSuccessMessage(null);
+    setCustomerInputError(null);
+    setValidationSuccessMessage(null);
 
     const claimData = {
       gcId: gcDetails.id,
       customerId: selectedCustomer.id,
-      bookedForDate: bookedForDate, // Pass the YYYY-MM-DD string directly
+      bookedForDate: bookedForDate,
     };
 
     startClaimTransition(async () => {
       const result = await createTransactionFromGiftCertificate(claimData);
       if (result.success) {
-        // Set the final claim success message (includes transaction ID)
         setSuccessMessage(result.message);
-        // Clear state related to the current claim process to transition UI
-        setGcDetails(null); // Hide details section
-        setSelectedCustomer(null); // Clear form data
-        setBookedForDate(new Date().toISOString().split("T")[0]); // Reset date for next time
-        // inputRef is already cleared by resetForm which will be called by "Claim Another" button
+
+        setGcDetails(null);
+        setSelectedCustomer(null);
+        setBookedForDate(new Date().toISOString().split("T")[0]);
       } else {
-        // Handle claim failure
         setError(result.message || "Failed to claim Gift Certificate.");
-        // On claim failure, keep GC details, customer, date visible so user can retry or adjust.
-        // Do NOT clear gcDetails, selectedCustomer, bookedForDate here.
-        // Error state is already set above.
       }
-      // isClaiming will automatically become false when this async function finishes
     });
-    // Dependencies: gcDetails, selectedCustomer, bookedForDate, startClaimTransition are correct.
-    // resetForm is NOT a dependency needed here as it's only called by the button onClick handler.
   }, [gcDetails, selectedCustomer, bookedForDate, startClaimTransition]);
 
-  // --- Render JSX ---
   return (
-    // The wrapper div with styling will be in AccountDashboardPage.tsx
     <div className="w-full space-y-4 sm:space-y-6">
       {" "}
-      {/* Keep internal spacing */}
+      {}
       <h2 className="flex items-center text-lg font-semibold text-customBlack sm:text-xl">
         <Gift className="mr-2 h-5 w-5 text-customDarkPink sm:h-6 sm:w-6" />{" "}
         Claim Gift Certificate
       </h2>
-      {/* Error Message (for validation or claim failure) */}
+      {}
       {error && (
         <div className="mb-4 flex items-start rounded border border-red-300 bg-red-100 p-3 text-sm text-red-700">
           <AlertCircle className="mr-2 h-5 w-5 flex-shrink-0" />{" "}
           <div>{error}</div>
         </div>
       )}
-      {/* Temporary Validation Success Message (after check, before claim) */}
+      {}
       {validationSuccessMessage &&
         gcDetails &&
         !successMessage &&
@@ -301,15 +240,15 @@ const ClaimGiftCertificateComponent: React.FC = () => {
             <div>{validationSuccessMessage}</div>
           </div>
         )}
-      {/* Final Claim Success Message */}
+      {}
       {successMessage && (
         <div className="mb-4 flex items-start rounded border border-green-300 bg-green-100 p-3 text-sm text-green-700">
           <CheckCircle className="mr-2 h-5 w-5 flex-shrink-0" />{" "}
           <div>{successMessage}</div>
         </div>
       )}
-      {/* Section 1: Code Check Input (Visible initially and after reset/failure unless final success) */}
-      {/* Show if no GC details are loaded AND no final success message is displayed AND not currently claiming */}
+      {}
+      {}
       {!gcDetails && !successMessage && !isClaiming && (
         <div className="space-y-3">
           <div>
@@ -324,12 +263,11 @@ const ClaimGiftCertificateComponent: React.FC = () => {
                 onChange={(e) => setGcCode(e.target.value.toUpperCase())}
                 className={`placeholder-customGray-400 block w-full flex-1 rounded-md border p-2 uppercase text-customBlack focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:rounded-none sm:rounded-l-md sm:text-sm ${error ? "border-red-500" : "border-customGray"}`}
                 placeholder="ENTER GC CODE"
-                disabled={isLoading || isClaiming} // Disable during check and claim
-                autoFocus // Focus on load or after reset
+                disabled={isLoading || isClaiming}
+                autoFocus
               />
               <Button
                 onClick={handleCodeCheck}
-                // Disable if loading, claiming, no code entered, or final success message is already showing
                 disabled={
                   isLoading ||
                   isClaiming ||
@@ -344,8 +282,8 @@ const ClaimGiftCertificateComponent: React.FC = () => {
           </div>
         </div>
       )}
-      {/* Section 2: GC Details & Booking Section (Visible after successful validation, before successful claim) */}
-      {/* Show if GC details are loaded AND no final success message is displayed AND not currently claiming */}
+      {}
+      {}
       {gcDetails && !successMessage && !isClaiming && (
         <div className="space-y-4 border-t border-customGray/20 pt-4 sm:space-y-6">
           <div>
@@ -385,7 +323,7 @@ const ClaimGiftCertificateComponent: React.FC = () => {
               initialValue={selectedCustomer?.name || ""}
               error={customerInputError || undefined}
               key={selectedCustomer?.id || "no-customer"}
-              disabled={isClaiming} // Disable customer input while claiming
+              disabled={isClaiming}
             />
             {customerInputError && (
               <p className="mt-1 text-xs text-red-500">{customerInputError}</p>
@@ -431,7 +369,7 @@ const ClaimGiftCertificateComponent: React.FC = () => {
         <div className="flex justify-center pt-4">
           <Button
             variant="primary"
-            onClick={resetForm} // This button triggers the reset
+            onClick={resetForm}
             className="w-full max-w-xs"
           >
             Claim Another Gift Certificate

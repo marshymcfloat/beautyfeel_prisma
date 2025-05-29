@@ -3,13 +3,18 @@
 import { Role, PayslipStatus } from "@prisma/client";
 import React, { useState, useMemo, useCallback, useTransition } from "react";
 import {
-  isValid, // Still useful for checking date validity
+  isValid,
   isAfter,
   addDays,
   startOfDay,
-} from "date-fns"; // Keep date-fns for math
-import { DayPicker } from "react-day-picker";
-import "react-day-picker/dist/style.css";
+  isBefore,
+  isEqual,
+  getDaysInMonth,
+  getDay,
+  getDate,
+  getMonth as getMonthFromDateFns,
+  getYear,
+} from "date-fns";
 
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
@@ -22,6 +27,7 @@ import {
   Tag,
   CalendarDays,
   Send,
+  Lock,
 } from "lucide-react";
 
 import {
@@ -34,17 +40,14 @@ const PHT_TIMEZONE = "Asia/Manila";
 
 const formatDateInPHT = (
   dateInput: Date | string | number | null | undefined,
-  options: Intl.DateTimeFormatOptions = {}, // Allow passing Intl options
+  options: Intl.DateTimeFormatOptions = {},
 ): string => {
   if (!dateInput) return "N/A";
   try {
-    const date = new Date(dateInput); // Handles Date objects, ISO strings, or numbers
+    const date = new Date(dateInput);
     if (!isValid(date)) {
-      // isValid from date-fns
-      // console.warn("[formatDateInPHT] Invalid date input:", dateInput);
       return "Invalid Date";
     }
-    // Default options if none are provided, can be customized
     const defaultOptions: Intl.DateTimeFormatOptions = {
       year: "numeric",
       month: "short",
@@ -72,8 +75,8 @@ type CurrentSalaryDetailsModalProps = {
   currentBreakdownItems: SalaryBreakdownItem[];
   currentAttendanceRecords: AttendanceRecord[];
   accountData: AccountData | null;
-  currentPeriodStartDate: Date | null; // UTC timestamp from server
-  currentPeriodEndDate: Date | null; // UTC timestamp from server
+  currentPeriodStartDate: Date | null;
+  currentPeriodEndDate: Date | null;
   isLoading: boolean;
   error: string | null;
   lastReleasedPayslipEndDate?: Date | null;
@@ -103,20 +106,36 @@ const formatCurrency = (value: number | null | undefined): string => {
   });
 };
 
-const modifierStyles = {
-  present: {
-    backgroundColor: "#A7F3D0",
-    color: "#065F46",
-    fontWeight: "bold",
-    borderRadius: "50%",
-  },
-  absent: {
-    backgroundColor: "#FECACA",
-    color: "#991B1B",
-    opacity: 0.9,
-    borderRadius: "50%",
-  },
-  today: { fontWeight: "bold", border: "1px solid #3B82F6" }, // Style for PHT today
+interface CalendarDay {
+  dayOfMonth: number;
+  isCurrentMonth: boolean;
+  date: Date;
+}
+
+const generateCalendarGrid = (year: number, month: number): CalendarDay[][] => {
+  const grid: CalendarDay[][] = [];
+  const firstDayOfMonthDate = new Date(Date.UTC(year, month, 1));
+
+  let currentDatePointer = addDays(
+    firstDayOfMonthDate,
+    -getDay(firstDayOfMonthDate),
+  );
+
+  for (let i = 0; i < 6; i++) {
+    const week: CalendarDay[] = [];
+    for (let j = 0; j < 7; j++) {
+      week.push({
+        dayOfMonth: getDate(currentDatePointer),
+        isCurrentMonth:
+          getMonthFromDateFns(currentDatePointer) === month &&
+          getYear(currentDatePointer) === year,
+        date: startOfDay(currentDatePointer),
+      });
+      currentDatePointer = addDays(currentDatePointer, 1);
+    }
+    grid.push(week);
+  }
+  return grid;
 };
 
 export default function CurrentSalaryDetailsModal({
@@ -125,8 +144,8 @@ export default function CurrentSalaryDetailsModal({
   currentBreakdownItems,
   currentAttendanceRecords,
   accountData,
-  currentPeriodStartDate, // UTC
-  currentPeriodEndDate, // UTC
+  currentPeriodStartDate,
+  currentPeriodEndDate,
   isLoading,
   error,
   lastReleasedPayslipEndDate,
@@ -139,64 +158,53 @@ export default function CurrentSalaryDetailsModal({
     string | null
   >(null);
 
-  console.log(currentBreakdownItems);
-
   const phtToday = useMemo(() => {
-    const formatter = new Intl.DateTimeFormat("en-US", {
-      year: "numeric",
-      month: "numeric",
-      day: "numeric",
-      timeZone: PHT_TIMEZONE,
-    });
-    const parts = formatter.formatToParts(new Date()).reduce(
-      (acc, part) => {
-        if (part.type !== "literal") acc[part.type] = part.value;
-        return acc;
-      },
-      {} as Record<string, string>,
+    const nowInPHTRaw = new Date(
+      new Date().toLocaleString("en-US", { timeZone: PHT_TIMEZONE }),
     );
+
     return new Date(
-      parseInt(parts.year),
-      parseInt(parts.month) - 1,
-      parseInt(parts.day),
+      Date.UTC(
+        nowInPHTRaw.getFullYear(),
+        nowInPHTRaw.getMonth(),
+        nowInPHTRaw.getDate(),
+      ),
     );
   }, []);
 
-  const filterAttendanceStartDate = useMemo(() => {
-    if (lastReleasedPayslipEndDate) {
-      const lastDate = new Date(lastReleasedPayslipEndDate);
-      if (isValid(lastDate)) {
-        return startOfDay(addDays(lastDate, 1)); // Result is UTC midnight
-      }
-    }
-    return null;
+  const lastReleasedPayslipEndDateUTC = useMemo(() => {
+    if (!lastReleasedPayslipEndDate) return null;
+    const date = new Date(lastReleasedPayslipEndDate);
+    return isValid(date) ? startOfDay(date) : null;
   }, [lastReleasedPayslipEndDate]);
 
-  const filterCommissionTimestampAfter = useMemo(() => {
-    if (!lastReleasedTimestamp) return null;
-    const timestamp = new Date(lastReleasedTimestamp); // UTC
-    return isValid(timestamp) ? timestamp : null;
-  }, [lastReleasedTimestamp]);
+  const filterAttendanceStartDateForCounts = useMemo(() => {
+    if (lastReleasedPayslipEndDateUTC) {
+      return addDays(lastReleasedPayslipEndDateUTC, 1);
+    }
+    return currentPeriodStartDate
+      ? startOfDay(new Date(currentPeriodStartDate))
+      : new Date(0);
+  }, [lastReleasedPayslipEndDateUTC, currentPeriodStartDate]);
 
   const filterAttendanceRecords = useCallback(
     (records: AttendanceRecord[], includePresent: boolean) => {
       return (
         records
           ?.filter((r) => {
-            const recordDate = new Date(r.date); // r.date from DB is 'YYYY-MM-DD', new Date() makes it T00:00:00Z (UTC)
+            const recordDate = new Date(r.date);
             if (!isValid(recordDate) || r.isPresent !== includePresent)
               return false;
-            if (filterAttendanceStartDate) {
-              // Both recordStartOfDay and filterAttendanceStartDate are UTC midnights
-              const recordStartOfDay = startOfDay(recordDate);
-              return !(recordStartOfDay < filterAttendanceStartDate);
-            }
-            return true;
+            const recordStartOfDay = startOfDay(recordDate);
+            return !isBefore(
+              recordStartOfDay,
+              filterAttendanceStartDateForCounts,
+            );
           })
-          .map((r) => startOfDay(new Date(r.date))) ?? [] // Array of UTC midnight Date objects
+          .map((r) => startOfDay(new Date(r.date))) ?? []
       );
     },
-    [filterAttendanceStartDate],
+    [filterAttendanceStartDateForCounts],
   );
 
   const presentDays = useMemo(
@@ -208,11 +216,17 @@ export default function CurrentSalaryDetailsModal({
     [currentAttendanceRecords, filterAttendanceRecords],
   );
 
+  const filterCommissionTimestampAfter = useMemo(() => {
+    if (!lastReleasedTimestamp) return null;
+    const timestamp = new Date(lastReleasedTimestamp);
+    return isValid(timestamp) ? timestamp : null;
+  }, [lastReleasedTimestamp]);
+
   const filteredBreakdownItems = useMemo(() => {
     return (
       currentBreakdownItems?.filter((item) => {
         if (!item.completedAt) return false;
-        const itemDate = new Date(item.completedAt); // item.completedAt is UTC
+        const itemDate = new Date(item.completedAt);
         if (!isValid(itemDate)) return false;
         return (
           !filterCommissionTimestampAfter ||
@@ -231,33 +245,30 @@ export default function CurrentSalaryDetailsModal({
 
   const baseDailyRate = accountData?.dailyRate ?? 0;
 
-  // For DayPicker, `month`, `fromDate`, `toDate` use the UTC Date objects from props
-  const displayMonthForCalendar = useMemo(() => {
-    const date = currentPeriodStartDate
-      ? new Date(currentPeriodStartDate)
-      : new Date();
-    return isValid(date) ? date : new Date();
+  const displayMonthDateForCalendar = useMemo(() => {
+    if (currentPeriodStartDate && isValid(new Date(currentPeriodStartDate))) {
+      return new Date(currentPeriodStartDate);
+    }
+    const now = new Date();
+    const phtFormatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: PHT_TIMEZONE,
+      year: "numeric",
+      month: "2-digit",
+    });
+    const [yearStr, monthStr] = phtFormatter.format(now).split("-");
+    return new Date(Date.UTC(parseInt(yearStr), parseInt(monthStr) - 1, 1));
   }, [currentPeriodStartDate]);
 
-  const calendarFromDate = useMemo(() => {
-    const date = currentPeriodStartDate
-      ? new Date(currentPeriodStartDate)
-      : undefined;
-    return date && isValid(date) ? date : undefined;
-  }, [currentPeriodStartDate]);
-
-  const calendarToDate = useMemo(() => {
-    const date = currentPeriodEndDate
-      ? new Date(currentPeriodEndDate)
-      : undefined;
-    return date && isValid(date) ? date : undefined;
-  }, [currentPeriodEndDate]);
+  const calendarGrid = useMemo(() => {
+    const year = getYear(displayMonthDateForCalendar);
+    const month = getMonthFromDateFns(displayMonthDateForCalendar);
+    return generateCalendarGrid(year, month);
+  }, [displayMonthDateForCalendar]);
 
   const presentCount = presentDays.length;
   const absentCount = absentDays.length;
 
   const handleRequestClick = useCallback(async () => {
-    // ... (same as before)
     if (!accountData?.id) {
       setRequestError("Account data missing. Cannot submit request.");
       return;
@@ -282,7 +293,7 @@ export default function CurrentSalaryDetailsModal({
         setRequestError(err.message || "An unexpected error occurred.");
       }
     });
-  }, [accountData?.id, onRequestCurrentPayslip, startRequestTransition]);
+  }, [accountData?.id, onRequestCurrentPayslip]);
 
   const showRequestButton = useMemo(() => {
     return (
@@ -301,6 +312,45 @@ export default function CurrentSalaryDetailsModal({
     );
   }, [isLoading, isRequesting, accountData]);
 
+  const getDayCellClassNames = (
+    calendarDay: CalendarDay,
+    isThePhtToday: boolean,
+    lastPaidDate: Date | null,
+  ) => {
+    const { date, isCurrentMonth } = calendarDay;
+
+    let classNames =
+      "mx-auto flex h-7 w-7 sm:h-8 sm:w-8 items-center justify-center rounded-full text-xs sm:text-sm relative";
+
+    if (!isCurrentMonth) {
+      classNames += " text-gray-300";
+    } else {
+      classNames += " text-gray-700";
+    }
+
+    if (isThePhtToday && isCurrentMonth) {
+      classNames += " border-2 border-blue-500 font-semibold";
+    }
+
+    const isCoveredByLastPayslip =
+      lastPaidDate &&
+      (isBefore(date, lastPaidDate) || isEqual(date, lastPaidDate));
+
+    if (isCurrentMonth && isCoveredByLastPayslip) {
+      classNames += " bg-gray-200 text-gray-400 line-through";
+    } else if (isCurrentMonth) {
+      const isPresent = presentDays.some((d) => isEqual(d, date));
+      const isAbsent = absentDays.some((d) => isEqual(d, date));
+
+      if (isPresent) {
+        classNames += " bg-green-100 font-medium text-green-800";
+      } else if (isAbsent) {
+        classNames += " bg-red-100 text-red-800 opacity-90";
+      }
+    }
+    return classNames;
+  };
+
   return (
     <Modal
       isOpen={isOpen}
@@ -308,7 +358,7 @@ export default function CurrentSalaryDetailsModal({
       title={
         <DialogTitle>
           Current Salary Details (
-          {formatDateInPHT(currentPeriodStartDate, {
+          {formatDateInPHT(displayMonthDateForCalendar, {
             month: "long",
             year: "numeric",
           })}
@@ -344,95 +394,94 @@ export default function CurrentSalaryDetailsModal({
               <h4 className="mb-2 text-center text-sm font-semibold text-gray-800 sm:text-left sm:text-base">
                 Current Period Attendance
               </h4>
-              {calendarFromDate && calendarToDate ? (
-                <div className="flex flex-col items-center">
-                  {/* Month Title */}
-                  <p className="mb-1 text-sm font-medium text-gray-700">
-                    {formatDateInPHT(displayMonthForCalendar, {
-                      month: "long",
-                      year: "numeric",
-                    })}
-                  </p>
+              <p className="mb-1 text-center text-sm font-medium text-gray-700">
+                {formatDateInPHT(displayMonthDateForCalendar, {
+                  month: "long",
+                  year: "numeric",
+                })}
+              </p>
 
-                  {/* Custom Calendar Grid */}
-                  <div className="w-full overflow-x-auto">
-                    <table className="w-full border-collapse">
-                      <thead>
-                        <tr className="text-xs text-gray-500">
-                          {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map(
-                            (day) => (
-                              <th key={day} className="w-8 py-1 font-normal">
-                                {day}
-                              </th>
-                            ),
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody className="text-center">
-                        {[
-                          [27, 28, 29, 30, 1, 2, 3],
-                          [4, 5, 6, 7, 8, 9, 10],
-                          [11, 12, 13, 14, 15, 16, 17],
-                          [18, 19, 20, 21, 22, 23, 24],
-                          [25, 26, 27, 28, 29, 30, 31],
-                          [1, 2, 3, 4, 5, 6, 7],
-                        ].map((week, weekIndex) => (
-                          <tr key={weekIndex}>
-                            {week.map((day, dayIndex) => {
-                              const isPresent = presentDays.some(
-                                (d) => new Date(d).getDate() === day,
-                              );
-                              const isAbsent = absentDays.some(
-                                (d) => new Date(d).getDate() === day,
-                              );
-                              const isToday = phtToday.getDate() === day;
-
-                              return (
-                                <td
-                                  key={dayIndex}
-                                  className="h-8 w-8 p-0 text-xs"
-                                >
-                                  <div
-                                    className={`mx-auto flex h-6 w-6 items-center justify-center rounded-full ${isPresent ? "bg-green-100 font-medium text-green-800" : ""} ${isAbsent ? "bg-red-100 text-red-800 opacity-90" : ""} ${isToday ? "border border-blue-500" : ""} ${day > 20 && weekIndex === 0 ? "text-gray-400" : ""} ${day < 7 && weekIndex === 5 ? "text-gray-400" : ""} `}
-                                  >
-                                    {day}
-                                  </div>
-                                </td>
-                              );
-                            })}
-                          </tr>
+              <div className="w-full overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
+                    <tr className="text-xs text-gray-500">
+                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map(
+                        (day) => (
+                          <th
+                            key={day}
+                            className="py-1 text-center font-normal sm:w-10"
+                          >
+                            {day.substring(0, 2)}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody className="text-center">
+                    {calendarGrid.map((week, weekIndex) => (
+                      <tr key={weekIndex}>
+                        {week.map((calendarDay, dayIndex) => (
+                          <td
+                            key={`${weekIndex}-${dayIndex}`}
+                            className="h-8 w-8 p-0.5 sm:h-10 sm:w-10"
+                          >
+                            <div
+                              className={getDayCellClassNames(
+                                calendarDay,
+                                isEqual(calendarDay.date, phtToday),
+                                lastReleasedPayslipEndDateUTC,
+                              )}
+                            >
+                              {calendarDay.dayOfMonth}
+                              {calendarDay.isCurrentMonth &&
+                                lastReleasedPayslipEndDateUTC &&
+                                (isBefore(
+                                  calendarDay.date,
+                                  lastReleasedPayslipEndDateUTC,
+                                ) ||
+                                  isEqual(
+                                    calendarDay.date,
+                                    lastReleasedPayslipEndDateUTC,
+                                  )) && (
+                                  <Lock
+                                    size={10}
+                                    className="absolute bottom-0.5 right-0.5 text-gray-400"
+                                  />
+                                )}
+                            </div>
+                          </td>
                         ))}
-                      </tbody>
-                    </table>
-                  </div>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
-                  {/* Legend */}
-                  <div className="mt-2 flex justify-center space-x-3 text-xs text-gray-600">
-                    <span className="flex items-center gap-1">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full border border-green-300 bg-green-100"></span>
-                      Present ({presentCount})
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full border border-red-300 bg-red-100"></span>
-                      Absent ({absentCount})
-                    </span>
-                  </div>
+              <div className="mt-2 flex flex-wrap justify-center gap-x-3 gap-y-1 text-xs text-gray-600">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full border border-green-300 bg-green-100"></span>
+                  Present ({presentCount})
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full border border-red-300 bg-red-100"></span>
+                  Absent ({absentCount})
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full border border-gray-400 bg-gray-200"></span>{" "}
+                  {}
+                  Paid/Covered
+                </span>
+              </div>
 
-                  <p className="mt-1 text-center text-[0.7rem] italic text-gray-500">
-                    Showing attendance since day after last payout period end (
-                    {formatDateInPHT(filterAttendanceStartDate, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
-                    ).
-                  </p>
-                </div>
-              ) : (
-                <p className="py-2 text-center text-xs italic text-gray-500">
-                  Period dates not available to display calendar.
-                </p>
-              )}
+              <p className="mt-1 text-center text-[0.7rem] italic text-gray-500">
+                Attendance counts are since the day after the last payout (
+                {formatDateInPHT(filterAttendanceStartDateForCounts, {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}
+                ). Calendar shows paid days.
+              </p>
             </div>
 
             <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
@@ -485,10 +534,7 @@ export default function CurrentSalaryDetailsModal({
                   {currentBreakdownItems.length > 0 &&
                   filterCommissionTimestampAfter
                     ? `No commissions earned after the last payout time (${formatDateInPHT(filterCommissionTimestampAfter, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "numeric", hour12: true })}).`
-                    : currentBreakdownItems.length > 0 &&
-                        !filterCommissionTimestampAfter
-                      ? "No commissions found for this period."
-                      : "No commissions earned yet in this period."}
+                    : "No commissions earned yet in this period."}
                 </p>
               )}
             </div>
@@ -508,32 +554,25 @@ export default function CurrentSalaryDetailsModal({
               </p>
               <div className="mt-2 border-t border-gray-200 pt-2">
                 <p className="flex justify-between">
-                  <span>Days Present (Current Period):</span>
+                  <span>Days Present (for current payout):</span>
                   <span className="font-semibold text-green-700">
                     {presentCount}
                   </span>
                 </p>
                 <p className="mt-0.5 flex justify-between">
-                  <span>Days Absent (Current Period):</span>
+                  <span>Days Absent (for current payout):</span>
                   <span className="font-semibold text-red-700">
                     {absentCount}
                   </span>
                 </p>
               </div>
               <p className="mt-1.5 text-xs italic text-gray-500">
-                Note: Final salary calculated server-side upon payslip
-                generation. Attendance and commission shown are from{" "}
-                {filterAttendanceStartDate
-                  ? formatDateInPHT(filterAttendanceStartDate, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })
-                  : formatDateInPHT(currentPeriodStartDate, {
-                      month: "short",
-                      day: "numeric",
-                      year: "numeric",
-                    })}
+                Note: Final salary calculated server-side. Counts are from{" "}
+                {formatDateInPHT(filterAttendanceStartDateForCounts, {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}
                 .
               </p>
             </div>

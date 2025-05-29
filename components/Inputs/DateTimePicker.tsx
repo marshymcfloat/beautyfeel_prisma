@@ -5,7 +5,6 @@ import { useDispatch, useSelector } from "react-redux";
 import { RootState, AppDispatch } from "@/lib/reduxStore";
 import { cashierActions } from "@/lib/Slices/CashierSlice";
 
-// Added disabled prop to the type definition
 export default function DateTimePicker({
   error,
   disabled,
@@ -25,7 +24,7 @@ export default function DateTimePicker({
   const hasError = !!error;
   const inputHeight = "h-[50px]";
   const labelStyle = "mb-1 block text-sm font-medium text-customBlack/80";
-  // Added disabled: style
+
   const inputBaseStyle = `w-full appearance-none rounded-md border-2 bg-white p-2 pl-3 pr-8 shadow-sm outline-none focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink ${inputHeight} disabled:cursor-not-allowed disabled:bg-gray-100 disabled:border-gray-300`;
   const errorBorderStyle = hasError
     ? "border-red-500"
@@ -45,7 +44,7 @@ export default function DateTimePicker({
               value={date}
               onChange={handleDateChange}
               className={`${inputBaseStyle} ${errorBorderStyle}`}
-              disabled={disabled} // Apply the disabled prop
+              disabled={disabled}
             />
           </div>
         </div>
@@ -60,7 +59,7 @@ export default function DateTimePicker({
               value={time}
               onChange={handleTimeChange}
               className={`${inputBaseStyle} ${errorBorderStyle}`}
-              disabled={disabled} // Apply the disabled prop
+              disabled={disabled}
             />
           </div>
         </div>

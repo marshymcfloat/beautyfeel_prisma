@@ -7,7 +7,7 @@ export default function Separator({
   orientation?: "horizontal" | "vertical";
   className?: string;
 }) {
-  const baseStyle = "rounded-2xl bg-gray-800 shadow-2xl"; // Common styles for both orientations
+  const baseStyle = "rounded-2xl bg-gray-800 shadow-2xl";
 
   const orientationStyle =
     orientation === "horizontal"

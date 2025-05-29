@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageServiceSets.tsx
 "use client";
 import React, {
   useState,
@@ -11,7 +10,7 @@ import {
   createServiceSetAction,
   updateServiceSetAction,
   deleteServiceSetAction,
-} from "@/lib/ServerAction"; // Adjust path if necessary
+} from "@/lib/ServerAction";
 import type {
   ServiceSet as PrismaServiceSet,
   Service as PrismaService,
@@ -21,7 +20,7 @@ import {
   setCachedData,
   invalidateCache,
   CacheKey,
-} from "@/lib/cache"; // Adjust path
+} from "@/lib/cache";
 
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
@@ -31,9 +30,7 @@ import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
 type Service = Pick<PrismaService, "id" | "title" | "price">;
 type ServiceSet = PrismaServiceSet & { services?: Service[] };
 
-// Mocking API calls as server actions are preferred, but keeping structure if using APIs
 const fetchServiceSets = async (): Promise<ServiceSet[]> => {
-  // Replace with actual server action or ensure API is robust
   const response = await fetch("/api/service-sets");
   if (!response.ok)
     throw new Error(`Failed to fetch service sets: ${response.statusText}`);
@@ -41,8 +38,7 @@ const fetchServiceSets = async (): Promise<ServiceSet[]> => {
 };
 
 const fetchAvailableServices = async (): Promise<Service[]> => {
-  // Replace with actual server action or ensure API is robust
-  const response = await fetch("/api/services"); // This might fetch all services
+  const response = await fetch("/api/services");
   if (!response.ok)
     throw new Error(`Failed to fetch services: ${response.statusText}`);
   return response.json();
@@ -128,21 +124,15 @@ export default function ManageServiceSets() {
     setEditingSet(serviceSet);
     setFormError(null);
     setIsModalOpen(true);
-    // Form populates via defaultValue, ensure formRef.current?.reset() is not called after setting editingSet if you want defaultValue to work immediately.
-    // Or, explicitly set values if formRef.current.reset() was called in modal opening logic.
   };
 
   useEffect(() => {
-    // To handle form reset and prefill when modal opens/editingSet changes
     if (isModalOpen) {
-      formRef.current?.reset(); // Reset first
+      formRef.current?.reset();
       if (editingSet) {
-        // Prefill logic for standard inputs if not using defaultValue directly
-        // For checkboxes, defaultChecked handles it well if key of form changes or if form is not reset AFTER setting editingSet.
-        // If issues persist, manually set defaultValue or checked state here.
       }
     } else {
-      setEditingSet(null); // Clear editing state when modal closes
+      setEditingSet(null);
     }
   }, [isModalOpen, editingSet]);
 
@@ -191,7 +181,7 @@ export default function ManageServiceSets() {
 
         if (result.success) {
           setIsModalOpen(false);
-          // setEditingSet(null); // Done by useEffect on modal close
+
           invalidateCache(SERVICE_SETS_CACHE_KEY);
           await loadData();
         } else {
@@ -375,7 +365,7 @@ export default function ManageServiceSets() {
               Include Services <span className="text-red-500">*</span>
             </label>
             <div className="mt-2 max-h-60 space-y-2 overflow-y-auto rounded border border-customGray bg-white p-3">
-              {isLoading && availableServices.length === 0 ? ( // Show loading if availableServices are specifically being fetched and not yet ready
+              {isLoading && availableServices.length === 0 ? (
                 <p className="text-xs text-gray-500">Loading services...</p>
               ) : availableServices.length === 0 ? (
                 <p className="text-xs text-gray-500">No services available.</p>

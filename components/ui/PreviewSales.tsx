@@ -1,7 +1,6 @@
-// components/ui/PreviewSales.tsx
 "use client";
 
-import React from "react"; // Removed useCallback as it's not used here directly
+import React from "react";
 import {
   BarChart,
   Bar,
@@ -17,11 +16,11 @@ import { Eye } from "lucide-react";
 type SalesPreviewProps = {
   monthlyData: MonthlySales[];
   isLoading: boolean;
-  onViewDetails: () => void; // This prop should be stable from parent
+  onViewDetails: () => void;
 };
 
 const formatCurrencyPHPPreview = (value: number) => {
-  if (value === undefined || value === null || isNaN(value)) return "₱0"; // Added isNaN check
+  if (value === undefined || value === null || isNaN(value)) return "₱0";
   return value.toLocaleString("en-PH", {
     style: "currency",
     currency: "PHP",
@@ -30,8 +29,6 @@ const formatCurrencyPHPPreview = (value: number) => {
   });
 };
 
-// CustomTooltip is defined within PreviewSales. It will be re-created if PreviewSales re-renders.
-// This is usually acceptable. If it were a very complex tooltip, it could be memoized separately.
 const CustomTooltipContent = ({ active, payload, label }: any) => {
   if (active && payload && payload.length && payload[0].payload) {
     const data = payload[0].payload as MonthlySales;
@@ -67,14 +64,13 @@ const CustomTooltipContent = ({ active, payload, label }: any) => {
   }
   return null;
 };
-const CustomTooltip = React.memo(CustomTooltipContent); // Memoize the tooltip content
+const CustomTooltip = React.memo(CustomTooltipContent);
 
 const PreviewSalesComponent: React.FC<SalesPreviewProps> = ({
   monthlyData,
   isLoading,
   onViewDetails,
 }) => {
-  // console.log("PreviewSales rendering, isLoading:", isLoading, "data length:", monthlyData.length); // For debugging
   return (
     <div className="h-[350px] rounded-lg border border-customGray/30 bg-customOffWhite p-4 shadow-custom">
       <div className="mb-3 flex items-center justify-between">
@@ -82,7 +78,7 @@ const PreviewSalesComponent: React.FC<SalesPreviewProps> = ({
           Monthly Sales (Last 6 Months)
         </h2>
         <button
-          onClick={onViewDetails} // Assumes onViewDetails is stable
+          onClick={onViewDetails}
           className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-customDarkPink hover:bg-customDarkPink/10"
           aria-label="View sales details"
           disabled={isLoading}
@@ -105,7 +101,7 @@ const PreviewSalesComponent: React.FC<SalesPreviewProps> = ({
             margin={{ top: 5, right: 5, left: -20, bottom: 5 }}
           >
             {" "}
-            {/* Added right margin */}
+            {}
             <CartesianGrid strokeDasharray="3 3" stroke="#D9D9D950" />
             <XAxis
               dataKey="month"
@@ -134,4 +130,4 @@ const PreviewSalesComponent: React.FC<SalesPreviewProps> = ({
 };
 
 PreviewSalesComponent.displayName = "PreviewSales";
-export default React.memo(PreviewSalesComponent); // Memoize the main component
+export default React.memo(PreviewSalesComponent);

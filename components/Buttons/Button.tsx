@@ -1,19 +1,16 @@
-// components/Buttons/Button.tsx
 import React from "react";
 import clsx from "clsx";
 
-// Define the possible size values - ADD 'xs'
-type ButtonSize = "xs" | "sm" | "md" | "lg"; // Added "xs"
+type ButtonSize = "xs" | "sm" | "md" | "lg";
 
-// Add 'ghost' variant
 type ButtonVariant = "primary" | "secondary" | "outline" | "ghost";
 
 type ButtonProps = Omit<
   React.ButtonHTMLAttributes<HTMLButtonElement>,
   "className"
 > & {
-  invert?: boolean; // Keep for backwards compatibility if needed, but variant is preferred
-  children?: React.ReactNode; // Make children optional for icon-only buttons
+  invert?: boolean;
+  children?: React.ReactNode;
   className?: string;
   size?: ButtonSize;
   icon?: React.ReactNode;
@@ -21,14 +18,14 @@ type ButtonProps = Omit<
 };
 
 export default function Button({
-  invert = false, // Keep for compatibility
+  invert = false,
   children,
   type = "button",
   className = "",
   disabled = false,
-  size = "md", // Default size is 'md'
+  size = "md",
   icon,
-  variant, // Use variant if provided
+  variant,
   ...rest
 }: ButtonProps) {
   const baseStyles = `
@@ -41,8 +38,7 @@ export default function Button({
 
   let sizeStyles = "";
   switch (size) {
-    case "xs": // New "xs" size
-      // Adjusted padding/height slightly for better visual
+    case "xs":
       sizeStyles = clsx(
         children ? "px-2 py-0.5" : "px-1.5 py-0.5",
         "text-[10px] min-h-[24px]",
@@ -70,7 +66,7 @@ export default function Button({
   }
 
   let colorStyles = "";
-  // If variant is explicitly set, use it. Otherwise, fall back to the old invert logic.
+
   if (variant !== undefined) {
     switch (variant) {
       case "outline":
@@ -79,19 +75,16 @@ export default function Button({
       case "secondary":
         colorStyles = `border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200 focus:ring-gray-400`;
         break;
-      case "ghost": // New ghost variant
-        // Make ghost buttons text-customDarkPink by default to match the email template use case.
-        // Can be overridden by className if needed.
+      case "ghost":
         colorStyles = `border-transparent bg-transparent text-customDarkPink hover:text-customDarkPink/80 focus:ring-customDarkPink`;
-        // Consider adding hover background if needed: hover:bg-customDarkPink/10
+
         break;
       case "primary":
-      default: // Primary is the default variant if variant prop is used
+      default:
         colorStyles = `border-customDarkPink bg-customDarkPink text-customOffWhite hover:bg-transparent hover:text-customDarkPink focus:ring-customDarkPink`;
         break;
     }
   } else {
-    // Fallback for when 'variant' prop is NOT used (retains old invert behavior)
     if (invert) {
       colorStyles = `border-customDarkPink text-customDarkPink bg-transparent hover:bg-customDarkPink hover:text-customOffPink focus:ring-customDarkPink`;
     } else {
@@ -99,16 +92,13 @@ export default function Button({
     }
   }
 
-  // Adjust icon margin when children is present
   const iconMarginClass = children ? "mr-1.5" : "";
-  // Adjust padding for icon-only buttons where children is null/undefined
-  // This is now handled within the sizeStyles clsx call above.
 
   const combinedClassName = clsx(
     baseStyles,
     sizeStyles,
     colorStyles,
-    className, // Custom className can override or add to size/color styles
+    className,
   );
 
   return (
@@ -121,7 +111,7 @@ export default function Button({
       {icon && (
         <span className={clsx("flex-shrink-0", iconMarginClass)}>{icon}</span>
       )}
-      {children} {/* Children can now be optional */}
+      {children} {}
     </button>
   );
 }

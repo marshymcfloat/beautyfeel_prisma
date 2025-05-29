@@ -11,17 +11,16 @@ import React, {
 import {
   getCustomersForEmailAction,
   sendEmailsAction,
-  getActiveEmailTemplatesAction, // << NEW: Import action for templates
-} from "@/lib/ServerAction"; // Adjust path as necessary
+  getActiveEmailTemplatesAction,
+} from "@/lib/ServerAction";
 import { CacheKey } from "@/lib/cache";
-import { CustomerForEmail, EmailTemplateForSelection } from "@/lib/Types"; // << NEW: Add EmailTemplateForSelection
+import { CustomerForEmail, EmailTemplateForSelection } from "@/lib/Types";
 import Button from "@/components/Buttons/Button";
 import { RefreshCw, Send } from "lucide-react";
 import { invalidateCache } from "@/lib/cache";
 
 const CUSTOMERS_CACHE_KEY: CacheKey = "customers_SendEmail";
 
-// Styles (keep as they are)
 const inputStyle = (hasError?: boolean) =>
   `mt-1 block w-full rounded border ${hasError ? "border-red-500" : "border-customGray"} p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed`;
 const labelStyle = "block text-sm font-medium text-customBlack/80";
@@ -36,7 +35,6 @@ const fieldErrorStyle = "mt-1 text-xs text-red-600";
 const sectionTitleStyle =
   "text-md font-semibold text-customBlack mb-3 border-b border-customGray/30 pb-2";
 
-// Consider renaming this component to SendEmailToCustomers or similar
 export default function ManageAdvertisements() {
   const [customers, setCustomers] = useState<CustomerForEmail[]>([]);
   const [selectedCustomerIds, setSelectedCustomerIds] = useState<string[]>([]);
@@ -53,14 +51,12 @@ export default function ManageAdvertisements() {
 
   const selectAllRef = useRef<HTMLInputElement>(null);
 
-  // --- NEW: State for email templates ---
   const [emailTemplates, setEmailTemplates] = useState<
     EmailTemplateForSelection[]
   >([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>("");
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(true);
   const [templateError, setTemplateError] = useState<string | null>(null);
-  // --- End new state ---
 
   const loadCustomers = useCallback(async (forceRefresh = false) => {
     setIsLoadingCustomers(true);
@@ -86,7 +82,6 @@ export default function ManageAdvertisements() {
     }
   }, []);
 
-  // --- NEW: Function to load email templates ---
   const loadEmailTemplates = useCallback(async () => {
     setIsLoadingTemplates(true);
     setTemplateError(null);
@@ -101,11 +96,10 @@ export default function ManageAdvertisements() {
       setIsLoadingTemplates(false);
     }
   }, []);
-  // --- End new function ---
 
   useEffect(() => {
     loadCustomers();
-    loadEmailTemplates(); // Load templates on mount
+    loadEmailTemplates();
   }, [loadCustomers, loadEmailTemplates]);
 
   const allSelected =
@@ -121,10 +115,8 @@ export default function ManageAdvertisements() {
   }, [indeterminate]);
 
   const handleRefresh = useCallback(() => {
-    invalidateCache(CUSTOMERS_CACHE_KEY); // Assuming this is the correct key for customer list
+    invalidateCache(CUSTOMERS_CACHE_KEY);
     loadCustomers(true);
-    // Optionally refresh templates too, though they might change less frequently
-    // loadEmailTemplates();
   }, [loadCustomers]);
 
   const handleSelectAll = (event: ChangeEvent<HTMLInputElement>) => {
@@ -146,7 +138,6 @@ export default function ManageAdvertisements() {
     }
   };
 
-  // --- NEW: Handle template selection ---
   const handleTemplateChange = (event: ChangeEvent<HTMLSelectElement>) => {
     const templateId = event.target.value;
     setSelectedTemplateId(templateId);
@@ -159,25 +150,18 @@ export default function ManageAdvertisements() {
           ...prev,
           subject: undefined,
           body: undefined,
-        })); // Clear potential errors for these fields
+        }));
       }
     } else {
-      // Optionally clear subject/body or set to defaults if user deselects template
-      // setSubject("");
-      // setBody("");
     }
   };
-  // --- End new handler ---
 
   const validateForm = () => {
     let errors: Record<string, string[]> = {};
     if (!subject.trim()) {
       errors.subject = ["Subject is required."];
     }
-    // Body validation can be kept optional
-    // if (!body.trim()) {
-    //    errors.body = ["Email body cannot be empty."];
-    // }
+
     if (selectedCustomerIds.length === 0) {
       errors.recipients = ["Please select at least one recipient."];
     }
@@ -196,7 +180,6 @@ export default function ManageAdvertisements() {
     }
 
     if (selectedCustomerIds.length === 0) {
-      // Double check, though validateForm covers it
       setSendError("Please select at least one recipient.");
       return;
     }
@@ -210,18 +193,11 @@ export default function ManageAdvertisements() {
     }
 
     startSendingTransition(async () => {
-      // `subject` and `body` will be passed. The server action handles placeholder replacement.
       const res = await sendEmailsAction(selectedCustomerIds, subject, body);
       if (res.success) {
         setSendSuccess(res.message);
-        // Optionally reset parts of the form after successful send
-        // setSelectedCustomerIds([]);
-        // setSubject('');
-        // setBody('');
-        // setSelectedTemplateId('');
       } else {
         setSendError(res.message);
-        // if (res.errors) setFieldErrors(res.errors); // If server returns field-specific errors
       }
     });
   };
@@ -252,7 +228,7 @@ export default function ManageAdvertisements() {
       {sendError && <p className={errorMsgStyle}>{sendError}</p>}
       {sendSuccess && <p className={successMsgStyle}>{sendSuccess}</p>}
 
-      {/* Recipient Selection Section */}
+      {}
       <div className="mb-6 rounded border border-customGray/30 bg-white p-4">
         <h3 className={sectionTitleStyle}>Select Recipients</h3>
         {fieldErrors.recipients && (
@@ -312,11 +288,11 @@ export default function ManageAdvertisements() {
         )}
       </div>
 
-      {/* Email Content Section --- MODIFIED --- */}
+      {}
       <div className="mb-6 rounded border border-customGray/30 bg-white p-4">
         <h3 className={sectionTitleStyle}>Email Content</h3>
 
-        {/* --- Template Selector --- */}
+        {}
         <div className="mb-4">
           <label htmlFor="template" className={labelStyle}>
             Use Email Template (Optional)
@@ -349,7 +325,7 @@ export default function ManageAdvertisements() {
               </p>
             )}
         </div>
-        {/* --- End Template Selector --- */}
+        {}
 
         <div className="mb-4">
           <label htmlFor="subject" className={labelStyle}>
@@ -361,7 +337,7 @@ export default function ManageAdvertisements() {
             value={subject}
             onChange={(e) => {
               setSubject(e.target.value);
-              // If user edits subject manually, "detach" from the selected template
+
               if (selectedTemplateId) setSelectedTemplateId("");
             }}
             className={inputStyle(!!fieldErrors.subject)}
@@ -382,10 +358,10 @@ export default function ManageAdvertisements() {
             value={body}
             onChange={(e) => {
               setBody(e.target.value);
-              // If user edits body manually, "detach" from the selected template
+
               if (selectedTemplateId) setSelectedTemplateId("");
             }}
-            rows={10} // Increased rows for better editing
+            rows={10}
             className={`${inputStyle(!!fieldErrors.body)} resize-y`}
             disabled={isSending}
             placeholder="Enter your email content here. You can use placeholders like {{customerName}} and {{customerEmail}}."

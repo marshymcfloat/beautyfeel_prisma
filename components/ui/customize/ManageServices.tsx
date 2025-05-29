@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageServices.tsx
 "use client";
 
 import React, {
@@ -15,31 +14,34 @@ import {
   deleteServiceAction,
   getAllServices,
   getBranchesForSelectAction,
-} from "@/lib/ServerAction"; // Adjust paths as needed
+} from "@/lib/ServerAction";
 import type {
   Service as PrismaService,
   Branch as PrismaBranch,
 } from "@prisma/client";
 import { FollowUpPolicy } from "@prisma/client";
-import type { ServerActionResponse } from "@/lib/Types"; // Adjust path if needed
+import type { ServerActionResponse } from "@/lib/Types";
 import {
   getCachedData,
   setCachedData,
   invalidateCache,
   CacheKey,
-} from "@/lib/cache"; // Adjust path
+} from "@/lib/cache";
 
-import Button from "@/components/Buttons/Button"; // Adjust path
-import Modal from "@/components/Dialog/Modal"; // Adjust path
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
-import SelectInputGroup from "@/components/Inputs/SelectInputGroup"; // Adjust path
-import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react"; // Icons
+import Button from "@/components/Buttons/Button";
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
+import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
 
-// Extend the PrismaService type to include the relations and nullable fields fetched
 type Service = PrismaService & {
   branch?: Pick<PrismaBranch, "id" | "title"> | null;
   recommendedFollowUpDays: number | null;
   followUpPolicy: FollowUpPolicy;
+
+  sendPostTreatmentEmail: boolean;
+  postTreatmentEmailSubject: string | null;
+  postTreatmentInstructions: string | null;
 };
 
 type Branch = Pick<PrismaBranch, "id" | "title">;
@@ -69,6 +71,8 @@ export default function ManageServices() {
     useState<FollowUpPolicy>(FollowUpPolicy.NONE);
   const [selectedBranchId, setSelectedBranchId] = useState<string>("");
 
+  const [sendPostTreatmentEmail, setSendPostTreatmentEmail] = useState(false);
+
   const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setLoadError(null);
@@ -89,14 +93,13 @@ export default function ManageServices() {
 
     try {
       const promises: [Promise<Service[]>, Promise<Branch[]>] = [
-        // Fetch services if not cached or forceRefresh
         servicesData && !forceRefresh
           ? Promise.resolve(servicesData)
           : getAllServices().then((data) => {
               setCachedData<Service[]>(SERVICES_CACHE_KEY, data);
               return data;
             }),
-        // Fetch branches if not cached or forceRefresh
+
         branchesData && !forceRefresh
           ? Promise.resolve(branchesData)
           : getBranchesForSelectAction().then((data) => {
@@ -112,8 +115,8 @@ export default function ManageServices() {
     } catch (err: any) {
       console.error("ManageServices: Failed to load data:", err);
       setLoadError(err.message || "Failed to load data. Please try again.");
-      setServices(servicesData || []); // Fallback to cached or empty
-      setBranches(branchesData || []); // Fallback to cached or empty
+      setServices(servicesData || []);
+      setBranches(branchesData || []);
     } finally {
       setIsLoading(false);
     }
@@ -124,7 +127,7 @@ export default function ManageServices() {
   }, [loadData]);
 
   const handleRefresh = useCallback(() => {
-    loadData(true); // Force refresh, will bypass cache read but update cache
+    loadData(true);
   }, [loadData]);
 
   useEffect(() => {
@@ -152,12 +155,44 @@ export default function ManageServices() {
           recommendedDaysInput.value =
             editingService.recommendedFollowUpDays?.toString() ?? "";
         }
+
+        const initialSendEmail = editingService.sendPostTreatmentEmail ?? false;
+        setSendPostTreatmentEmail(initialSendEmail);
+
+        const subjectInput = formRef.current!.elements.namedItem(
+          "postTreatmentEmailSubject",
+        ) as HTMLInputElement | null;
+        if (subjectInput) {
+          subjectInput.value = editingService.postTreatmentEmailSubject ?? "";
+        } else if (initialSendEmail) {
+          console.warn(
+            "ManageServices: Subject input not found when sendPostTreatmentEmail is true for editingService",
+            editingService,
+          );
+        }
+
+        const instructionsInput = formRef.current!.elements.namedItem(
+          "postTreatmentInstructions",
+        ) as HTMLTextAreaElement | null;
+        if (instructionsInput) {
+          instructionsInput.value =
+            editingService.postTreatmentInstructions ?? "";
+        } else if (initialSendEmail) {
+          console.warn(
+            "ManageServices: Instructions input not found when sendPostTreatmentEmail is true for editingService",
+            editingService,
+          );
+        }
       } else {
         setSelectedBranchId("");
         setSelectedFollowUpPolicy(FollowUpPolicy.NONE);
+
+        setSendPostTreatmentEmail(false);
       }
     } else {
       setEditingService(null);
+
+      setSendPostTreatmentEmail(false);
     }
   }, [isModalOpen, editingService]);
 
@@ -181,8 +216,8 @@ export default function ManageServices() {
         if (!result.success) {
           setLoadError(result.message || "Failed to delete service.");
         } else {
-          invalidateCache(SERVICES_CACHE_KEY); // Invalidate cache
-          await loadData(); // Reload data
+          invalidateCache(SERVICES_CACHE_KEY);
+          await loadData();
         }
       } catch (err: any) {
         setLoadError(err.message || "Error during deletion.");
@@ -210,6 +245,17 @@ export default function ManageServices() {
       form.elements.namedItem("recommendedFollowUpDays") as HTMLInputElement
     )?.value;
     const followUpPolicy = selectedFollowUpPolicy;
+
+    const postTreatmentEmailSubject =
+      (
+        form.elements.namedItem("postTreatmentEmailSubject") as HTMLInputElement
+      )?.value?.trim() || null;
+    const postTreatmentInstructions =
+      (
+        form.elements.namedItem(
+          "postTreatmentInstructions",
+        ) as HTMLTextAreaElement
+      )?.value?.trim() || null;
 
     let errors: Record<string, string | undefined | null> = {};
     if (!title) errors.title = "Service Title is required.";
@@ -241,6 +287,17 @@ export default function ManageServices() {
       }
     }
 
+    if (sendPostTreatmentEmail) {
+      if (!postTreatmentEmailSubject) {
+        errors.postTreatmentEmailSubject =
+          "Email subject is required if sending post-treatment email.";
+      }
+      if (!postTreatmentInstructions) {
+        errors.postTreatmentInstructions =
+          "Instructions are required if sending post-treatment email.";
+      }
+    }
+
     if (Object.keys(errors).length > 0) {
       setFormErrors(errors);
       return;
@@ -263,6 +320,25 @@ export default function ManageServices() {
       );
     }
 
+    dataToSubmit.set(
+      "sendPostTreatmentEmail",
+      sendPostTreatmentEmail.toString(),
+    );
+
+    if (sendPostTreatmentEmail) {
+      dataToSubmit.set(
+        "postTreatmentEmailSubject",
+        postTreatmentEmailSubject || "",
+      );
+      dataToSubmit.set(
+        "postTreatmentInstructions",
+        postTreatmentInstructions || "",
+      );
+    } else {
+      dataToSubmit.set("postTreatmentEmailSubject", "");
+      dataToSubmit.set("postTreatmentInstructions", "");
+    }
+
     startTransition(async () => {
       try {
         const action = editingService
@@ -272,8 +348,8 @@ export default function ManageServices() {
 
         if (result.success) {
           setIsModalOpen(false);
-          invalidateCache(SERVICES_CACHE_KEY); // Invalidate cache
-          await loadData(); // Reload data
+          invalidateCache(SERVICES_CACHE_KEY);
+          await loadData();
         } else {
           if (result.errors) {
             const clientErrors: Record<string, string | undefined | null> = {};
@@ -331,6 +407,10 @@ export default function ManageServices() {
   const tdStyleBase = "px-2 py-2 text-sm text-customBlack/90 align-top";
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
+  const textareaStyle = `${inputStyle} resize-y`;
+  const checkboxStyle =
+    "mr-2 h-4 w-4 text-customDarkPink border-gray-300 rounded focus:ring-customDarkPink";
+
   const selectStyle = `${inputStyle} bg-white`;
   const labelStyle = "block text-sm font-medium text-customBlack/80";
   const listErrorMsgStyle =
@@ -371,7 +451,7 @@ export default function ManageServices() {
       {loadError && <p className={listErrorMsgStyle}>{loadError}</p>}
 
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
-        {isLoading && services.length === 0 ? ( // Show loading only if there's no stale data to display
+        {isLoading && services.length === 0 ? (
           <p className="py-10 text-center text-customBlack/70">
             Loading services...
           </p>
@@ -397,6 +477,13 @@ export default function ManageServices() {
                 <th className={`${thStyleBase} hidden md:table-cell`}>
                   Rec. Days
                 </th>
+                {}
+                <th
+                  className={`${thStyleBase} hidden text-center lg:table-cell`}
+                >
+                  Post-Tx Email
+                </th>
+                {}
                 <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
@@ -437,6 +524,17 @@ export default function ManageServices() {
                       <span className="italic text-gray-400">N/A</span>
                     )}
                   </td>
+                  {}
+                  <td
+                    className={`${tdStyleBase} hidden text-center lg:table-cell`}
+                  >
+                    {service.sendPostTreatmentEmail ? (
+                      <span className="font-semibold text-green-600">Yes</span>
+                    ) : (
+                      <span className="italic text-gray-500">No</span>
+                    )}
+                  </td>
+                  {}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(service)}
@@ -504,7 +602,7 @@ export default function ManageServices() {
               name="description"
               id="description"
               rows={3}
-              className={`${inputStyle} ${formErrors.description ? "border-red-500" : ""}`}
+              className={`${textareaStyle} ${formErrors.description ? "border-red-500" : ""}`}
               disabled={isSaving}
             ></textarea>
             {formErrors.description && (
@@ -544,13 +642,88 @@ export default function ManageServices() {
                 valueKey="id"
                 labelKey="title"
                 required={true}
-                isLoading={isLoading && branches.length === 0} // Show loading for select if branches are specifically loading
+                isLoading={isLoading && branches.length === 0}
                 error={formErrors.branchId}
                 disabled={isSaving || (isLoading && branches.length === 0)}
                 className={`${selectStyle} ${formErrors.branchId ? "border-red-500" : ""}`}
               />
             </div>
           </div>
+
+          {}
+          <fieldset className="space-y-4 rounded border border-customGray/30 p-4">
+            <legend className="px-2 text-sm font-medium text-customBlack/80">
+              Post-Treatment Email
+            </legend>
+            <div>
+              <div className="flex items-center">
+                <input
+                  type="checkbox"
+                  id="sendPostTreatmentEmail"
+                  name="sendPostTreatmentEmail"
+                  checked={sendPostTreatmentEmail}
+                  onChange={(e) => setSendPostTreatmentEmail(e.target.checked)}
+                  className={checkboxStyle}
+                  disabled={isSaving}
+                />
+                <label
+                  htmlFor="sendPostTreatmentEmail"
+                  className="cursor-pointer text-sm font-medium text-customBlack/80"
+                >
+                  Send post-treatment email after service completion?
+                </label>
+              </div>
+            </div>
+
+            {sendPostTreatmentEmail && (
+              <>
+                <div>
+                  <label
+                    htmlFor="postTreatmentEmailSubject"
+                    className={labelStyle}
+                  >
+                    Email Subject <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    name="postTreatmentEmailSubject"
+                    id="postTreatmentEmailSubject"
+                    required={sendPostTreatmentEmail}
+                    className={`${inputStyle} ${formErrors.postTreatmentEmailSubject ? "border-red-500" : ""}`}
+                    disabled={isSaving}
+                  />
+                  {formErrors.postTreatmentEmailSubject && (
+                    <p className={modalErrorStyle}>
+                      {formErrors.postTreatmentEmailSubject}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label
+                    htmlFor="postTreatmentInstructions"
+                    className={labelStyle}
+                  >
+                    Instructions <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    name="postTreatmentInstructions"
+                    id="postTreatmentInstructions"
+                    rows={6}
+                    required={sendPostTreatmentEmail}
+                    className={`${textareaStyle} ${formErrors.postTreatmentInstructions ? "border-red-500" : ""}`}
+                    disabled={isSaving}
+                  ></textarea>
+                  {formErrors.postTreatmentInstructions && (
+                    <p className={modalErrorStyle}>
+                      {formErrors.postTreatmentInstructions}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+          </fieldset>
+          {}
+
           <div>
             <label htmlFor="followUpPolicy" className={labelStyle}>
               Follow-up Recommendation Policy{" "}

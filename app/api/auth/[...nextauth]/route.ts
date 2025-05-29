@@ -1,6 +1,5 @@
-// app/api/auth/[...nextauth]/route.ts
 import NextAuth from "next-auth";
-import { authOptions } from "@/lib/authOptions"; // Ensure this path is correct
+import { authOptions } from "@/lib/authOptions";
 
 const handler = NextAuth(authOptions);
 

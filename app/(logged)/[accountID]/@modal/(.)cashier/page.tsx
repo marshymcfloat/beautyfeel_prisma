@@ -1,4 +1,3 @@
-// app/(logged)/[accountID]/@modal/(.)cashier/page.tsx - MODIFIED: Use useRef for fetch flag
 "use client";
 
 import React, {
@@ -7,9 +6,9 @@ import React, {
   useCallback,
   useMemo,
   useRef,
-} from "react"; // <-- Import useRef
+} from "react";
 import { useSelector, useDispatch } from "react-redux";
-import { useRouter } from "next/navigation"; // Removed useParams as it's not used
+import { useRouter } from "next/navigation";
 
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
@@ -17,44 +16,40 @@ import Spinner from "@/components/ui/Spinner";
 import DateTimePicker from "@/components/Inputs/DateTimePicker";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
 import ServicesSelect from "@/components/Inputs/ServicesSelect";
-import CustomerInput from "@/components/Inputs/CustomerInput"; // Updated CustomerInput
+import CustomerInput from "@/components/Inputs/CustomerInput";
 import VoucherInput from "@/components/Inputs/VoucherInput";
-import SelectedItem from "@/components/ui/cashier/SelectedItem"; // Check if this uses the updated quantity/remove logic
+import SelectedItem from "@/components/ui/cashier/SelectedItem";
 import Button from "@/components/Buttons/Button";
 import { AlertCircle, Tag, XCircle, HelpCircle } from "lucide-react";
 import {
   transactionSubmission,
   getActiveDiscountRules,
   cancelRecommendedAppointmentAction,
-} from "@/lib/ServerAction"; // Check path
+} from "@/lib/ServerAction";
 
-import { RootState, AppDispatch } from "@/lib/reduxStore"; // Check path
+import { RootState, AppDispatch } from "@/lib/reduxStore";
 import {
   cashierActions,
   CashierState,
   SetCustomerDataPayload,
-} from "@/lib/Slices/CashierSlice"; // Import SetCustomerDataPayload
+} from "@/lib/Slices/CashierSlice";
 import {
   fetchServices,
   fetchServiceSets,
-  fetchBranches, // Import the new thunk
-} from "@/lib/Slices/DataSlice"; // Check path
+  fetchBranches,
+} from "@/lib/Slices/DataSlice";
 import {
   PaymentMethod as PrismaPaymentMethod,
-  Branch as PrismaBranch, // Use PrismaBranch for type safety
+  Branch as PrismaBranch,
   FollowUpPolicy,
   Service as PrismaService,
   ServiceSet as PrismaServiceSet,
-  // RecommendedAppointmentStatus, // Not directly used here
-  // Status, // Not directly used here
-} from "@prisma/client"; // Check path
+} from "@prisma/client";
 import type {
-  // RecommendedAppointmentData, // Type is inferred for selectedRecommendation
   FetchedItem,
   UIDiscountRuleWithServices,
-  // TransactionSubmissionResponse, // Type is inferred for response
   CustomerWithRecommendations as CustomerData,
-} from "@/lib/Types"; // Check path
+} from "@/lib/Types";
 
 const serviceTypeOptions = [
   { id: "single" as const, title: "Single Service" },
@@ -84,12 +79,11 @@ export default function CashierInterceptedModal() {
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
 
-  // Use a ref to track if the rules fetch has been initiated
-  const hasFetchedRules = useRef(false); // <-- Use useRef
+  const hasFetchedRules = useRef(false);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [selectedBranchId, setSelectedBranchId] = useState<string>("all"); // Keep local for UI filter
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
   const [isCancellingRa, setIsCancellingRa] = useState<string | null>(null);
   const [cancellationError, setCancellationError] = useState<string | null>(
     null,
@@ -98,18 +92,18 @@ export default function CashierInterceptedModal() {
   const {
     services,
     serviceSets,
-    branches, // Get branches from Redux
+    branches,
     itemsLoading,
-    branchesLoading, // Use branchesLoading
+    branchesLoading,
     itemsError,
-    branchesError, // Use branchesError
+    branchesError,
   } = useSelector((state: RootState) => state.data);
 
   const cashierForm = useSelector((state: RootState) => state.cashier);
   const {
-    name, // Name is now primarily controlled by CustomerInput onChange or onCustomerSelect
-    email, // Email is now primarily controlled by separate email input or onCustomerSelect
-    customerId, // This tells us if an existing customer is selected
+    name,
+    email,
+    customerId,
     servicesAvailed,
     grandTotal,
     totalDiscount,
@@ -119,21 +113,17 @@ export default function CashierInterceptedModal() {
     date,
     time,
     paymentMethod,
-    customerRecommendations, // Recommendations now come *with* the customer data on selection
+    customerRecommendations,
     selectedRecommendedAppointmentId,
     generateNewFollowUpForFulfilledRA,
-    appliedDiscountRules, // Assuming activeRules are stored in cashierSlice
-    // areRulesFetched, // <-- REMOVED
+    appliedDiscountRules,
   } = cashierForm;
 
-  // Check if data fetching is in progress for items, branches, or submission/cancellation
-  const isOverallLoading = itemsLoading || branchesLoading; // Simplified loading check
+  const isOverallLoading = itemsLoading || branchesLoading;
   const isAnyProcessLoading =
     isSubmitting || isOverallLoading || !!isCancellingRa;
 
-  // Fetch initial data (services, sets, branches, and RULES)
   useEffect(() => {
-    // Fetch services, sets, branches - keep their original conditions/dependencies
     if (!services && !itemsLoading && !itemsError) {
       dispatch(fetchServices());
     }
@@ -144,11 +134,9 @@ export default function CashierInterceptedModal() {
       dispatch(fetchBranches());
     }
 
-    // Fetch discount rules only once using the ref
     if (!hasFetchedRules.current) {
-      // <-- Check the ref value
       console.log("Attempting to fetch active discount rules...");
-      hasFetchedRules.current = true; // <-- Immediately set ref to true after checking
+      hasFetchedRules.current = true;
       getActiveDiscountRules()
         .then((rules) => {
           console.log("Fetched rules:", rules);
@@ -159,20 +147,17 @@ export default function CashierInterceptedModal() {
                 : [],
             }),
           );
-          // Removed dispatch(cashierActions.setRulesFetched(true));
         })
         .catch((e) => {
           console.error("Error fetching rules:", e);
-          // Still dispatch empty array on error to clear potential stale rules
+
           dispatch(cashierActions.applyDiscounts({ rules: [] }));
-          // Removed dispatch(cashierActions.setRulesFetched(true));
         });
     }
 
-    // Cleanup: Reset cashier state and the ref when modal is closed (component unmounts)
     return () => {
       dispatch(cashierActions.reset());
-      hasFetchedRules.current = false; // <-- Reset ref on unmount
+      hasFetchedRules.current = false;
     };
   }, [
     dispatch,
@@ -183,77 +168,58 @@ export default function CashierInterceptedModal() {
     branchesLoading,
     itemsError,
     branchesError,
-    // REMOVED: areRulesFetched from dependencies
-  ]); // Dependencies are now for the other fetches and dispatch itself
+  ]);
 
-  // Handler for when a customer is selected from the dropdown OR the input is cleared
-  // This updates customerId, name, email, and recommendations based on the selected customer or null.
   const handleCustomerSelected = useCallback(
     (customer: CustomerData | null) => {
-      // customer will be null if the input is cleared by the user
       const payload: SetCustomerDataPayload = {
         customer: customer
           ? {
               id: customer.id,
               name: customer.name,
               email: customer.email,
-              recommendedAppointments: customer.recommendedAppointments, // Include recs
+              recommendedAppointments: customer.recommendedAppointments,
             }
           : null,
       };
       dispatch(cashierActions.setCustomerData(payload));
-      // When a customer is selected or cleared, also clear any potential form errors related to the customer fields
+
       setFormErrors((prev) => {
         const newState = { ...prev };
         delete newState.name;
         delete newState.email;
-        // Potentially clear general error if it was related to customer field validation
-        // delete newState.general; // Be cautious with clearing general
+
         return newState;
       });
     },
     [dispatch],
   );
 
-  // Handler for raw input changes in the CustomerInput field (when user is typing)
-  // This only updates the `name` state in Redux.
   const handleCustomerNameInputChange = useCallback(
     (value: string) => {
-      // We only set the name via typing if NO existing customer is selected.
-      // If a customer IS selected (customerId is not null), the name in Redux
-      // should match the selected customer's name. Typing in the input in that case
-      // means the user intends to de-select the customer and type a new name.
-      // This is handled by the CustomerInput component calling onCustomerSelect(null)
-      // when the input value deviates significantly or is cleared.
-      // So, the logic here should be simple: dispatch the action.
       dispatch(cashierActions.setCustomerName(value));
-      // Clear email state if the user starts typing a new name after selecting an existing customer
-      // This is a common UX pattern: typing implies starting fresh for a new customer.
+
       if (customerId !== null) {
         dispatch(cashierActions.setEmail(null));
       }
 
-      // Clear customer name validation error if user starts typing
       setFormErrors((prev) => {
         const newState = { ...prev };
         delete newState.name;
-        // delete newState.general; // Again, be cautious with general error
+
         return newState;
       });
     },
-    [dispatch, customerId], // Include customerId in deps
+    [dispatch, customerId],
   );
 
-  // Handler for raw input changes in the separate Email field
-  // This only updates the `email` state in Redux.
   const handleEmailInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const value = e.target.value;
-      // We only allow typing in the email field if NO existing customer is selected.
-      // If an existing customer IS selected, the email input is disabled and shows the selected customer's email (from Redux state).
+
       if (customerId === null) {
         dispatch(cashierActions.setEmail(value));
-        // Clear email validation error if user starts typing
+
         setFormErrors((prev) => {
           const newState = { ...prev };
           delete newState.email;
@@ -261,7 +227,7 @@ export default function CashierInterceptedModal() {
         });
       }
     },
-    [dispatch, customerId], // Include customerId in deps
+    [dispatch, customerId],
   );
 
   const handleSelectRecommendation = useCallback(
@@ -301,7 +267,6 @@ export default function CashierInterceptedModal() {
   const branchOptions = useMemo(() => {
     const options = [{ id: "all", title: "All Branches" }];
     if (branches?.length) {
-      // Check if branches is not null
       options.push(
         ...branches.map((b: PrismaBranch) => ({ id: b.id, title: b.title })),
       );
@@ -314,7 +279,7 @@ export default function CashierInterceptedModal() {
     let displayItems: FetchedItem[] = [];
     if (serviceType === "single") {
       const filteredServices =
-        selectedBranchId === "all" || !services // Handle null services
+        selectedBranchId === "all" || !services
           ? services || []
           : services.filter(
               (s: PrismaService) => s.branchId === selectedBranchId,
@@ -348,13 +313,12 @@ export default function CashierInterceptedModal() {
         s.id === selectedRecommendation.originatingService!.id,
     );
     if (serviceData) {
-      // Use selectItem which toggles presence
       dispatch(
         cashierActions.selectItem({
           id: serviceData.id,
           title: serviceData.title,
           price: serviceData.price,
-          type: "service", // Assuming recommendations are always for single services
+          type: "service",
         }),
       );
     }
@@ -390,13 +354,12 @@ export default function CashierInterceptedModal() {
     setFormErrors({});
     let localErrors: Record<string, string> = {};
 
-    // Validation checks:
-    if (!name.trim()) localErrors.name = "Customer name required."; // Name is always required
-    // Email is required ONLY if no existing customer is selected (customerId is null)
+    if (!name.trim()) localErrors.name = "Customer name required.";
+
     if (customerId === null && (!email || !email.trim())) {
       localErrors.email = "Email is required for new customers.";
     }
-    // Validate email format ONLY if an email is provided (for new or existing customer where it might be displayed)
+
     if (
       email &&
       email.trim() &&
@@ -417,7 +380,6 @@ export default function CashierInterceptedModal() {
       return;
     }
 
-    // If validation passes, submit the form with current cashier state
     try {
       const response = await transactionSubmission(cashierForm);
       if (response.success) router.back();
@@ -435,7 +397,6 @@ export default function CashierInterceptedModal() {
 
   const handleCancel = () => router.back();
 
-  // Determine if the separate email input should be disabled
   const isEmailInputDisabled = customerId !== null;
 
   return (
@@ -446,7 +407,7 @@ export default function CashierInterceptedModal() {
       containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col"
     >
       <div className="flex-grow space-y-5 overflow-y-auto p-4 sm:p-6">
-        {isAnyProcessLoading && ( // Show spinner for any relevant loading state
+        {isAnyProcessLoading && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-customOffWhite/70 backdrop-blur-sm">
             <Spinner
               text={
@@ -475,11 +436,11 @@ export default function CashierInterceptedModal() {
         {/* Customer Name Input (autocomplete) */}
         <div className="w-full">
           <CustomerInput
-            error={formErrors.name} // Pass name validation error
-            initialValue={name} // Controlled by Redux state, passed down
-            onCustomerSelect={handleCustomerSelected} // Handles selecting from dropdown / clearing input
-            onChange={handleCustomerNameInputChange} // Handles raw text input
-            disabled={isAnyProcessLoading} // Disable input during any relevant process
+            error={formErrors.name}
+            initialValue={name}
+            onCustomerSelect={handleCustomerSelected}
+            onChange={handleCustomerNameInputChange}
+            disabled={isAnyProcessLoading}
           />
           {formErrors.name && (
             <p className={inputErrorClass}>{formErrors.name}</p>
@@ -491,12 +452,11 @@ export default function CashierInterceptedModal() {
         <div className="w-full">
           <div className="relative w-full">
             <input
-              value={email ?? ""} // Value from Redux state
-              onChange={handleEmailInputChange} // New handler for this specific input
+              value={email ?? ""}
+              onChange={handleEmailInputChange}
               placeholder=" "
               type="email"
               id="email-input"
-              // Disable if an existing customer is selected OR any process is loading
               disabled={isEmailInputDisabled || isAnyProcessLoading}
               className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-gray-300"} px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink disabled:cursor-not-allowed disabled:bg-gray-100`}
               aria-invalid={!!formErrors.email}
@@ -504,7 +464,6 @@ export default function CashierInterceptedModal() {
             />
             <label
               htmlFor="email-input"
-              // Label styling based on focus, error, and disabled state
               className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-customOffWhite px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : isEmailInputDisabled ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${isEmailInputDisabled ? "cursor-not-allowed" : "cursor-text"}`}
             >
               E-mail {customerId === null ? "*" : "(From selected customer)"}{" "}
@@ -566,7 +525,7 @@ export default function CashierInterceptedModal() {
                       !itemsLoading && (
                         <button
                           onClick={handleAddRecommendedServiceToCart}
-                          disabled={isAnyProcessLoading} // Disable add button
+                          disabled={isAnyProcessLoading}
                           className="flex-shrink-0 rounded bg-customDarkPink px-3 py-1 text-xs font-semibold text-white hover:bg-customDarkPink/90 disabled:opacity-50"
                         >
                           Add Service
@@ -583,7 +542,7 @@ export default function CashierInterceptedModal() {
                           ),
                         )
                       }
-                      disabled={isAnyProcessLoading} // Disable change button
+                      disabled={isAnyProcessLoading}
                       className="flex-shrink-0 rounded border border-customDarkPink px-3 py-1 text-xs font-semibold text-customDarkPink hover:bg-customDarkPink hover:text-white disabled:opacity-50"
                       title="Change selected recommendation"
                     >
@@ -594,7 +553,7 @@ export default function CashierInterceptedModal() {
                       onClick={() =>
                         handleCancelRecommendation(selectedRecommendation.id)
                       }
-                      disabled={isAnyProcessLoading} // Disable cancel button
+                      disabled={isAnyProcessLoading}
                       className="rounded-full p-1 text-red-600 hover:bg-red-700 disabled:opacity-50"
                       title="Cancel this recommendation"
                     >
@@ -621,7 +580,7 @@ export default function CashierInterceptedModal() {
                           )
                         }
                         disabled={
-                          isAnyProcessLoading || // Disable checkbox during any loading/submitting
+                          isAnyProcessLoading ||
                           selectedRecommendation.originatingService
                             .followUpPolicy === FollowUpPolicy.NONE
                         }
@@ -680,10 +639,10 @@ export default function CashierInterceptedModal() {
                     </span>
                     <button
                       onClick={(e) => {
-                        e.stopPropagation(); // Prevent triggering the parent li onClick
+                        e.stopPropagation();
                         handleCancelRecommendation(rec.id);
                       }}
-                      disabled={isAnyProcessLoading} // Disable cancel button
+                      disabled={isAnyProcessLoading}
                       className="ml-2 rounded-full p-1 text-red-600 hover:bg-red-700 disabled:opacity-50"
                       title="Cancel"
                     >
@@ -714,12 +673,12 @@ export default function CashierInterceptedModal() {
             labelKey="title"
             value={serviceType}
             required
-            disabled={isAnyProcessLoading} // Disable
+            disabled={isAnyProcessLoading}
           />
           {serviceType === "single" &&
             (branchesLoading ||
               (branches && branches.length > 0) ||
-              branchesError) && ( // Only show branch filter if fetching or branches exist/error
+              branchesError) && (
               <SelectInputGroup
                 label="Filter by Branch"
                 name="branchFilter"
@@ -731,7 +690,7 @@ export default function CashierInterceptedModal() {
                 value={selectedBranchId}
                 isLoading={branchesLoading}
                 error={formErrors.branchFilter || branchesError || undefined}
-                disabled={isAnyProcessLoading} // Disable
+                disabled={isAnyProcessLoading}
               />
             )}
         </div>
@@ -752,15 +711,15 @@ export default function CashierInterceptedModal() {
             value={serveTime}
             error={formErrors.serveTime}
             required
-            disabled={isAnyProcessLoading} // Disable
+            disabled={isAnyProcessLoading}
           />
           {serveTime === "later" && (
             <DateTimePicker
               error={formErrors.date || formErrors.time || formErrors.serveTime}
-              disabled={isAnyProcessLoading} // Disable
+              disabled={isAnyProcessLoading}
             />
           )}
-          {formErrors.serveTime && ( // Display serveTime error below DateTimePicker if needed
+          {formErrors.serveTime && (
             <p className={inputErrorClass}>{formErrors.serveTime}</p>
           )}
         </div>
@@ -768,23 +727,19 @@ export default function CashierInterceptedModal() {
         {/* Services/Sets Select Input */}
         <div className="w-full">
           <ServicesSelect
-            isLoading={itemsLoading} // Use itemsLoading
+            isLoading={itemsLoading}
             data={itemsToDisplay}
-            error={formErrors.servicesAvailed || itemsError || undefined} // Use itemsError
-            disabled={isAnyProcessLoading} // Disable select during loading/submitting
+            error={formErrors.servicesAvailed || itemsError || undefined}
+            disabled={isAnyProcessLoading}
           />
           {formErrors.servicesAvailed && (
             <p className={inputErrorClass}>{formErrors.servicesAvailed}</p>
           )}
-          {itemsError && ( // Display items error below ServicesSelect if needed
-            <p className={inputErrorClass}>{itemsError}</p>
-          )}
+          {itemsError && <p className={inputErrorClass}>{itemsError}</p>}
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <VoucherInput
-            disabled={isAnyProcessLoading} // Disable voucher input
-          />
+          <VoucherInput disabled={isAnyProcessLoading} />
           <SelectInputGroup
             label="Payment Method"
             name="paymentMethod"
@@ -796,7 +751,7 @@ export default function CashierInterceptedModal() {
             value={paymentMethod ?? ""}
             error={formErrors.paymentMethod}
             required
-            disabled={isAnyProcessLoading} // Disable
+            disabled={isAnyProcessLoading}
           />
           {formErrors.paymentMethod && (
             <p className={inputErrorClass}>{formErrors.paymentMethod}</p>
@@ -809,7 +764,7 @@ export default function CashierInterceptedModal() {
               <SelectedItem
                 key={item.id + item.type}
                 {...item}
-                disabled={isAnyProcessLoading} // Disable item controls
+                disabled={isAnyProcessLoading}
               />
             ))
           ) : (
@@ -855,18 +810,18 @@ export default function CashierInterceptedModal() {
           onClick={handleConfirmClick}
           type="button"
           disabled={
-            isAnyProcessLoading || // Disable if any process is loading
-            !name.trim() || // Name is always required
-            (customerId === null && (!email || !email.trim())) || // Email required ONLY for new customer
+            isAnyProcessLoading ||
+            !name.trim() ||
+            (customerId === null && (!email || !email.trim())) ||
             (customerId === null &&
               email &&
               email.trim() &&
               !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(
                 email.trim(),
-              )) || // Disable if new customer email is invalid
+              )) ||
             !servicesAvailed.length ||
             !paymentMethod ||
-            (serveTime === "later" && (!date || !time)) // Date/Time required for later
+            (serveTime === "later" && (!date || !time))
           }
         >
           {isSubmitting ? "Submitting..." : "Confirm Transaction"}

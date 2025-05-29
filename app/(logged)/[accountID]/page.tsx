@@ -40,7 +40,7 @@ import UserServedTodayWidget from "@/components/ui/UserServedTodayWidget";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button";
 import Modal from "@/components/Dialog/Modal";
-import ExpandedListedServices from "@/components/ui/ExpandedListedServices"; // Assuming this component exists and handles serve/unserve
+import ExpandedListedServices from "@/components/ui/ExpandedListedServices";
 import PreviewListedServices from "@/components/ui/PreviewListedServices";
 import PreviewUserSalary from "@/components/ui/PreviewUserSalary";
 import CurrentSalaryDetailsModal from "@/components/ui/CurrentSalaryDetailsModal";
@@ -402,40 +402,30 @@ export default function AccountDashboardPage() {
   }, [sessionStatus, accountIdFromUrl, fetchInitialData, isOwner]);
 
   const servicesCheckedByMe = useMemo(() => {
-    // FIX: Removed the explicit check for `isWorker`. Any user can claim services for themselves.
     if (!loggedInUserId || !allPendingTransactions) return [];
 
     const relevantServices: AvailedServicesProps[] = [];
 
     for (const tx of allPendingTransactions) {
-      // Consider pending and cancelled transactions (though check/serve is usually only on PENDING)
       if (tx.status === Status.PENDING || tx.status === Status.CANCELLED) {
         if (tx.availedServices) {
           for (const as of tx.availedServices) {
-            // Check if the service is pending AND checked by the logged-in user
             const isPendingAndCheckedByMe =
               as.status === Status.PENDING && as.checkedById === loggedInUserId;
-            // Check if the service is done AND served by the logged-in user
-            // (Displaying DONE services served by the user might be useful history)
+
             const isDoneAndServedByMe =
               as.status === Status.DONE && as.servedById === loggedInUserId;
 
             if (isPendingAndCheckedByMe || isDoneAndServedByMe) {
-              // Include the parent transaction info for context in the modal
               relevantServices.push({
                 ...as,
-                // Add transaction details if needed for display in the Expanded modal
-                // e.g., customer name, booked time.
-                // You'll need to update AvailedServicesProps type if adding this.
-                // transaction: { id: tx.id, customer: tx.customer, bookedFor: tx.bookedFor },
               });
             }
           }
         }
       }
     }
-    // Sort services? Maybe by transaction bookedFor or service order?
-    // Sorting by transaction bookedFor might group services from the same booking.
+
     relevantServices.sort((a, b) => {
       const txA = allPendingTransactions.find((t) => t.id === a.transactionId);
       const txB = allPendingTransactions.find((t) => t.id === b.transactionId);
@@ -445,7 +435,7 @@ export default function AccountDashboardPage() {
     });
 
     return relevantServices;
-  }, [allPendingTransactions, loggedInUserId]); // FIX: Removed isWorker from dependencies
+  }, [allPendingTransactions, loggedInUserId]);
 
   const openMyServicesModal = useCallback(
     () => setIsMyServicesModalOpen(true),
@@ -556,7 +546,7 @@ export default function AccountDashboardPage() {
       link?: string;
       onDetailsClick?: () => void;
       notificationCount?: number;
-      roles: Role[]; // Roles that can see this widget
+      roles: Role[];
     }> = [
       {
         key: "attendance",
@@ -577,9 +567,9 @@ export default function AccountDashboardPage() {
         key: "workQueueLink",
         title: "Work Queue",
         Icon: Edit3,
-        isLoading: false, // Link components don't block on data loading typically
-        link: `/${accountIdFromUrl}/work`, // Direct link
-        roles: [Role.WORKER, Role.CASHIER, Role.OWNER], // Allow Owner/Cashier to go to work queue too
+        isLoading: false,
+        link: `/${accountIdFromUrl}/work`,
+        roles: [Role.WORKER, Role.CASHIER, Role.OWNER],
       },
       {
         key: "claimedServices",
@@ -588,7 +578,7 @@ export default function AccountDashboardPage() {
         notificationCount: servicesCheckedByMe.length,
         isLoading: isLoadingTransactions,
         onDetailsClick: openMyServicesModal,
-        roles: isViewingOwnDashboard ? [Role.WORKER, Role.OWNER] : [], // Allow OWNER/WORKER to see *their own* claims
+        roles: isViewingOwnDashboard ? [Role.WORKER, Role.OWNER] : [],
       },
       {
         key: "salary",
@@ -596,7 +586,7 @@ export default function AccountDashboardPage() {
         Icon: Wallet,
         isLoading: isLoadingAccount,
         roles: isViewingOwnDashboard
-          ? userRoles.filter((r) => r !== Role.OWNER) // Any role except owner (owner salary is different)
+          ? userRoles.filter((r) => r !== Role.OWNER)
           : [],
       },
       {
@@ -622,7 +612,7 @@ export default function AccountDashboardPage() {
         roles: [Role.OWNER],
       },
     ];
-    // Filter widgets based on the logged-in user's roles
+
     return widgets.filter((w) =>
       w.roles.some((role) => userRoles.includes(role)),
     );
@@ -632,7 +622,7 @@ export default function AccountDashboardPage() {
     accountIdFromUrl,
     isLoadingSales,
     openSalesDetailsModal,
-    servicesCheckedByMe.length, // Dependency now uses length
+    servicesCheckedByMe.length,
     isLoadingTransactions,
     openMyServicesModal,
     isLoadingAccount,
@@ -647,21 +637,18 @@ export default function AccountDashboardPage() {
       if (!config) return;
 
       if (config.link && accountIdFromUrl) {
-        // Use router.push for Next.js navigation
         router.push(config.link);
         return;
       }
 
-      // Handle dedicated modal clicks first
       if (config.onDetailsClick) {
         config.onDetailsClick();
-        // Close the general mobile preview modal if it was open
+
         setIsMobileViewModalOpen(false);
-        setActiveMobileWidget(null); // Clear active widget state if it triggered a *separate* modal
+        setActiveMobileWidget(null);
         return;
       }
 
-      // If no dedicated link or modal click, render component in the general mobile preview modal
       const componentRenderKeys: MobileWidgetKey[] = [
         "attendance",
         "claimGC",
@@ -681,28 +668,22 @@ export default function AccountDashboardPage() {
       mobileWidgetsConfig,
       router,
       accountIdFromUrl,
-      // Include all specific modal openers as dependencies
+
       openTransactionsModal,
       openSalesDetailsModal,
       openMyServicesModal,
-      handleViewCurrentDetails, // Salary details modal
-      handleViewHistory, // Payslip history modal
+      handleViewCurrentDetails,
+      handleViewHistory,
     ],
   );
 
   const renderMobileWidgetComponent = useCallback(() => {
     if (!activeMobileWidget) return null;
 
-    // Note: These components are rendered INSIDE the general mobile preview modal.
-    // Some components already have their own dedicated modals (like Sales Details, My Claims, Salary Details, Payslip History)
-    // For those, onMobileWidgetIconClick should open the *dedicated* modal and NOT set activeMobileWidget
-    // The component rendered here should be one that fits directly within the mobile preview modal structure.
-    // Based on the `onMobileWidgetIconClick` logic, the keys handled here are "attendance", "claimGC", "customerHistory", "salary".
-
     const widgetConfig = mobileWidgetsConfig.find(
       (w) => w.key === activeMobileWidget,
     );
-    // Add a loading state check here, although individual components should handle their own loading
+
     if (widgetConfig?.isLoading) {
       return <LoadingWidget text={`Loading ${widgetConfig.title}...`} />;
     }
@@ -721,14 +702,8 @@ export default function AccountDashboardPage() {
             Access Denied or data missing.
           </div>
         );
-      // "sales" is handled by a dedicated modal now
-      // case "sales": ... (removed)
-      // "claimedServices" is handled by a dedicated modal now
-      // case "claimedServices": ... (removed)
+
       case "salary":
-        // The "salary" component is a preview with buttons that trigger dedicated modals.
-        // This is acceptable here if the preview itself fits well.
-        // Ensure you are viewing your *own* dashboard for salary.
         if (
           isViewingOwnDashboard &&
           !isOwner &&
@@ -738,8 +713,8 @@ export default function AccountDashboardPage() {
           return (
             <PreviewUserSalary
               salary={accountData.salary ?? 0}
-              onOpenDetails={handleViewCurrentDetails} // This will open the dedicated modal
-              onOpenHistory={handleViewHistory} // This will open the dedicated modal
+              onOpenDetails={handleViewCurrentDetails}
+              onOpenHistory={handleViewHistory}
               isLoading={isLoadingAccount}
               onRefresh={fetchInitialData}
             />
@@ -766,7 +741,6 @@ export default function AccountDashboardPage() {
         );
 
       default:
-        // Fallback for any key added that wasn't handled or if config was missing
         return (
           <div className="p-4 text-center text-gray-500">
             Widget component not available for mobile preview.
@@ -775,18 +749,18 @@ export default function AccountDashboardPage() {
     }
   }, [
     activeMobileWidget,
-    mobileWidgetsConfig, // Added dependency
+    mobileWidgetsConfig,
     isOwner,
     isAttendanceChecker,
     loggedInUserId,
     accountIdFromUrl,
     isViewingOwnDashboard,
     isCashier,
-    accountData, // Added dependency
-    isLoadingAccount, // Added dependency
-    handleViewCurrentDetails, // Added dependency
-    handleViewHistory, // Added dependency
-    fetchInitialData, // Added dependency
+    accountData,
+    isLoadingAccount,
+    handleViewCurrentDetails,
+    handleViewHistory,
+    fetchInitialData,
   ]);
 
   if (sessionStatus === "loading") {
@@ -938,7 +912,7 @@ export default function AccountDashboardPage() {
             </div>
           ) : null}
 
-          {(isWorker || isCashier || isOwner) && accountIdFromUrl ? ( // Allow OWNER to go to work queue
+          {(isWorker || isCashier || isOwner) && accountIdFromUrl ? (
             <Link
               href={`/${accountIdFromUrl}/work`}
               className="flex items-center justify-center gap-2 rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 text-center text-sm font-medium text-customDarkPink shadow-custom backdrop-blur-sm hover:bg-customDarkPink/10 md:col-span-1 xl:col-span-1"
@@ -979,7 +953,6 @@ export default function AccountDashboardPage() {
                 widgetKey={widget.key}
                 onClick={onMobileWidgetIconClick}
                 notificationCount={widget.notificationCount}
-                // isActive state is managed by parent
                 isActive={
                   activeMobileWidget === widget.key && isMobileViewModalOpen
                 }

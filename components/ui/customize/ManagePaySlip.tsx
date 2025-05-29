@@ -6,11 +6,10 @@ import Button from "@/components/Buttons/Button";
 import {
   Loader2,
   AlertCircle,
-  CheckCircle,
   MinusCircle,
+  CheckCircle,
   ThumbsUp,
   ThumbsDown,
-  UserCheck,
   Eye,
   Settings,
   ListFilter,
@@ -18,7 +17,15 @@ import {
   ToggleRight,
   RotateCcw as RefreshIcon,
 } from "lucide-react";
-import { format } from "date-fns";
+
+import {
+  format,
+  startOfDay,
+  addDays,
+  isBefore,
+  isValid,
+  isEqual,
+} from "date-fns";
 import {
   PayslipData,
   ReleaseSalaryHandler,
@@ -48,7 +55,6 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-// Cache Keys
 const PAYSLIPS_LIST_CACHE_KEY: CacheKey = "payslips_ManagePayslips";
 const ACCOUNTS_LIST_CACHE_KEY: CacheKey = "accounts_ManagePayslips";
 const REQUESTS_LIST_CACHE_KEY: CacheKey = "requests_ManagePayslips";
@@ -73,13 +79,17 @@ const formatDateRange = (start: Date | string, end: Date | string): string => {
   try {
     const validStart = typeof start === "string" ? new Date(start) : start;
     const validEnd = typeof end === "string" ? new Date(end) : end;
+
     if (
       !(validStart instanceof Date) ||
       !(validEnd instanceof Date) ||
       isNaN(validStart.getTime()) ||
       isNaN(validEnd.getTime())
-    )
+    ) {
+      console.warn("formatDateRange: Invalid date inputs", { start, end });
       return "Invalid Period";
+    }
+
     if (
       validStart.getMonth() === validEnd.getMonth() &&
       validStart.getFullYear() === validEnd.getFullYear()
@@ -89,6 +99,7 @@ const formatDateRange = (start: Date | string, end: Date | string): string => {
       return `${format(validStart, "MMM dd")} - ${format(validEnd, "MMM dd, yyyy")}`;
     else return `${format(validStart, "PP")} - ${format(validEnd, "PP")}`;
   } catch (e) {
+    console.error("formatDateRange error:", e, { start, end });
     return "Error Formatting";
   }
 };
@@ -161,13 +172,13 @@ export default function ManagePayslips() {
         if (cached) {
           setPayslips(cached);
           setIsLoadingList(false);
-          // console.log("[Cache] Payslips loaded from cache for status:", statusFilterParam);
           return;
         }
       }
-      // console.log("[Cache] Fetching Payslips for status:", statusFilterParam);
       try {
-        const data = await getPayslips(statusFilterParam);
+        const data = await getPayslips({
+          status: statusFilterParam === "ALL" ? null : statusFilterParam,
+        });
         setPayslips(data);
         setCachedData(PAYSLIPS_LIST_CACHE_KEY, data, cacheParams);
       } catch (error: any) {
@@ -188,11 +199,9 @@ export default function ManagePayslips() {
       if (cached) {
         setAccounts(cached);
         setIsLoadingAccounts(false);
-        // console.log("[Cache] Accounts loaded from cache");
         return;
       }
     }
-    // console.log("[Cache] Fetching Accounts");
     try {
       const data = await getAllAccountsWithBasicInfo();
       setAccounts(data);
@@ -220,11 +229,9 @@ export default function ManagePayslips() {
       if (cached) {
         setRequests(cached);
         setIsLoadingRequests(false);
-        // console.log("[Cache] Payslip Requests loaded from cache");
         return;
       }
     }
-    // console.log("[Cache] Fetching Payslip Requests");
     try {
       const data = await getPayslipRequests(PayslipRequestStatus.PENDING);
       setRequests(data);
@@ -247,7 +254,6 @@ export default function ManagePayslips() {
   }, [filterStatus, loadPayslips]);
 
   const handleRefreshAllData = () => {
-    // console.log("[Cache] Refreshing all data for ManagePayslips");
     invalidateCache([
       PAYSLIPS_LIST_CACHE_KEY,
       ACCOUNTS_LIST_CACHE_KEY,
@@ -258,31 +264,94 @@ export default function ManagePayslips() {
     loadPayslipRequests(true);
   };
 
-  const handleOpenModal = useCallback(async (payslip: PayslipData) => {
-    setSelectedPayslip(payslip);
+  const handleOpenModal = useCallback(async (payslipSummary: PayslipData) => {
+    const summaryPeriodStartDate = new Date(payslipSummary.periodStartDate);
+    const summaryPeriodEndDate = new Date(payslipSummary.periodEndDate);
+
+    if (!isValid(summaryPeriodStartDate) || !isValid(summaryPeriodEndDate)) {
+      console.error(
+        "handleOpenModal: Invalid period dates in payslipSummary",
+        payslipSummary,
+      );
+      setModalDataError("Invalid payslip period dates.");
+      setIsModalOpen(true);
+      setSelectedPayslip(payslipSummary);
+      setIsLoadingModalData(false);
+      return;
+    }
+
+    setIsLoadingModalData(true);
+    setIsModalOpen(true);
+    setSelectedPayslip(payslipSummary);
     setReleaseError(null);
     setModalDataError(null);
     setModalAttendance([]);
     setModalBreakdown([]);
-    setIsLoadingModalData(true);
-    setIsModalOpen(true);
+
     try {
-      const [attendanceData, breakdownData] = await Promise.all([
-        getAttendanceForPeriod(
-          payslip.employeeId,
-          payslip.periodStartDate,
-          payslip.periodEndDate,
-        ),
-        getCommissionBreakdownForPeriod(
-          payslip.employeeId,
-          payslip.periodStartDate,
-          payslip.periodEndDate,
-        ),
-      ]);
-      setModalAttendance(attendanceData);
+      let trueAttendanceStartDate = summaryPeriodStartDate;
+
+      const allUserReleasedPayslips = await getPayslips({
+        status: PayslipStatus.RELEASED,
+        employeeId: payslipSummary.employeeId,
+      });
+
+      const previousPayslipsBeforeThisOne = allUserReleasedPayslips
+        .filter((p) => {
+          const pEndDate = new Date(p.periodEndDate);
+          return (
+            isValid(pEndDate) && isBefore(pEndDate, summaryPeriodStartDate)
+          );
+        })
+        .sort(
+          (a, b) =>
+            new Date(b.periodEndDate).getTime() -
+            new Date(a.periodEndDate).getTime(),
+        );
+
+      if (previousPayslipsBeforeThisOne.length > 0) {
+        const lastTrulyFinishedPeriodEndDate = new Date(
+          previousPayslipsBeforeThisOne[0].periodEndDate,
+        );
+        if (isValid(lastTrulyFinishedPeriodEndDate)) {
+          trueAttendanceStartDate = startOfDay(
+            addDays(lastTrulyFinishedPeriodEndDate, 1),
+          );
+        }
+      }
+      console.log(
+        `[ManagePayslips handleOpenModal] Payslip ${payslipSummary.id} (Nominal Period: ${format(summaryPeriodStartDate, "PP")} - ${format(summaryPeriodEndDate, "PP")}). True attendance start for this payslip: ${format(trueAttendanceStartDate, "PP")}`,
+      );
+
+      const rawAttendanceData = await getAttendanceForPeriod(
+        payslipSummary.employeeId,
+        summaryPeriodStartDate,
+        summaryPeriodEndDate,
+      );
+
+      const filteredAttendanceData = rawAttendanceData.filter((attRec) => {
+        const attDate = startOfDay(new Date(attRec.date));
+        return (
+          isValid(attDate) &&
+          !isBefore(attDate, trueAttendanceStartDate) &&
+          (isBefore(attDate, summaryPeriodEndDate) ||
+            isEqual(attDate, summaryPeriodEndDate))
+        );
+      });
+      setModalAttendance(filteredAttendanceData);
+
+      const breakdownData = await getCommissionBreakdownForPeriod(
+        payslipSummary.employeeId,
+        summaryPeriodStartDate,
+        summaryPeriodEndDate,
+      );
       setModalBreakdown(breakdownData);
     } catch (error: any) {
-      setModalDataError(error.message || "Could not load details.");
+      console.error(
+        "[ManagePayslips handleOpenModal] Error loading modal data:",
+        error,
+      );
+      setModalDataError(error.message || "Could not load details for modal.");
     } finally {
       setIsLoadingModalData(false);
     }
@@ -328,6 +397,7 @@ export default function ManagePayslips() {
       setUpdatingAccountId(account.id);
       const originalAccounts = [...accounts];
       const newPermissionValue = !account.canRequestPayslip;
+
       setAccounts((prevAccounts) =>
         prevAccounts.map((acc) =>
           acc.id === account.id
@@ -345,16 +415,17 @@ export default function ManagePayslips() {
           if (result.success) {
             setPermissionUpdateSuccess(result.message || "Permission updated.");
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
-            // Optionally force reload, but optimistic should be fine
-            // await loadAccounts(true);
           } else {
             setPermissionUpdateError(
-              result.error || result.message || "Failed to update.",
+              result.error || result.message || "Failed to update permission.",
             );
             setAccounts(originalAccounts);
           }
         } catch (error: any) {
-          setPermissionUpdateError(error.message || "Unexpected error.");
+          setPermissionUpdateError(
+            error.message ||
+              "An unexpected error occurred during permission update.",
+          );
           setAccounts(originalAccounts);
         } finally {
           setUpdatingAccountId(null);
@@ -365,7 +436,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts, startPermissionTransition /*, loadAccounts (if needed) */],
+    [accounts],
   );
 
   const handleToggleAllPermissions = useCallback(
@@ -390,7 +461,6 @@ export default function ManagePayslips() {
                 `All permissions set to ${newStatus ? "Enabled" : "Disabled"}.`,
             );
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
-            // await loadAccounts(true);
           } else {
             setPermissionUpdateError(
               result.error || "Failed to update all permissions.",
@@ -399,7 +469,8 @@ export default function ManagePayslips() {
           }
         } catch (error: any) {
           setPermissionUpdateError(
-            error.message || "An unexpected error occurred.",
+            error.message ||
+              "An unexpected error occurred while toggling all permissions.",
           );
           setAccounts(originalAccounts);
         } finally {
@@ -410,7 +481,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts, startToggleAllTransition /*, loadAccounts (if needed) */],
+    [accounts],
   );
 
   const isSpecificAccountUpdating = (accountId: string) =>
@@ -419,7 +490,7 @@ export default function ManagePayslips() {
   const handleApproveRequest = useCallback(
     async (requestId: string) => {
       if (!adminId) {
-        setRequestProcessingError("Admin ID not found.");
+        setRequestProcessingError("Admin ID not found for approval.");
         return;
       }
       setRequestProcessingError(null);
@@ -429,19 +500,21 @@ export default function ManagePayslips() {
         try {
           const result = await approvePayslipRequest(requestId, adminId);
           if (result.success) {
-            setRequestProcessingSuccess(result.message || "Request approved.");
+            setRequestProcessingSuccess(
+              result.message || "Request approved and payslip generated.",
+            );
             invalidateCache([REQUESTS_LIST_CACHE_KEY, PAYSLIPS_LIST_CACHE_KEY]);
             await loadPayslipRequests(true);
-            // If the current filter is PENDING, or if we want to ensure PENDING payslips are up-to-date:
             await loadPayslips(PayslipStatus.PENDING, true);
-            // If the main payslip filter was NOT pending, it will stay on its current filter,
-            // but the PENDING cache entry for payslips will be updated.
-            // If the main filter WAS pending, it will correctly refresh.
           } else {
-            throw new Error(result.error || "Failed to approve request.");
+            throw new Error(
+              result.error || "Failed to approve request and generate payslip.",
+            );
           }
         } catch (error: any) {
-          setRequestProcessingError(error.message || "Could not approve.");
+          setRequestProcessingError(
+            error.message || "Could not approve request.",
+          );
         } finally {
           setProcessingRequestId(null);
           setTimeout(() => {
@@ -451,19 +524,13 @@ export default function ManagePayslips() {
         }
       });
     },
-    [
-      adminId,
-      loadPayslipRequests,
-      loadPayslips,
-      filterStatus,
-      startRequestProcessingTransition,
-    ],
+    [adminId, loadPayslipRequests, loadPayslips],
   );
 
   const handleRejectRequest = useCallback(
     async (requestId: string) => {
       if (!adminId) {
-        setRequestProcessingError("Admin ID not found.");
+        setRequestProcessingError("Admin ID not found for rejection.");
         return;
       }
       const reason = prompt("Optional: Enter reason for rejection:");
@@ -478,14 +545,18 @@ export default function ManagePayslips() {
             reason || undefined,
           );
           if (result.success) {
-            setRequestProcessingSuccess(result.message || "Request rejected.");
+            setRequestProcessingSuccess(
+              result.message || "Request rejected successfully.",
+            );
             invalidateCache(REQUESTS_LIST_CACHE_KEY);
             await loadPayslipRequests(true);
           } else {
             throw new Error(result.error || "Failed to reject request.");
           }
         } catch (error: any) {
-          setRequestProcessingError(error.message || "Could not reject.");
+          setRequestProcessingError(
+            error.message || "Could not reject request.",
+          );
         } finally {
           setProcessingRequestId(null);
           setTimeout(() => {
@@ -495,7 +566,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [adminId, loadPayslipRequests, startRequestProcessingTransition],
+    [adminId, loadPayslipRequests],
   );
 
   const thStyleBase =
@@ -509,6 +580,7 @@ export default function ManagePayslips() {
 
   return (
     <div className="space-y-8 p-1 md:p-4">
+      {}
       <div className="flex flex-col items-start justify-between gap-2 border-b border-gray-200 pb-3 sm:flex-row sm:items-center">
         <h1 className="text-xl font-semibold text-gray-900">Manage Payslips</h1>
         <Button
@@ -524,6 +596,7 @@ export default function ManagePayslips() {
         </Button>
       </div>
 
+      {}
       <section className="space-y-3">
         <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
           Pending Payslip Requests
@@ -555,7 +628,6 @@ export default function ManagePayslips() {
             <AlertCircle size={16} /> <span>{requestsError}</span>
           </div>
         )}
-
         {!isLoadingRequests && !requestsError && (
           <div className="min-w-full overflow-x-auto rounded border border-gray-200 bg-white shadow-sm">
             <table className="min-w-full divide-y divide-gray-200">
@@ -632,7 +704,6 @@ export default function ManagePayslips() {
                       >
                         <Button
                           size="xs"
-                          sm-size="sm"
                           variant="primary"
                           onClick={() => handleApproveRequest(req.id)}
                           disabled={
@@ -654,7 +725,6 @@ export default function ManagePayslips() {
                         </Button>
                         <Button
                           size="xs"
-                          sm-size="sm"
                           onClick={() => handleRejectRequest(req.id)}
                           disabled={
                             isProcessingRequest &&
@@ -682,6 +752,7 @@ export default function ManagePayslips() {
         )}
       </section>
 
+      {}
       <section className="space-y-3 border-t border-gray-300 pt-6 sm:pt-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
@@ -823,7 +894,6 @@ export default function ManagePayslips() {
                       >
                         <Button
                           size="xs"
-                          sm-size="sm"
                           variant="secondary"
                           onClick={() => handleOpenModal(payslip)}
                           disabled={
@@ -855,6 +925,7 @@ export default function ManagePayslips() {
         )}
       </section>
 
+      {}
       <section className="space-y-3 border-t border-gray-300 pt-6 sm:pt-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
@@ -893,7 +964,6 @@ export default function ManagePayslips() {
             </Button>
           </div>
         </div>
-
         {permissionUpdateSuccess && (
           <div
             className={`${errorMsgStyle} border-green-300 bg-green-50 text-green-700`}
@@ -908,7 +978,6 @@ export default function ManagePayslips() {
             <AlertCircle size={16} /> <span>{permissionUpdateError}</span>
           </div>
         )}
-
         {isLoadingAccounts && (
           <div className="flex items-center justify-center py-8 text-gray-500">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading
@@ -922,7 +991,6 @@ export default function ManagePayslips() {
             <AlertCircle size={16} /> <span>{accountsError}</span>
           </div>
         )}
-
         {!isLoadingAccounts && !accountsError && (
           <div className="max-h-[400px] min-w-full overflow-x-auto overflow-y-auto rounded border border-gray-200 bg-white shadow-sm sm:max-h-[500px]">
             <table className="min-w-full divide-y divide-gray-200">
@@ -990,7 +1058,6 @@ export default function ManagePayslips() {
                       <td className={`${tdStyleBase} text-right`}>
                         <Button
                           size="xs"
-                          sm-size="sm"
                           variant="outline"
                           onClick={() => handleToggleCanRequestPayslip(account)}
                           disabled={

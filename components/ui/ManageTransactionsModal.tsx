@@ -11,10 +11,7 @@ import type { JSX } from "react";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button";
-import {
-  TransactionListData, // Use the type that includes relations for listing
-  ServerActionResponse,
-} from "@/lib/Types"; // Adjust path to your Types fil
+import { TransactionListData, ServerActionResponse } from "@/lib/Types";
 import { PaymentMethod, Status } from "@prisma/client";
 import {
   Loader2,
@@ -32,42 +29,37 @@ import {
   Banknote,
   Wallet,
   Gift,
-  ArrowLeft, // Import ArrowLeft icon for back button
+  ArrowLeft,
 } from "lucide-react";
 import {
   getRecentTransactions,
   updateTransactionDetails,
-} from "@/lib/ServerAction"; // Import new server actions
-import { format } from "date-fns"; // Use date-fns for consistent date formatting
-import Select from "react-select"; // Assuming react-select is installed for dropdowns
+} from "@/lib/ServerAction";
+import { format } from "date-fns";
+import Select from "react-select";
 
 interface ManageTransactionsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  // No need to pass transactions from parent, modal fetches its own
 }
 
-// Map Prisma PaymentMethod enum to display options
 const paymentMethodOptions = [
   { value: PaymentMethod.cash, label: "Cash" },
   { value: PaymentMethod.ewallet, label: "E-wallet" },
   { value: PaymentMethod.bank, label: "Bank Transfer" },
   { value: PaymentMethod.GIFT_CERTIFICATE, label: "Gift Certificate" },
-  { value: null, label: "Unknown" }, // Option for null/unknown
+  { value: null, label: "Unknown" },
 ];
 
-// Map Prisma Status enum to display options
 const statusOptions = [
   { value: Status.PENDING, label: "Pending" },
   { value: Status.DONE, label: "Done" },
   { value: Status.CANCELLED, label: "Cancelled" },
 ];
 
-// Define a type for the editable fields
 type EditableTransactionFields = {
   status: Status;
   paymentMethod: PaymentMethod | null;
-  // Add other editable fields here
 };
 
 export default function ManageTransactionsModal({
@@ -80,7 +72,7 @@ export default function ManageTransactionsModal({
   const [selectedTransactionId, setSelectedTransactionId] = useState<
     string | null
   >(null);
-  // Use the new type alias for the state
+
   const [editingTransaction, setEditingTransaction] =
     useState<EditableTransactionFields | null>(null);
   const [isUpdating, startUpdateTransition] = useTransition();
@@ -97,8 +89,7 @@ export default function ManageTransactionsModal({
     setIsLoading(true);
     setError(null);
     try {
-      // Fetch a limited number of recent transactions
-      const data = await getRecentTransactions(50); // Adjust limit as needed
+      const data = await getRecentTransactions(50);
       if (Array.isArray(data)) {
         setTransactions(data);
       } else {
@@ -115,30 +106,28 @@ export default function ManageTransactionsModal({
 
   useEffect(() => {
     if (isOpen) {
-      fetchTransactions(); // Fetch when modal opens
-      setSelectedTransactionId(null); // Reset selected transaction
-      setEditingTransaction(null); // Reset editing state
+      fetchTransactions();
+      setSelectedTransactionId(null);
+      setEditingTransaction(null);
       setUpdateError(null);
       setUpdateSuccessMessage(null);
     }
-  }, [isOpen, fetchTransactions]); // Refetch when modal opens
+  }, [isOpen, fetchTransactions]);
 
   const handleSelectTransaction = useCallback(
     (transaction: TransactionListData) => {
       setSelectedTransactionId(transaction.id);
-      // Ensure correct initialization matching EditableTransactionFields
+
       setEditingTransaction({
         status: transaction.status,
         paymentMethod: transaction.paymentMethod,
-        // Initialize other fields for editing here if added to EditableTransactionFields
       });
-      setUpdateError(null); // Clear errors when selecting new transaction
-      setUpdateSuccessMessage(null); // Clear success when selecting new transaction
+      setUpdateError(null);
+      setUpdateSuccessMessage(null);
     },
     [],
   );
 
-  // Handler to clear the selected transaction and go back to the list
   const handleBackToList = useCallback(() => {
     setSelectedTransactionId(null);
     setEditingTransaction(null);
@@ -146,14 +135,13 @@ export default function ManageTransactionsModal({
     setUpdateSuccessMessage(null);
   }, []);
 
-  // Update the field parameter type
   const handleFormChange = useCallback(
     (field: keyof EditableTransactionFields, value: any) => {
       setEditingTransaction((prev) =>
         prev ? { ...prev, [field]: value } : null,
       );
-      setUpdateError(null); // Clear errors on change
-      setUpdateSuccessMessage(null); // Clear success on change
+      setUpdateError(null);
+      setUpdateSuccessMessage(null);
     },
     [],
   );
@@ -168,15 +156,12 @@ export default function ManageTransactionsModal({
         transactionId: selectedTransactionId,
         status: editingTransaction.status,
         paymentMethod: editingTransaction.paymentMethod,
-        // Include other fields from editingTransaction
       });
 
       if (result.success) {
         setUpdateSuccessMessage(result.message || "Update successful!");
-        // Refresh the list or update the specific item in state
-        fetchTransactions(); // Simple refresh
-        // Or update state:
-        // setTransactions(prev => prev.map(tx => tx.id === selectedTransactionId ? { ...tx, ...editingTransaction } : tx));
+
+        fetchTransactions();
       } else {
         setUpdateError(result.message || "Update failed.");
       }
@@ -188,7 +173,6 @@ export default function ManageTransactionsModal({
     startUpdateTransition,
   ]);
 
-  // Helper to format date/time
   const formatDateTime = (dateInput: Date | undefined | null): string => {
     if (!dateInput) return "N/A";
     try {
@@ -200,7 +184,6 @@ export default function ManageTransactionsModal({
     }
   };
 
-  // Helper to get Payment Method Icon
   const getPaymentMethodIcon = (method: PaymentMethod | null | undefined) => {
     switch (method) {
       case PaymentMethod.cash:
@@ -212,11 +195,10 @@ export default function ManageTransactionsModal({
       case PaymentMethod.GIFT_CERTIFICATE:
         return <Gift size={14} className="text-orange-600" />;
       default:
-        return <DollarSign size={14} className="text-gray-500" />; // Unknown or null
+        return <DollarSign size={14} className="text-gray-500" />;
     }
   };
 
-  // Helper to get Status Icon
   const getStatusIcon = (status: Status | undefined): JSX.Element => {
     switch (status) {
       case Status.DONE:
@@ -226,7 +208,7 @@ export default function ManageTransactionsModal({
       case Status.CANCELLED:
         return <X size={14} className="text-red-600" />;
       default:
-        return <Info size={14} className="text-gray-500" />; // Should not happen with Prisma enum
+        return <Info size={14} className="text-gray-500" />;
     }
   };
 
@@ -235,10 +217,10 @@ export default function ManageTransactionsModal({
       isOpen={isOpen}
       onClose={onClose}
       title={<DialogTitle>Manage Transactions</DialogTitle>}
-      size="xl" // Use a larger size for transaction details
+      size="xl"
     >
       <div className="flex h-full max-h-[80vh] flex-col">
-        {/* Content Area */}
+        {}
         <div className="flex-grow overflow-y-auto p-4">
           {isLoading && (
             <div className="flex justify-center py-8">
@@ -253,9 +235,8 @@ export default function ManageTransactionsModal({
           )}
 
           {!isLoading && !error && transactions.length > 0 ? (
-            // Use a flex column layout for mobile, grid for medium and up
             <div className="flex flex-col gap-4 md:grid md:grid-cols-3">
-              {/* Transaction List (Visible on mobile when no transaction is selected) */}
+              {}
               <div
                 className={`max-h-[60vh] overflow-y-auto md:col-span-1 ${selectedTransactionId ? "hidden md:block" : "block"} md:border-r md:border-gray-200 md:pr-4`}
               >
@@ -290,14 +271,14 @@ export default function ManageTransactionsModal({
                 </ul>
               </div>
 
-              {/* Transaction Details/Edit Form (Visible on mobile when a transaction is selected) */}
+              {}
               <div
                 className={`max-h-[60vh] overflow-y-auto md:col-span-2 ${selectedTransactionId ? "block" : "hidden md:block"} md:pl-4`}
               >
                 {selectedTransaction ? (
                   <div>
-                    {/* Back Button for Mobile */}
-                    {selectedTransactionId && ( // Only show button if something is selected
+                    {}
+                    {selectedTransactionId && (
                       <div className="mb-4 border-b border-gray-200 pb-2 md:hidden">
                         <Button
                           size="sm"
@@ -357,7 +338,7 @@ export default function ManageTransactionsModal({
                         </p>
                         <p>{selectedTransaction.voucherUsed?.code || "None"}</p>
                       </div>
-                      {/* Add more static details here */}
+                      {}
                     </div>
 
                     <div className="mt-6">
@@ -396,7 +377,7 @@ export default function ManageTransactionsModal({
                       </ul>
                     </div>
 
-                    {/* Edit Form */}
+                    {}
                     {editingTransaction && (
                       <div className="mt-8 border-t pt-6">
                         <h4 className="mb-4 text-base font-semibold">
@@ -422,9 +403,9 @@ export default function ManageTransactionsModal({
                                   "status",
                                   option ? (option.value as Status) : null,
                                 )
-                              } // Cast value to Status
-                              classNamePrefix="react-select" // For consistent styling
-                              instanceId="status-select" // Help prevent hydration errors
+                              }
+                              classNamePrefix="react-select"
+                              instanceId="status-select"
                             />
                           </div>
                           <div>
@@ -449,13 +430,13 @@ export default function ManageTransactionsModal({
                                     ? (option.value as PaymentMethod | null)
                                     : null,
                                 )
-                              } // Cast value to PaymentMethod | null
-                              isClearable // Allow setting back to null
-                              classNamePrefix="react-select" // For consistent styling
-                              instanceId="payment-method-select" // Help prevent hydration errors
+                              }
+                              isClearable
+                              classNamePrefix="react-select"
+                              instanceId="payment-method-select"
                             />
                           </div>
-                          {/* Add other form fields for editing */}
+                          {}
                         </div>
                         <div className="mt-6 flex justify-end">
                           <Button
@@ -477,8 +458,6 @@ export default function ManageTransactionsModal({
                     )}
                   </div>
                 ) : (
-                  // This placeholder will only be visible on desktop initially
-                  // On mobile, the list is shown if no transaction is selected
                   <div className="hidden py-10 text-center text-gray-500 md:block">
                     <FileText size={40} className="mx-auto mb-3" />
                     Select a transaction from the list to view details.
@@ -487,7 +466,6 @@ export default function ManageTransactionsModal({
               </div>
             </div>
           ) : (
-            // Show message if no transactions found
             !isLoading &&
             !error &&
             transactions.length === 0 && (
@@ -499,7 +477,7 @@ export default function ManageTransactionsModal({
           )}
         </div>
 
-        {/* Footer */}
+        {}
         <div className="flex shrink-0 justify-end border-t border-gray-200 bg-gray-100 p-4">
           <Button onClick={onClose} variant="outline" size="sm">
             Close
@@ -510,7 +488,6 @@ export default function ManageTransactionsModal({
   );
 }
 
-// Helper function for currency formatting (can move to a shared utility)
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||

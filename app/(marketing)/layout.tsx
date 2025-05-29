@@ -3,8 +3,8 @@ import Link from "next/link";
 import Footer from "@/components/Navigations/Footer";
 
 export default function MarketingLayout({
-  children, // This prop receives the content of the regular pages (like app/(marketing)/login/page.tsx)
-  loginModal, // This prop receives the content from the @loginModal parallel route (the intercepted modal)
+  children,
+  loginModal,
 }: {
   children: React.ReactNode;
   loginModal: React.ReactNode;

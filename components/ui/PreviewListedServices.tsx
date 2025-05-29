@@ -5,7 +5,7 @@ import { AvailedServicesProps } from "@/lib/Types";
 type PreviewListedServicesProps = {
   checkedServices: AvailedServicesProps[];
   onOpenModal: () => void;
-  isLoading: boolean; // This prop is used to show the internal loader
+  isLoading: boolean;
   onRefresh: () => void;
 };
 
@@ -18,7 +18,6 @@ export default function PreviewListedServices({
   const checkedCount = checkedServices.length;
 
   if (isLoading) {
-    // This conditional renders the internal loader
     return (
       <div className="flex h-[100px] items-center justify-center rounded-lg border border-customGray/30 bg-customOffWhite p-4 text-sm text-customBlack/70 shadow-sm backdrop-blur-sm">
         <Loader2 className="-ml-1 mr-3 h-5 w-5 animate-spin text-customDarkPink" />

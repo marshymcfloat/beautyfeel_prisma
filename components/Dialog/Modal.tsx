@@ -19,14 +19,14 @@ interface ModalProps {
   children: React.ReactNode;
   isOpen: boolean;
   onClose: () => void;
-  title?: string | React.ReactNode; // Can be a string or a custom component
+  title?: string | React.ReactNode;
   backgroundClassName?: string;
   containerClassName?: string;
   size?: ModalSize;
-  hideDefaultHeader?: boolean; // Completely hide the default header section
-  hideDefaultCloseButton?: boolean; // Hide only the default 'X' button (useful if title is string but want custom close)
-  titleClassName?: string; // Style the container div for the title (default or custom)
-  contentClassName?: string; // Style the container div for the children (e.g., remove padding)
+  hideDefaultHeader?: boolean;
+  hideDefaultCloseButton?: boolean;
+  titleClassName?: string;
+  contentClassName?: string;
 }
 
 const getSizeClass = (size?: ModalSize): string => {
@@ -50,7 +50,7 @@ const getSizeClass = (size?: ModalSize): string => {
     case "full":
       return "max-w-full h-full";
     default:
-      return "max-w-lg"; // Default size
+      return "max-w-lg";
   }
 };
 
@@ -72,7 +72,6 @@ export default function Modal({
   const originalHtmlOverflowRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Ensure modal-root exists in your public/index.html or layout file
     let node = document.getElementById("modal-root");
     if (!node) {
       node = document.createElement("div");
@@ -81,15 +80,12 @@ export default function Modal({
     }
     setPortalNode(node);
 
-    // Cleanup function to remove the node if it was created by this instance
     return () => {
       if (node && node.parentNode && node.getAttribute("created-by-modal")) {
-        // node.parentNode.removeChild(node); // Optional: remove if created dynamically
       }
     };
   }, []);
 
-  // --- Body Scroll Lock Effect (no changes needed) ---
   useEffect(() => {
     const body = document.body;
     const html = document.documentElement;
@@ -108,7 +104,7 @@ export default function Modal({
       originalBodyOverflowRef.current = null;
       originalHtmlOverflowRef.current = null;
     }
-    // Cleanup on unmount
+
     return () => {
       if (originalBodyOverflowRef.current !== null)
         body.style.overflow = originalBodyOverflowRef.current;
@@ -119,7 +115,6 @@ export default function Modal({
     };
   }, [isOpen]);
 
-  // --- Event Handlers (no changes needed) ---
   const handleBackgroundClick = (event: React.MouseEvent<HTMLDivElement>) => {
     if (event.target === event.currentTarget) onClose();
   };
@@ -133,7 +128,7 @@ export default function Modal({
     <div
       className={backgroundClassName}
       onClick={handleBackgroundClick}
-      role="presentation" // Background click handler
+      role="presentation"
     >
       <div
         role="dialog"

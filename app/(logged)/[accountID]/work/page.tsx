@@ -35,19 +35,15 @@ export default function WorkPage() {
   >(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // --- Prevent Body Scroll ---
   useEffect(() => {
-    // When the component mounts, hide the body's scrollbar
     const originalOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    // When the component unmounts, restore the original body overflow style
     return () => {
       document.body.style.overflow = originalOverflow;
     };
-  }, []); // Empty dependency array ensures this runs only on mount and unmount
+  }, []);
 
-  // --- Socket.IO Setup ---
   useEffect(() => {
     if (typeof accountId !== "string" || !accountId) {
       setError("Invalid User ID.");
@@ -90,7 +86,6 @@ export default function WorkPage() {
     };
   }, [accountId]);
 
-  // --- Currency Formatting ---
   const formatCurrency = (value: number | null | undefined): string => {
     if (
       value == null ||
@@ -107,7 +102,6 @@ export default function WorkPage() {
     });
   };
 
-  // --- Socket Event Handlers (Updates) ---
   const handleAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
       if (!updatedAvailedService?.id) return;
@@ -142,7 +136,6 @@ export default function WorkPage() {
     [],
   );
 
-  // --- Socket Event Handlers (Completion) ---
   const handleTransactionCompletion = useCallback(
     (completedTransaction: TransactionProps) => {
       if (!completedTransaction?.id) return;
@@ -156,7 +149,6 @@ export default function WorkPage() {
     [],
   );
 
-  // --- Socket Event Handlers (Errors) ---
   const handleCheckError = useCallback(
     (errorData: { availedServiceId?: string; message?: string }) => {
       if (!errorData?.availedServiceId && !errorData?.message) {
@@ -177,7 +169,6 @@ export default function WorkPage() {
     [],
   );
 
-  // --- Register Socket Listeners ---
   useEffect(() => {
     if (!socket) return;
     socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
@@ -197,7 +188,6 @@ export default function WorkPage() {
     handleCheckError,
   ]);
 
-  // --- Fetch Initial Data ---
   useEffect(() => {
     let isMounted = true;
     async function fetchTransactionsData() {
@@ -246,7 +236,6 @@ export default function WorkPage() {
     };
   }, [accountId]);
 
-  // --- Data Grouping (Serve Now vs. Future) ---
   const { serveNowTransactions, futureTransactions } = useMemo(() => {
     if (!fetchedTransactions)
       return { serveNowTransactions: [], futureTransactions: [] };
@@ -275,7 +264,6 @@ export default function WorkPage() {
     };
   }, [fetchedTransactions]);
 
-  // --- UI Event Handlers ---
   const handleSelectTransaction = (transaction: TransactionProps) => {
     setError(null);
     setSelectedTransaction(transaction);
@@ -285,7 +273,6 @@ export default function WorkPage() {
     setError(null);
   };
 
-  // --- Action: Toggle Service Check ---
   const handleServiceCheckToggle = useCallback(
     (availedService: AvailedServicesProps, wantsToBecomeChecked: boolean) => {
       if (
@@ -312,7 +299,6 @@ export default function WorkPage() {
     [socket, accountId, processingCheckActions],
   );
 
-  // --- Helper: Determine if Checkbox is Disabled ---
   const isCheckboxDisabled = useCallback(
     (service: AvailedServicesProps): boolean => {
       return (
@@ -324,7 +310,6 @@ export default function WorkPage() {
     [accountId, processingCheckActions],
   );
 
-  // --- Render Helper: Transaction Table Section ---
   const renderTransactionTable = (
     transactions: TransactionProps[],
     title: string,
@@ -397,7 +382,6 @@ export default function WorkPage() {
     </div>
   );
 
-  // --- Main Render Logic ---
   const renderContent = () => {
     if (loading)
       return (
@@ -579,14 +563,12 @@ export default function WorkPage() {
       );
     }
 
-    // This div is the scrollable container for the transaction tables
     return (
       <div className="h-full overflow-y-auto">
         {error &&
           !loading &&
           (serveNowTransactions.length > 0 ||
             futureTransactions.length > 0) && (
-            // Ensure this error message is also within the scrollable area if needed, or make it sticky if it should always be visible
             <div className="sticky top-0 z-30 border-b border-red-200 bg-red-100 p-3 text-center text-sm text-red-700 shadow-sm">
               <AlertCircle className="mr-1 inline h-4 w-4" /> {error}
             </div>

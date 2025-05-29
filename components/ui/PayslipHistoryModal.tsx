@@ -1,35 +1,29 @@
-// src/components/ui/PayslipHistoryModal.tsx (Final Version)
 "use client";
 
 import React from "react";
 import { format } from "date-fns";
-// --- UI Components ---
-import Modal from "@/components/Dialog/Modal"; // Adjust path
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
-import Button from "../Buttons/Button"; // Adjust path
+
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+import Button from "../Buttons/Button";
 import {
   Loader2,
   AlertCircle,
   X,
   ReceiptText,
   CalendarRange,
-} from "lucide-react"; // Icons (CheckBadgeIcon might need installation or replacement)
+} from "lucide-react";
 
-// --- Types ---
-import { PayslipData } from "@/lib/Types"; // Adjust path
+import { PayslipData } from "@/lib/Types";
 
-// --- Props ---
 type PayslipHistoryModalProps = {
   isOpen: boolean;
   onClose: () => void;
   isLoading: boolean;
   error: string | null;
   payslips: PayslipData[];
-  // Optional: Handler to view details of a specific historical payslip
-  // onViewHistoricalDetails?: (payslip: PayslipData) => void; // Pass the whole payslip object
 };
 
-// --- Helpers ---
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
@@ -38,7 +32,7 @@ const formatCurrency = (value: number | null | undefined): string => {
     !isFinite(value)
   )
     value = 0;
-  // Assume value is smallest unit
+
   return value.toLocaleString("en-PH", {
     style: "currency",
     currency: "PHP",
@@ -78,21 +72,19 @@ const formatDateRange = (start: Date, end: Date): string => {
   }
 };
 
-// --- Component ---
 export default function PayslipHistoryModal({
   isOpen,
   onClose,
   isLoading,
   error,
   payslips,
-  // onViewHistoricalDetails
 }: PayslipHistoryModalProps) {
   return (
     <Modal
       isOpen={isOpen}
       onClose={onClose}
       title={<DialogTitle>Payslip History</DialogTitle>}
-      containerClassName="relative m-auto max-h-[85vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col" // Allow vertical scroll within modal
+      containerClassName="relative m-auto max-h-[85vh] w-full max-w-xl overflow-hidden rounded-lg bg-customOffWhite shadow-xl flex flex-col"
     >
       <button
         onClick={onClose}
@@ -133,7 +125,7 @@ export default function PayslipHistoryModal({
                       {formatDateRange(p.periodStartDate, p.periodEndDate)}
                     </p>
                     <p className="mt-0.5 flex items-center gap-1.5 text-xs text-gray-500">
-                      {/* Replace CheckBadgeIcon if not available */}
+                      {}
                       <ReceiptText size={14} className="text-green-500" />
                       Released: {formatDate(p.releasedDate)}
                     </p>
@@ -142,8 +134,8 @@ export default function PayslipHistoryModal({
                     <p className="text-base font-semibold text-blue-600">
                       {formatCurrency(p.netPay)}
                     </p>
-                    {/* Optional: Add click handler */}
-                    {/* <Button size="xs" invert onClick={() => onViewHistoricalDetails?.(p)}>Details</Button> */}
+                    {}
+                    {}
                   </div>
                 </div>
               </li>

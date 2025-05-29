@@ -1,11 +1,8 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["driverAdapters"]
   binaryTargets   = ["native", "debian-openssl-1.1.x", "rhel-openssl-1.1.x"]
-  // output          = "../backend/node_modules/.prisma/client"
+  //output          = "../backend/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -23,6 +20,7 @@ enum Role {
   CASHIER
   WORKER
   ATTENDANCE_CHECKER
+  MASSEUSE
 }
 
 enum DiscountType {
@@ -49,28 +47,27 @@ enum PayslipStatus {
 }
 
 enum FollowUpPolicy {
-  NONE // Never recommend follow-up for this service
-  ONCE // Recommend only the first time a customer completes this service
-  EVERY_TIME // Recommend every time a customer completes this service
+  NONE
+  ONCE
+  EVERY_TIME
 }
 
 enum PayslipRequestStatus {
-  PENDING // Initial state after request
-  APPROVED // Admin approved, ready for generation/processing
-  REJECTED // Admin rejected
-  PROCESSED // Payslip generated and likely released (final state)
-  FAILED // Processing failed (optional)
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSED
+  FAILED
 }
 
 enum RecommendedAppointmentStatus {
-  RECOMMENDED // Initially recommended, no action taken
-  SCHEDULED // Customer booked an appointment (maybe link date/time later)
-  ATTENDED // Customer attended a transaction linked to this recommendation
-  CANCELLED // The recommended appointment was cancelled/decline
-  MISSED // The recommended date passed without being scheduled/missed
+  RECOMMENDED
+  SCHEDULED
+  ATTENDED
+  CANCELLED
+  MISSED
 }
 
-// --- NEW ENUM for Expense Categories ---
 enum ExpenseCategory {
   RENT
   UTILITIES
@@ -79,30 +76,23 @@ enum ExpenseCategory {
   MARKETING
   MAINTENANCE
   OTHER
-  // Add other categories as needed
 }
-
-// --- END NEW ENUM ---
-
-// --- Models ---
 
 model PayslipRequest {
   id               String               @id @default(cuid())
-  accountId        String // ID of the employee requesting
-  account          Account              @relation("AccountRequests", fields: [accountId], references: [id], onDelete: Cascade) // Relation to requester
+  accountId        String
+  account          Account              @relation("AccountRequests", fields: [accountId], references: [id], onDelete: Cascade)
   requestTimestamp DateTime             @default(now())
   periodStartDate  DateTime             @db.Date
   periodEndDate    DateTime             @db.Date
-  status           PayslipRequestStatus @default(PENDING) // Use the new enum
-  notes            String? // Optional notes from employee or admin (e.g., rejection reason)
+  status           PayslipRequestStatus @default(PENDING)
+  notes            String?
 
-  // Optional: Track who processed the request
-  processedById      String? // ID of the admin who processed it
-  processedBy        Account?  @relation("AdminManagedRequests", fields: [processedById], references: [id]) // Relation to admin
+  processedById      String?
+  processedBy        Account?  @relation("AdminManagedRequests", fields: [processedById], references: [id])
   processedTimestamp DateTime?
 
-  // Optional: Link to the payslip created after approval
-  relatedPayslipId String?  @unique // Ensure one request links to max one payslip
+  relatedPayslipId String?  @unique
   relatedPayslip   Payslip? @relation(fields: [relatedPayslipId], references: [id])
 
   @@index([accountId, status])
@@ -112,7 +102,7 @@ model PayslipRequest {
 model Payslip {
   id               String        @id @default(uuid())
   accountId        String
-  account          Account       @relation("EmployeePayslips", fields: [accountId], references: [id]) // Renamed relation for clarity
+  account          Account       @relation("EmployeePayslips", fields: [accountId], references: [id])
   periodStartDate  DateTime      @db.Date
   periodEndDate    DateTime      @db.Date
   baseSalary       Int
@@ -124,7 +114,7 @@ model Payslip {
   releasedDate     DateTime?
   generatedAt      DateTime      @default(now())
 
-  payslipRequest PayslipRequest? // Optional link back to the originating request
+  payslipRequest PayslipRequest?
 
   @@unique([accountId, periodStartDate, periodEndDate])
   @@index([accountId])
@@ -193,29 +183,29 @@ model DiscountRule {
 }
 
 model Branch {
-  id          String        @id @default(uuid())
-  title       String        @unique
-  code        String        @unique @db.VarChar(6)
-  totalSales  Int           @default(0) // Consider if this is still needed with aggregation
-  services    Service[]
-  accounts    Account[]
-  // --- NEW RELATIONS ---
+  id         String    @id @default(uuid())
+  title      String    @unique
+  code       String    @unique @db.VarChar(6)
+  totalSales Int       @default(0)
+  services   Service[]
+  accounts   Account[]
+
   manualSales ManualSale[]
   expenses    Expense[]
-  // --- END NEW RELATIONS ---
+
   Transaction Transaction[]
 }
 
 model Attendance {
   id          String   @id @default(uuid())
-  date        DateTime @db.Date // Store only the Date part
-  accountId   String // The employee whose attendance is recorded
+  date        DateTime @db.Date
+  accountId   String
   account     Account  @relation("EmployeeAttendance", fields: [accountId], references: [id])
-  isPresent   Boolean  @default(false) // True if attended, False if absent (or null if not yet marked)
-  notes       String? // Optional notes (e.g., late, reason for absence)
-  checkedById String // Who marked this record
+  isPresent   Boolean  @default(false)
+  notes       String?
+  checkedById String
   checkedBy   Account  @relation("CheckerAttendance", fields: [checkedById], references: [id])
-  checkedAt   DateTime @default(now()) // When this record was created/updated
+  checkedAt   DateTime @default(now())
 
   @@unique([date, accountId])
   @@index([date])
@@ -240,8 +230,8 @@ model Account {
 
   payslips Payslip[] @relation("EmployeePayslips")
 
-  payslipRequests        PayslipRequest[] @relation("AccountRequests") // Requests made BY this user
-  managedPayslipRequests PayslipRequest[] @relation("AdminManagedRequests") // Requests managed BY this user (if admin)
+  payslipRequests        PayslipRequest[] @relation("AccountRequests")
+  managedPayslipRequests PayslipRequest[] @relation("AdminManagedRequests")
 
   manualSales ManualSale[] @relation("RecordedByAccountManualSales")
   expenses    Expense[]    @relation("RecordedByAccountExpenses")
@@ -256,11 +246,11 @@ model Service {
 
   title            String            @unique
   description      String?
-  price            Int               @default(0) // Original price of this single service
+  price            Int               @default(0)
   branchId         String
-  totalSales       Int               @default(0) // Consider if this is still needed with aggregation
+  totalSales       Int               @default(0)
   branch           Branch            @relation(fields: [branchId], references: [id])
-  AvailedService   AvailedService[] // <<< Relation FROM AvailedService remains
+  AvailedService   AvailedService[]
   serviceSets      ServiceSet[]      @relation("ServiceToSet")
   giftCertificates GiftCertificate[] @relation("GCService")
   discountRules    DiscountRule[]    @relation("DiscountedServices")
@@ -272,30 +262,37 @@ model Service {
 
   recommendedAppointments RecommendedAppointment[] @relation("RecommendedServiceType")
 
+  sendPostTreatmentEmail    Boolean @default(false)
+  postTreatmentEmailSubject String?
+  postTreatmentInstructions String? @db.Text
+
   @@index([branchId])
 }
 
 model ServiceSet {
   id    String @id @default(uuid())
   title String @unique
-  price Int // Total price of the set
+  price Int
 
-  services         Service[]         @relation("ServiceToSet") // Services included in this set
-  giftCertificates GiftCertificate[] @relation("GCServiceSet") // GCs that represent this set
-  AvailedService   AvailedService[] // Availed items that came from this set
+  services         Service[]         @relation("ServiceToSet")
+  giftCertificates GiftCertificate[] @relation("GCServiceSet")
+  AvailedService   AvailedService[]
 }
 
 model Customer {
   id              String    @id @default(uuid())
   name            String    @db.VarChar(50)
   email           String?   @unique @db.VarChar(255)
-  totalPaid       Float     @default(0) // Total value paid (e.g., Pesos)
-  nextAppointment DateTime? // Keep this, but logic will update it to the *earliest* RECOMMENDED RecommendedAppointment date
+  totalPaid       Float     @default(0)
+  nextAppointment DateTime?
 
-  recommendedAppointments RecommendedAppointment[] // All recommended appointments for this customer
+  recommendedAppointments RecommendedAppointment[]
 
   transactionHistory        Transaction[]
   purchasedGiftCertificates GiftCertificate[] @relation("PurchasedGiftCertificates")
+
+  receivedGiftCertificates GiftCertificate[] @relation("ReceivedGiftCertificates")
+  GiftCertificate          GiftCertificate[]
 }
 
 model Voucher {
@@ -309,22 +306,22 @@ model Voucher {
 model Transaction {
   id              String           @id @default(uuid())
   createdAt       DateTime         @default(now())
-  bookedFor       DateTime         @default(now()) // This is key for 'later' bookings
+  bookedFor       DateTime         @default(now())
   customerId      String
   customer        Customer         @relation(fields: [customerId], references: [id])
   availedServices AvailedService[]
   voucherId       String?
   voucherUsed     Voucher?         @relation(fields: [voucherId], references: [id])
   discount        Int              @default(0)
-  paymentMethod   PaymentMethod? // Make sure PaymentMethod enum is defined
+  paymentMethod   PaymentMethod?
   grandTotal      Int
   status          Status           @default(PENDING)
-  branchId        String? // If you track branch per transaction (might not be needed if tracked per availed service)
+  branchId        String?
   branch          Branch?          @relation(fields: [branchId], references: [id])
 
-  bookingReminderSentAt DateTime? // Timestamp when the 1-hour reminder was sent
+  bookingReminderSentAt DateTime?
 
-  giftCertificateId   String? // New nullable field for GC ID
+  giftCertificateId   String?
   giftCertificateUsed GiftCertificate? @relation(fields: [giftCertificateId], references: [id])
 
   originatingRecommendations RecommendedAppointment[] @relation("OriginatingTransaction")
@@ -333,7 +330,7 @@ model Transaction {
   @@index([customerId])
   @@index([createdAt])
   @@index([status, bookedFor, bookingReminderSentAt])
-  @@index([branchId]) // Add index if filtering transactions by branch
+  @@index([branchId])
 }
 
 model AvailedService {
@@ -341,30 +338,32 @@ model AvailedService {
   transactionId String
   transaction   Transaction @relation(fields: [transactionId], references: [id])
 
-  serviceId String? // <<< Now always links to a Service (or null if from a set directly?) - adjust if needed
+  serviceId String?
   service   Service? @relation(fields: [serviceId], references: [id])
 
-  quantity        Int @default(1) // Quantity of THIS specific service (usually 1, even in sets)
-  price           Int // Price snapshot for THIS service unit *at time of transaction*.
-  commissionValue Int @default(0) // Pre-calculated commission for serving THIS item
+  quantity        Int @default(1)
+  price           Int
+  commissionValue Int @default(0)
 
-  originatingSetId    String? // ID of the ServiceSet this came from, if any
-  originatingSetTitle String? // Denormalized title of the set for easier display
-  originatingSet      ServiceSet? @relation(fields: [originatingSetId], references: [id]) // Add relation
+  originatingSetId    String?
+  originatingSetTitle String?
+  originatingSet      ServiceSet? @relation(fields: [originatingSetId], references: [id])
 
   checkedById String?
   checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
 
   servedById   String?
   servedBy     Account? @relation("ServedRelation", fields: [servedById], references: [id])
-  serviceSetId String? // This seems redundant with originatingSetId
+  serviceSetId String?
 
   status      Status    @default(PENDING)
-  completedAt DateTime? // Timestamp when status becomes DONE
+  completedAt DateTime?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @default(now()) @updatedAt
 
-  recommendedAppointment RecommendedAppointment? @relation("RecommendedByAvailedService") // The recommendation this service triggered (if any)
+  recommendedAppointment RecommendedAppointment? @relation("RecommendedByAvailedService")
+
+  postTreatmentEmailSentAt DateTime?
 
   @@index([serviceId])
   @@index([transactionId])
@@ -377,7 +376,7 @@ model GiftCertificate {
   id        String    @id @default(uuid())
   code      String    @unique
   issuedAt  DateTime  @default(now())
-  expiresAt DateTime? // Optional expiry date
+  expiresAt DateTime?
 
   purchaserCustomerId String?
   purchaserCustomer   Customer? @relation("PurchasedGiftCertificates", fields: [purchaserCustomerId], references: [id])
@@ -385,31 +384,35 @@ model GiftCertificate {
   recipientName  String?
   recipientEmail String?
 
+  recipientCustomerId String?
+  recipientCustomer   Customer? @relation("ReceivedGiftCertificates", fields: [recipientCustomerId], references: [id])
+
   services    Service[]    @relation("GCService")
-  serviceSets ServiceSet[] @relation("GCServiceSet") // If applicable
+  serviceSets ServiceSet[] @relation("GCServiceSet")
 
   usedAt DateTime?
 
   transactions Transaction[]
+  Customer     Customer?     @relation(fields: [customerId], references: [id])
+  customerId   String?
 
   @@index([purchaserCustomerId])
+  @@index([recipientCustomerId])
 }
-
-// --- NEW MODELS ---
 
 model ManualSale {
   id            String         @id @default(uuid())
-  date          DateTime       @db.Date // Date of the manual sale
-  amount        Int // Amount in smallest unit (e.g., centavos), using Int for currency
-  paymentMethod PaymentMethod? // Use enum or string, allow null/unknown
+  date          DateTime       @db.Date
+  amount        Int
+  paymentMethod PaymentMethod?
   description   String?
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  recordedById String // Account who recorded this
+  recordedById String
   recordedBy   Account @relation("RecordedByAccountManualSales", fields: [recordedById], references: [id])
 
-  branchId String? // Optional: Associate manual sale with a branch
+  branchId String?
   branch   Branch? @relation(fields: [branchId], references: [id])
 
   @@index([date])
@@ -419,17 +422,17 @@ model ManualSale {
 
 model Expense {
   id          String          @id @default(uuid())
-  date        DateTime        @db.Date // Date of the expense
-  amount      Int // Amount in smallest unit (e.g., centavos), using Int for currency
-  category    ExpenseCategory // Enum for category
+  date        DateTime        @db.Date
+  amount      Int
+  category    ExpenseCategory
   description String?
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  recordedById String // Account who recorded this
+  recordedById String
   recordedBy   Account @relation("RecordedByAccountExpenses", fields: [recordedById], references: [id])
 
-  branchId String? // Optional: Associate expense with a branch
+  branchId String?
   branch   Branch? @relation(fields: [branchId], references: [id])
 
   @@index([date])
@@ -438,15 +441,13 @@ model Expense {
   @@index([branchId])
 }
 
-// --- END NEW MODELS ---
-
 model EmailTemplate {
   id           String   @id @default(uuid())
-  name         String   @unique // Unique name for easy identification (e.g., "Welcome Email", "Appointment Reminder")
-  subject      String // Default subject line
-  body         String   @db.Text // Email body, can be HTML. Use @db.Text for longer content.
-  placeholders String[] // List of suggested/available placeholders (e.g., ["{{customerName}}", "{{customerEmail}}"]) - for user guidance
-  isActive     Boolean  @default(true) // To enable/disable templates without deleting
+  name         String   @unique
+  subject      String
+  body         String   @db.Text
+  placeholders String[]
+  isActive     Boolean  @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

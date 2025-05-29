@@ -1,9 +1,9 @@
 "use client";
 
 import React, { useEffect, useCallback } from "react";
-import Button from "../Buttons/Button"; // Adjust path
+import Button from "../Buttons/Button";
 import { Socket } from "socket.io-client";
-import { AvailedServicesProps } from "@/lib/Types"; // Adjust path
+import { AvailedServicesProps } from "@/lib/Types";
 import {
   CheckCircle,
   Circle,
@@ -11,7 +11,7 @@ import {
   Loader2,
   Tag,
   Info,
-  RefreshCcw, // Added RefreshCcw
+  RefreshCcw,
 } from "lucide-react";
 
 interface ExpandedListedServicesProps {
@@ -21,8 +21,8 @@ interface ExpandedListedServicesProps {
   onClose: () => void;
   processingServeActions: Set<string>;
   setProcessingServeActions: React.Dispatch<React.SetStateAction<Set<string>>>;
-  onRefresh: () => void; // Added onRefresh prop
-  isLoading: boolean; // Added isLoading prop (for the refresh button)
+  onRefresh: () => void;
+  isLoading: boolean;
 }
 
 export default function ExpandedListedServices({
@@ -32,8 +32,8 @@ export default function ExpandedListedServices({
   onClose,
   processingServeActions,
   setProcessingServeActions,
-  onRefresh, // Destructure onRefresh
-  isLoading, // Destructure isLoading
+  onRefresh,
+  isLoading,
 }: ExpandedListedServicesProps) {
   useEffect(() => {
     if (!socket) {

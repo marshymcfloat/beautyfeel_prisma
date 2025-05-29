@@ -10,9 +10,9 @@ import React, {
 import {
   getTransactionsAction,
   cancelTransactionAction,
-} from "@/lib/ServerAction"; // Adjust path
-import Button from "@/components/Buttons/Button"; // Adjust path
-import { TransactionListData, ServerActionResponse } from "@/lib/Types"; // Adjust path
+} from "@/lib/ServerAction";
+import Button from "@/components/Buttons/Button";
+import { TransactionListData, ServerActionResponse } from "@/lib/Types";
 import { Status } from "@prisma/client";
 import {
   Eye,
@@ -20,8 +20,8 @@ import {
   SlidersHorizontal,
   RotateCcw as RefreshIcon,
 } from "lucide-react";
-import Modal from "@/components/Dialog/Modal"; // Adjust path
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
 import { format } from "date-fns";
 import {
   getCachedData,
@@ -68,11 +68,11 @@ export default function ManageTransactions() {
         if (cachedData) {
           setTransactions(cachedData);
           setIsLoading(false);
-          // console.log("[Cache] Transactions loaded from cache for filters:", currentFilters);
+
           return;
         }
       }
-      // console.log("[Cache] Fetching transactions for filters:", currentFilters);
+
       try {
         const transactionsRes = await getTransactionsAction({
           startDate: currentFilters.startDate || undefined,
@@ -96,7 +96,7 @@ export default function ManageTransactions() {
         }
       } catch (err: any) {
         setListError(err.message || "Failed to load data.");
-        setTransactions([]); // Clear data on error
+        setTransactions([]);
       } finally {
         setIsLoading(false);
       }
@@ -109,7 +109,6 @@ export default function ManageTransactions() {
   }, [filters, loadData]);
 
   const handleRefresh = () => {
-    // console.log("[Cache] Refreshing transactions data");
     invalidateCache(TRANSACTIONS_CACHE_KEY);
     loadData(filters, true);
   };
@@ -123,8 +122,6 @@ export default function ManageTransactions() {
 
   const handleFilterSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    // Data loading is handled by useEffect on filters change
-    // console.log("Applying filters:", filters);
   };
 
   const resetFilters = () => {
@@ -169,14 +166,13 @@ export default function ManageTransactions() {
       if (res.success) {
         closeModal();
         invalidateCache(TRANSACTIONS_CACHE_KEY);
-        await loadData(filters, true); // Force refresh after invalidation
+        await loadData(filters, true);
       } else {
         setActionError(res.message);
       }
     });
   };
 
-  // --- Formatting Helpers ---
   const formatCurrency = (value: number | null | undefined): string => {
     return (value ?? 0).toLocaleString("en-PH", {
       style: "currency",
@@ -235,7 +231,6 @@ export default function ManageTransactions() {
     return status.charAt(0) + status.slice(1).toLowerCase();
   };
 
-  // --- Styles ---
   const thStyleBase =
     "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
   const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top";
@@ -248,7 +243,7 @@ export default function ManageTransactions() {
 
   return (
     <div className="p-1">
-      {/* Header & Filter Toggle */}
+      {}
       <div className="mb-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Transactions
@@ -270,7 +265,7 @@ export default function ManageTransactions() {
             onClick={() => setShowFilters(!showFilters)}
             size="sm"
             invert
-            className="flex w-full items-center justify-center gap-1.5 sm:hidden" // Keep sm:hidden for mobile toggle
+            className="flex w-full items-center justify-center gap-1.5 sm:hidden"
             aria-controls="transaction-filters"
             aria-expanded={showFilters}
           >
@@ -280,7 +275,7 @@ export default function ManageTransactions() {
         </div>
       </div>
 
-      {/* Filters Form */}
+      {}
       <form
         id="transaction-filters"
         ref={filterFormRef}
@@ -346,17 +341,16 @@ export default function ManageTransactions() {
               className="w-full justify-center !py-1.5"
               title="Reset Filters"
             >
-              <RefreshIcon size={16} />{" "}
-              {/* Changed icon here for variety from main refresh */}
+              <RefreshIcon size={16} /> {}
             </Button>
           </div>
         </div>
       </form>
 
-      {/* Error Display */}
+      {}
       {listError && <p className={errorMsgStyle}>{listError}</p>}
 
-      {/* Loading / No Data Placeholders */}
+      {}
       {isLoading && (
         <p className="py-10 text-center text-customBlack/70">
           Loading transactions...
@@ -368,10 +362,10 @@ export default function ManageTransactions() {
         </p>
       )}
 
-      {/* Data Display Area */}
+      {}
       {!isLoading && !listError && transactions.length > 0 && (
         <div className="rounded border border-customGray/30 bg-white/80 shadow-sm">
-          {/* Desktop Table (hidden on small screens) */}
+          {}
           <div className="hidden sm:block">
             <table className="min-w-full divide-y divide-customGray/30">
               <thead className="bg-customGray/10">
@@ -432,11 +426,11 @@ export default function ManageTransactions() {
             </table>
           </div>
 
-          {/* Mobile List (visible only on small screens) */}
+          {}
           <div className="block divide-y divide-customGray/30 sm:hidden">
             {transactions.map((t) => (
               <div key={t.id} className="flex items-center justify-between p-3">
-                {/* Left side: Info */}
+                {}
                 <div className="flex flex-col text-sm">
                   <span className="font-medium text-customBlack">
                     {t.customer?.name ?? "N/A"}
@@ -448,7 +442,7 @@ export default function ManageTransactions() {
                     {formatCurrency(t.grandTotal)}
                   </span>
                 </div>
-                {/* Right side: Status and Actions */}
+                {}
                 <div className="flex flex-col items-end space-y-1.5">
                   <span
                     className={`flex items-center rounded-full py-0.5 pl-1.5 pr-2 text-xs font-semibold ${getStatusColor(t.status)}`}
@@ -485,7 +479,7 @@ export default function ManageTransactions() {
         </div>
       )}
 
-      {/* Modal */}
+      {}
       <Modal
         isOpen={isModalOpen && selectedTransaction !== null}
         onClose={closeModal}
@@ -495,7 +489,7 @@ export default function ManageTransactions() {
         {selectedTransaction && (
           <div className="space-y-4 text-sm">
             {actionError && <p className={modalErrorStyle}>{actionError}</p>}
-            {/* Basic Info Grid */}
+            {}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded border border-customGray/20 p-3 md:grid-cols-3">
               <div>
                 <span className="font-medium text-customBlack/70">ID:</span>
@@ -546,7 +540,7 @@ export default function ManageTransactions() {
                 </div>
               )}
             </div>
-            {/* Customer Info */}
+            {}
             <div className="rounded border border-customGray/20 p-3">
               <h4 className="mb-1.5 text-xs font-semibold uppercase text-customBlack/70">
                 Customer
@@ -560,7 +554,7 @@ export default function ManageTransactions() {
                 {selectedTransaction.customer?.email ?? "N/A"}
               </p>
             </div>
-            {/* Availed Services Table */}
+            {}
             <div className="overflow-x-auto rounded border border-customGray/20">
               <h4 className="bg-customGray/5 p-2 text-xs font-semibold uppercase text-customBlack/70">
                 Availed Items
@@ -616,13 +610,13 @@ export default function ManageTransactions() {
                 </p>
               )}
             </div>
-            {/* Totals */}
+            {}
             <div className="mt-4 border-t border-customGray/30 pt-3 text-right">
               <p className="text-lg font-semibold text-customBlack">
                 Grand Total: {formatCurrency(selectedTransaction.grandTotal)}
               </p>
             </div>
-            {/* Modal Actions */}
+            {}
             <div className="mt-5 flex flex-col gap-3 border-t border-customGray/30 pt-4 sm:flex-row sm:justify-end sm:space-x-3">
               <Button
                 type="button"

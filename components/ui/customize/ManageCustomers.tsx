@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManageCustomers.tsx
 "use client";
 
 import React, {
@@ -13,9 +12,9 @@ import {
   createCustomerAction,
   updateCustomerAction,
   deleteCustomerAction,
-} from "@/lib/ServerAction"; // Adjust path as necessary - ensure these actions exist
-import { CacheKey, invalidateCache } from "@/lib/cache"; // Adjust path
-import Button from "@/components/Buttons/Button"; // Adjust path
+} from "@/lib/ServerAction";
+import { CacheKey, invalidateCache } from "@/lib/cache";
+import Button from "@/components/Buttons/Button";
 import {
   PlusCircle,
   Edit3,
@@ -23,18 +22,13 @@ import {
   RefreshCw,
   AlertTriangle,
 } from "lucide-react";
-// Note: We don't need the full CustomerType from Prisma here for display/form
-// as we define a specific type based on what the get action returns and what the form needs.
-// import { Customer as CustomerType } from "@prisma/client";
 
-// Import Modal components
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 
-// Adjusted styles to match ManageAccounts.tsx
 const inputStyle = (hasError?: boolean) =>
   `mt-1 block w-full rounded border ${hasError ? "border-red-500" : "border-customGray"} p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed`;
-const labelStyle = "block text-sm font-medium text-customBlack/80"; // Adjusted color
+const labelStyle = "block text-sm font-medium text-customBlack/80";
 const errorMsgStyle =
   "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
 const successMsgStyle =
@@ -42,36 +36,34 @@ const successMsgStyle =
 const fieldErrorStyle = "mt-1 text-xs text-red-600";
 const modalErrorStyle =
   "text-sm text-red-600 mb-3 p-3 bg-red-100 border border-red-300 rounded";
-// const sectionTitleStyle = "text-md font-semibold text-customBlack mb-3 border-b border-customGray/30 pb-2"; // Not used
 
 const CUSTOMERS_CACHE_KEY: CacheKey = "customers_ManageCustomers";
 
-// Type for data fetched from getCustomersAction - match the select fields
 interface CustomerForDisplay {
   id: string;
   name: string;
   email: string | null;
   totalPaid: number;
-  nextAppointment: Date | null; // Fetch this for display
+  nextAppointment: Date | null;
 }
 
 const isValidEmail = (email: string | null | undefined): boolean =>
-  email ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) : true; // Email is optional, so valid if empty/null/undefined
+  email ? /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) : true;
 
 export default function ManageCustomers() {
   const [customers, setCustomers] = useState<CustomerForDisplay[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [formError, setFormError] = useState<string | null>(null); // For modal form errors
+  const [formError, setFormError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<
     Record<string, string[] | undefined>
   >({});
-  const [listError, setListError] = useState<string | null>(null); // For list-level errors
-  const [successMessage, setSuccessMessage] = useState<string | null>(null); // For list-level success
+  const [listError, setListError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalMode, setModalMode] = useState<"add" | "edit">("add");
   const [editingCustomer, setEditingCustomer] =
-    useState<CustomerForDisplay | null>(null); // State for the customer being edited
+    useState<CustomerForDisplay | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const formRef = useRef<HTMLFormElement>(null);
@@ -88,7 +80,6 @@ export default function ManageCustomers() {
       invalidateCache(CUSTOMERS_CACHE_KEY);
     }
     try {
-      // Assuming getCustomersAction handles its own caching and returns the defined interface
       const fetchedCustomers = await getCustomersAction();
       setCustomers(fetchedCustomers);
     } catch (err: any) {
@@ -108,48 +99,40 @@ export default function ManageCustomers() {
 
   const openModal = (mode: "add" | "edit", customer?: CustomerForDisplay) => {
     setModalMode(mode);
-    resetFormState(); // Clear previous errors
+    resetFormState();
     if (mode === "edit" && customer) {
       setEditingCustomer(customer);
     } else {
       setEditingCustomer(null);
     }
     setIsModalOpen(true);
-    // Form values will be set by defaultValue when modal opens due to the key prop on the form
   };
 
   const closeModal = useCallback(() => {
     setIsModalOpen(false);
-    // State reset happens in the useEffect hook after modal closes
   }, []);
 
   useEffect(() => {
-    // This useEffect runs when isModalOpen changes
     if (!isModalOpen) {
-      // Reset states when modal is closed
       setEditingCustomer(null);
       resetFormState();
     } else {
-      // Optional: Focus the first input when modal opens
       setTimeout(() => {
         const nameInput = formRef.current?.elements.namedItem("name");
-        // Check if the element exists and is an HTMLElement that can be focused
+
         if (nameInput instanceof HTMLElement) {
           nameInput.focus();
         }
       }, 0);
     }
-    // Depend on isModalOpen and resetFormState. formRef is stable, so not a dependency unless its identity could change.
   }, [isModalOpen, resetFormState]);
 
-  // Validation using FormData
   const validateForm = (formData: FormData): Record<string, string[]> => {
     const errors: Record<string, string[]> = {};
-    const name = formData.get("name") as string | null; // formData.get can return null
+    const name = formData.get("name") as string | null;
     const email = formData.get("email") as string | null;
 
     if (!name?.trim()) {
-      // Use optional chaining and trim
       errors.name = ["Name is required."];
     }
 
@@ -157,15 +140,12 @@ export default function ManageCustomers() {
       errors.email = ["Please enter a valid email address."];
     }
 
-    // Add more validation as needed
-
-    // setFieldErrors(errors); // Moved setting state outside validateForm
     return errors;
   };
 
   const handleSave = () => {
     if (!formRef.current) {
-      setFormError("Form reference error. Please try again."); // Set modal error
+      setFormError("Form reference error. Please try again.");
       return;
     }
 
@@ -173,18 +153,15 @@ export default function ManageCustomers() {
     const validationErrors = validateForm(formData);
 
     if (Object.keys(validationErrors).length > 0) {
-      setFieldErrors(validationErrors); // Set field errors here after validation
-      setFormError("Please fix the errors in the form."); // Set modal error
+      setFieldErrors(validationErrors);
+      setFormError("Please fix the errors in the form.");
       return;
     }
 
-    // Clear previous messages before attempting save
-    setFormError(null); // Clear modal error
-    setListError(null); // Clear any list error
-    setSuccessMessage(null); // Clear any list success message
+    setFormError(null);
+    setListError(null);
+    setSuccessMessage(null);
 
-    // These lines are kept as requested, even though the action calls below
-    // will now use `formData` directly instead of `dataToSubmit`.
     const name = (formData.get("name") as string | null)?.trim();
     const email = (formData.get("email") as string | null)?.trim();
     const dataToSubmit = { name: name!, email: email === "" ? null : email };
@@ -193,36 +170,32 @@ export default function ManageCustomers() {
       try {
         let response;
         if (modalMode === "add") {
-          // Call createCustomerAction with FormData directly
           response = await createCustomerAction(formData);
         } else {
           if (!editingCustomer?.id)
             throw new Error("Customer ID is missing for update.");
-          // Call updateCustomerAction with id and FormData directly
+
           response = await updateCustomerAction(editingCustomer.id, formData);
         }
 
         if (response.success) {
-          // Set success message for the list, clear modal error
           setSuccessMessage(
             response.message ||
               `Customer ${modalMode === "add" ? "created" : "updated"} successfully!`,
           );
-          setFormError(null); // Clear modal error on success
+          setFormError(null);
           invalidateCache(CUSTOMERS_CACHE_KEY);
-          loadCustomers(); // Refresh list
-          closeModal(); // Close modal on success
+          loadCustomers();
+          closeModal();
         } else {
-          // Set error for the modal, clear list success
-          setFormError(response.message || "An error occurred."); // Set modal error
-          setSuccessMessage(null); // Clear list success
+          setFormError(response.message || "An error occurred.");
+          setSuccessMessage(null);
           if (response.errors)
-            setFieldErrors(response.errors as Record<string, string[]>); // Cast errors if action returns them
+            setFieldErrors(response.errors as Record<string, string[]>);
         }
       } catch (err: any) {
-        // Set error for the modal
         setFormError(err.message || "An unexpected error occurred.");
-        setSuccessMessage(null); // Clear list success
+        setSuccessMessage(null);
       }
     });
   };
@@ -235,29 +208,26 @@ export default function ManageCustomers() {
     ) {
       return;
     }
-    // Clear previous messages before attempting delete
-    setListError(null); // Clear list error
-    setSuccessMessage(null); // Clear list success
-    setFormError(null); // Clear modal error if modal was open
+
+    setListError(null);
+    setSuccessMessage(null);
+    setFormError(null);
 
     startTransition(async () => {
       try {
         const response = await deleteCustomerAction(customerId);
         if (response.success) {
-          // Set success message for the list
           setSuccessMessage(
             response.message || "Customer deleted successfully!",
           );
-          setListError(null); // Clear list error
+          setListError(null);
           invalidateCache(CUSTOMERS_CACHE_KEY);
-          loadCustomers(); // Refresh list
+          loadCustomers();
         } else {
-          // Set error message for the list
           setListError(response.message || "Failed to delete customer.");
           setSuccessMessage(null);
         }
       } catch (err: any) {
-        // Set error message for the list
         setListError(
           err.message || "An unexpected error occurred while deleting.",
         );
@@ -266,25 +236,22 @@ export default function ManageCustomers() {
     });
   };
 
-  // Helper to format currency
   const formatCurrency = (value: number | null | undefined): string => {
-    // Convert minor units (Int in schema) to currency format
-    const amount = (value ?? 0) / 100; // Assuming price/totalPaid is in cents/minor units
+    const amount = (value ?? 0) / 100;
     return amount.toLocaleString("en-PH", {
       style: "currency",
       currency: "PHP",
-      minimumFractionDigits: 2, // Show cents
+      minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     });
   };
 
-  // Helper to format dates
   const formatDate = (date: Date | string | null | undefined): string => {
     if (!date) return "N/A";
     const d = typeof date === "string" ? new Date(date) : date;
-    // Check for Invalid Date object
+
     if (isNaN(d.getTime())) return "Invalid Date";
-    // Format as MM/DD/YYYY
+
     return d.toLocaleDateString("en-US", {
       year: "numeric",
       month: "2-digit",
@@ -293,13 +260,13 @@ export default function ManageCustomers() {
   };
 
   const thStyleBase =
-    "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider"; // Adjusted padding and color
-  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top"; // Adjusted padding, color, added align-top
+    "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
+  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top";
 
   const modalContainerStyle =
-    "relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"; // Adjusted bg and padding
+    "relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl";
 
-  const isSaving = isPending; // Use isSaving alias for clarity
+  const isSaving = isPending;
 
   return (
     <div className="mx-auto max-w-6xl rounded-lg bg-customOffWhite p-4 shadow-md">
@@ -308,10 +275,10 @@ export default function ManageCustomers() {
         <div className="mt-3 flex flex-col gap-2 sm:mt-0 sm:flex-row">
           <Button
             onClick={handleRefresh}
-            disabled={isLoading || isSaving} // Use isSaving
+            disabled={isLoading || isSaving}
             variant="outline"
             size="sm"
-            className="w-full sm:w-auto" // Responsive width
+            className="w-full sm:w-auto"
             icon={
               <RefreshCw
                 size={16}
@@ -324,8 +291,8 @@ export default function ManageCustomers() {
           <Button
             onClick={() => openModal("add")}
             size="sm"
-            disabled={isSaving} // Use isSaving
-            className="w-full sm:w-auto" // Responsive width
+            disabled={isSaving}
+            className="w-full sm:w-auto"
             icon={<PlusCircle size={16} />}
           >
             Add New Customer
@@ -336,11 +303,11 @@ export default function ManageCustomers() {
       {listError && <p className={errorMsgStyle}>{listError}</p>}
       {successMessage && <p className={successMsgStyle}>{successMessage}</p>}
 
-      {isLoading && customers.length === 0 ? ( // Added check for initial load
+      {isLoading && customers.length === 0 ? (
         <p className="py-4 text-center text-customBlack/70">
           Loading customers...
         </p>
-      ) : !listError && customers.length === 0 ? ( // Added check for no list error on empty
+      ) : !listError && customers.length === 0 ? (
         <div className="my-8 rounded-md border border-yellow-400 bg-yellow-50 p-4 text-center">
           <AlertTriangle className="mx-auto mb-2 h-12 w-12 text-yellow-500" />
           <h3 className="text-lg font-medium text-yellow-800">
@@ -353,7 +320,7 @@ export default function ManageCustomers() {
             onClick={() => openModal("add")}
             size="sm"
             className="mt-4"
-            disabled={isSaving} // Use isSaving
+            disabled={isSaving}
           >
             <PlusCircle size={16} className="mr-1" /> Add Customer
           </Button>
@@ -398,19 +365,19 @@ export default function ManageCustomers() {
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => openModal("edit", customer)}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50" // Used indigo like Accounts
+                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
                       title="Edit Customer"
-                      disabled={isSaving} // Use isSaving
+                      disabled={isSaving}
                     >
-                      <Edit3 size={16} /> {/* Changed size to 16 */}
+                      <Edit3 size={16} /> {}
                     </button>
                     <button
                       onClick={() => handleDelete(customer.id, customer.name)}
                       className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
                       title="Delete Customer"
-                      disabled={isSaving} // Use isSaving
+                      disabled={isSaving}
                     >
-                      <Trash2 size={16} /> {/* Changed size to 16 */}
+                      <Trash2 size={16} /> {}
                     </button>
                   </td>
                 </tr>
@@ -433,8 +400,8 @@ export default function ManageCustomers() {
         <form
           key={editingCustomer?.id ?? "new-customer-form"}
           ref={formRef}
-          onSubmit={(e) => e.preventDefault()} // Prevent default browser submit
-          className="space-y-4" // Keep outer spacing
+          onSubmit={(e) => e.preventDefault()}
+          className="space-y-4"
         >
           {formError && <p className={modalErrorStyle}>{formError}</p>}
 
@@ -446,12 +413,12 @@ export default function ManageCustomers() {
               <input
                 type="text"
                 id="name"
-                name="name" // Name is required for FormData
-                defaultValue={editingCustomer?.name ?? ""} // Use defaultValue
-                required // HTML5 validation
-                maxLength={50} // Max length from schema
+                name="name"
+                defaultValue={editingCustomer?.name ?? ""}
+                required
+                maxLength={50}
                 className={inputStyle(!!fieldErrors.name)}
-                disabled={isSaving} // Use isSaving
+                disabled={isSaving}
                 aria-invalid={!!fieldErrors.name}
                 aria-describedby={fieldErrors.name ? "name-error" : undefined}
               />
@@ -469,10 +436,10 @@ export default function ManageCustomers() {
               <input
                 type="email"
                 id="email"
-                name="email" // Name is required for FormData
-                defaultValue={editingCustomer?.email ?? ""} // Use defaultValue
+                name="email"
+                defaultValue={editingCustomer?.email ?? ""}
                 className={inputStyle(!!fieldErrors.email)}
-                disabled={isSaving} // Use isSaving
+                disabled={isSaving}
                 aria-invalid={!!fieldErrors.email}
                 aria-describedby={fieldErrors.email ? "email-error" : undefined}
               />
@@ -489,18 +456,14 @@ export default function ManageCustomers() {
 
           <div className="mt-8 flex justify-end space-x-3 border-t border-customGray/30 pt-4">
             <Button
-              type="button" // Use type="button" to prevent default form submission
+              type="button"
               onClick={closeModal}
-              disabled={isSaving} // Use isSaving
+              disabled={isSaving}
               variant="outline"
             >
               Cancel
             </Button>
-            <Button
-              type="button" // Use type="button"
-              onClick={handleSave} // Call handleSave
-              disabled={isSaving} // Use isSaving
-            >
+            <Button type="button" onClick={handleSave} disabled={isSaving}>
               {isSaving
                 ? `${modalMode === "add" ? "Creating" : "Updating"}...`
                 : `${modalMode === "add" ? "Create Customer" : "Save Changes"}`}

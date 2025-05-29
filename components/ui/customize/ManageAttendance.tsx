@@ -11,13 +11,13 @@ import {
   getEmployeesForAttendanceAction,
   markAttendanceAction,
   getBranchesForSelectAction,
-} from "@/lib/ServerAction"; // Adjust path as needed
+} from "@/lib/ServerAction";
 import {
   EmployeeForAttendance,
   BranchForSelect,
   OptimisticUpdateAttendanceRecord,
-  ServerTodaysAttendance, // Make sure this is defined in Types.ts
-} from "@/lib/Types"; // Adjust path as needed
+  ServerTodaysAttendance,
+} from "@/lib/Types";
 
 const TARGET_TIMEZONE = "Asia/Manila";
 
@@ -169,7 +169,7 @@ export default function ManageAttendance({
           const result = await markAttendanceAction(
             accountId,
             newIsPresentStatus,
-            // For now, pass null for notes. UI can be added later to edit notes.
+
             employees.find((e) => e.id === accountId)?.todaysAttendance
               ?.notes ?? null,
             checkerId,
@@ -189,9 +189,7 @@ export default function ManageAttendance({
                           id: result.updatedAttendance!.id,
                           isPresent: result.updatedAttendance!.isPresent,
                           notes: result.updatedAttendance!.notes,
-                        } as ServerTodaysAttendance, // Cast to ServerTodaysAttendance or a compatible type
-                        // Optionally update salary if it's displayed and returned
-                        // salary: result.updatedSalary !== undefined ? result.updatedSalary : emp.salary,
+                        } as ServerTodaysAttendance,
                       }
                     : emp,
                 ),
@@ -228,7 +226,7 @@ export default function ManageAttendance({
         }
       });
     },
-    [checkerId, loadData, employees], // Added employees to dependency array because we read notes from it
+    [checkerId, loadData, employees],
   );
 
   const todayString = useMemo(() => {

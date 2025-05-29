@@ -18,7 +18,7 @@ import {
 } from "@/lib/ServerAction";
 import { MultiSelectProps, UIDiscountRuleWithServices } from "@/lib/Types";
 import Select, { MultiValue, ActionMeta, GroupBase } from "react-select";
-import { Power, Trash2, Plus, RotateCcw as RefreshIcon } from "lucide-react"; // Added RefreshIcon
+import { Power, Trash2, Plus, RotateCcw as RefreshIcon } from "lucide-react";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 
@@ -29,7 +29,6 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-// --- Cache Keys ---
 const DISCOUNT_SERVICES_CACHE_KEY: CacheKey = "services_ManageDiscounts";
 const DISCOUNT_RULES_CACHE_KEY: CacheKey = "discountRules_ManageDiscounts";
 
@@ -287,8 +286,8 @@ export default function ManageDiscounts() {
             result.message || "Discount rule created successfully!",
           );
           closeModal();
-          invalidateCache(DISCOUNT_RULES_CACHE_KEY); // Invalidate rules list
-          await loadDiscountRules(true); // Refresh list
+          invalidateCache(DISCOUNT_RULES_CACHE_KEY);
+          await loadDiscountRules(true);
           setTimeout(() => setSuccessMessage(null), 4000);
         } else {
           setFormError(

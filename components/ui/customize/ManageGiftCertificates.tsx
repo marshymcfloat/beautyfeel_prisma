@@ -21,7 +21,7 @@ import type {
 } from "@prisma/client";
 import Button from "@/components/Buttons/Button";
 import Select, { MultiValue, ActionMeta, SingleValue } from "react-select";
-import { RefreshCw, RotateCcw as RefreshIcon } from "lucide-react"; // Added RefreshIcon
+import { RefreshCw, RotateCcw as RefreshIcon } from "lucide-react";
 
 import CustomerInput from "@/components/Inputs/CustomerInput";
 import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types";
@@ -33,18 +33,15 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-// --- Cache Keys ---
 const GC_BRANCHES_CACHE_KEY: CacheKey = "branches_ManageGiftCertificates";
 const GC_ITEMS_CACHE_KEY: CacheKey = "items_ManageGiftCertificates";
 const GC_ACTIVE_LIST_CACHE_KEY: CacheKey = "activeGCs_ManageGiftCertificates";
 
-// --- Types ---
 type ServiceTypeFilter = "service" | "set";
 type SelectOption = { value: string; label: string; type?: ServiceTypeFilter };
 type ActiveGiftCertificate = PrismaGC;
 type BranchOption = { value: string; label: string };
 
-// --- Helper Function ---
 function generateRandomCode(length: number = 5): string {
   const characters = "ABCDEFGHIJKLMNPQRSTUVWXYZ123456789";
   let result = "";
@@ -55,7 +52,6 @@ function generateRandomCode(length: number = 5): string {
   return result;
 }
 
-// --- Reusable MultiSelect Component ---
 interface MultiSelectPropsGC {
   name: string;
   options: SelectOption[];
@@ -128,7 +124,6 @@ const ServiceMultiSelectGC: React.FC<MultiSelectPropsGC> = ({
   );
 };
 
-// --- Main Component ---
 export default function ManageGiftCertificates() {
   const [serviceType, setServiceType] = useState<ServiceTypeFilter>("service");
   const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
@@ -202,15 +197,12 @@ export default function ManageGiftCertificates() {
         if (cached) {
           setAvailableItems(cached);
           setIsLoadingItems(false);
-          // Note: Do not clear selectedServicesOrSets here if loading from cache
-          // unless the intention is to always reset selection on filter change.
-          // Current behavior: if filter changes, loadItems is called, clears selection,
-          // then if data is cached, it uses cached items.
+
           return;
         }
       }
-      setAvailableItems([]); // Clear previous items if fetching new
-      setSelectedServicesOrSets([]); // Clear selection when filters change AND fetching new
+      setAvailableItems([]);
+      setSelectedServicesOrSets([]);
       try {
         const itemsData = await getServicesAndSetsForGC(
           serviceType,
@@ -259,7 +251,7 @@ export default function ManageGiftCertificates() {
           "Failed to load active gift certificates.",
         ],
       }));
-      setActiveGCs([]); // Clear on error
+      setActiveGCs([]);
     } finally {
       setIsLoadingGCs(false);
     }
@@ -281,7 +273,7 @@ export default function ManageGiftCertificates() {
       GC_ACTIVE_LIST_CACHE_KEY,
     ]);
     loadBranches(true);
-    loadItems(true); // This will use current filters
+    loadItems(true);
     loadActiveGCs(true);
   };
 
@@ -341,8 +333,7 @@ export default function ManageGiftCertificates() {
       code: codeValue.toUpperCase(),
       itemIds: itemIds,
       itemType: serviceType,
-      purchaserCustomerId: selectedCustomer?.id || null, // <--- ADD THIS LINE
-      recipientCustomerId: selectedCustomer?.id || null, // This might be redundant based on your schema/server logic, but keep it for now if type expects it
+      purchaserCustomerId: selectedCustomer?.id || null,
       recipientName: selectedCustomer?.name || null,
       recipientEmail: recipientEmail || null,
       expiresAt: expiresValue || null,
@@ -360,7 +351,6 @@ export default function ManageGiftCertificates() {
         setRecipientEmail("");
         if (codeInputRef.current) codeInputRef.current.value = "";
 
-        // Reset filters to defaults (might trigger loadItems via useEffect if values change)
         const defaultServiceType = "service";
         const defaultBranchId = "all";
         let filtersChanged = false;
@@ -373,13 +363,11 @@ export default function ManageGiftCertificates() {
           filtersChanged = true;
         }
 
-        invalidateCache([GC_ACTIVE_LIST_CACHE_KEY, GC_ITEMS_CACHE_KEY]); // Invalidate GCs and potentially items
-        await loadActiveGCs(true); // Force reload GCs
+        invalidateCache([GC_ACTIVE_LIST_CACHE_KEY, GC_ITEMS_CACHE_KEY]);
+        await loadActiveGCs(true);
         if (!filtersChanged) {
-          // If filters didn't change, items cache for current filters is still valid but might need refresh from server if data for those filters changed
-          await loadItems(true); // So explicitly reload items if filters didn't change
+          await loadItems(true);
         }
-        // If filters *did* change, useEffect for loadItems will trigger with new filters
 
         setTimeout(() => setSuccessMessage(null), 5000);
       } else {
@@ -429,7 +417,7 @@ export default function ManageGiftCertificates() {
         </Button>
       </div>
 
-      {/* --- Create GC Form Section --- */}
+      {}
       <div className={formSectionStyle}>
         <h2 className="mb-4 text-lg font-semibold text-customBlack">
           Create Gift Certificate

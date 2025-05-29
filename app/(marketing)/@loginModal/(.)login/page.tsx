@@ -1,4 +1,3 @@
-// app/@authModal/(.)login/page.tsx
 "use client";
 
 import { X, Loader2 } from "lucide-react";
@@ -9,7 +8,7 @@ import {
   FormEvent,
   useEffect,
 } from "react";
-import Button from "@/components/Buttons/Button"; // Ensure this path is correct
+import Button from "@/components/Buttons/Button";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 
@@ -17,8 +16,7 @@ export default function InterceptedLoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  // State for callbackUrl initialized in useEffect to ensure searchParams is ready
-  const [callbackUrl, setCallbackUrl] = useState("/"); // Default callback URL
+  const [callbackUrl, setCallbackUrl] = useState("/");
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [inputs, setInputs] = useState({
@@ -27,13 +25,11 @@ export default function InterceptedLoginPage() {
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // useEffect to safely access searchParams once the component has mounted
   useEffect(() => {
     const cbUrlFromParams = searchParams?.get("callbackUrl");
     if (cbUrlFromParams) {
       setCallbackUrl(cbUrlFromParams);
     }
-    // If no callbackUrl in params, it will stick to the default "/"
   }, [searchParams]);
 
   const handleInputChange = useCallback(
@@ -42,29 +38,27 @@ export default function InterceptedLoginPage() {
         ...prev,
         [identifier]: e.target.value,
       }));
-      // Clear error message when user starts typing again
+
       if (errorMessage) {
         setErrorMessage(null);
       }
     },
-    [errorMessage], // Dependency array for useCallback
+    [errorMessage],
   );
 
   const handleLoginSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault(); // Prevent default form submission
+      event.preventDefault();
 
       setIsSubmitting(true);
-      setErrorMessage(null); // Clear previous errors
+      setErrorMessage(null);
 
-      // Basic validation
       if (inputs.username.trim() === "" || inputs.password.trim() === "") {
         setErrorMessage("Username and password are required.");
         setIsSubmitting(false);
         return;
       }
 
-      // No need for signInSuccessful flag if we always navigate or show error
       try {
         console.log(
           `[LOGIN_MODAL] Attempting sign in. Target callback for initial navigation: ${callbackUrl}`,
@@ -72,7 +66,7 @@ export default function InterceptedLoginPage() {
         const result = await signIn("credentials", {
           username: inputs.username,
           password: inputs.password,
-          redirect: false, // IMPORTANT: Handle redirect manually
+          redirect: false,
         });
 
         console.log("[LOGIN_MODAL] signIn result:", result);
@@ -81,51 +75,38 @@ export default function InterceptedLoginPage() {
           console.log(
             `[LOGIN_MODAL] Sign-in successful. Navigating via window.location.href to: ${callbackUrl}. Middleware will handle final destination.`,
           );
-          // CRITICAL CHANGE: Use window.location.href for a "fuller" navigation
-          // that helps clear the intercepted route's modal state when middleware redirects.
-          // Ensure callbackUrl is a relative path like "/" or "/dashboard" or an absolute path for your domain.
-          // If callbackUrl might be an external URL, you'd need more careful handling.
-          // For internal app navigation, this is generally fine.
+
           window.location.href = callbackUrl;
 
-          // Since we are navigating away with window.location.href,
-          // the component will unmount. No need to explicitly setIsSubmitting(false).
-          // The 'return' here is mostly for logical flow, as window.location.href will take over.
           return;
         } else {
-          // Handle NextAuth errors (e.g., invalid credentials)
           console.error("[LOGIN_MODAL] Login failed:", result?.error);
           if (result?.error === "CredentialsSignin") {
             setErrorMessage("Invalid username or password.");
           } else {
-            // Use the error message from NextAuth or a generic one
             setErrorMessage(result?.error || "Login failed. Please try again.");
           }
         }
       } catch (error) {
-        // Handle unexpected errors during the signIn process (e.g., network issues)
         console.error("[LOGIN_MODAL] Unexpected error during sign in:", error);
         setErrorMessage(
           "An unexpected error occurred. Please check your connection and try again.",
         );
       }
-      // This will only be reached if signIn was not successful or an error occurred.
+
       setIsSubmitting(false);
     },
-    [inputs, callbackUrl], // router is not strictly needed here anymore if using window.location.href
-    // but keeping it doesn't harm if other parts of the component might use it.
-    // If only for router.back(), it's fine.
+    [inputs, callbackUrl],
   );
 
   const closeModal = () => {
-    router.back(); // Standard way to close an intercepted route modal by user action
+    router.back();
   };
 
   return (
-    // Modal backdrop and container
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
       <dialog
-        open // Use `open` attribute for dialog accessibility
+        open
         className="relative w-[95%] max-w-md rounded-xl border border-gray-200 bg-white p-6 shadow-2xl sm:p-8"
         aria-labelledby="login-dialog-title"
         aria-modal="true"
@@ -133,7 +114,7 @@ export default function InterceptedLoginPage() {
         {/* Close button */}
         <button
           type="button"
-          onClick={closeModal} // Use the closeModal function
+          onClick={closeModal}
           className="absolute right-3 top-3 rounded-full p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
           aria-label="Close login dialog"
         >

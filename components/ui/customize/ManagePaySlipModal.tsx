@@ -1,4 +1,3 @@
-// src/components/ui/customize/ManagePaySlipModal.tsx
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -6,10 +5,9 @@ import { format, isValid, startOfMonth } from "date-fns";
 import { DayPicker } from "react-day-picker";
 import "react-day-picker/dist/style.css";
 
-// --- UI Components ---
-import Modal from "@/components/Dialog/Modal"; // Adjust path
-import DialogTitle from "@/components/Dialog/DialogTitle"; // Adjust path
-import Button from "@/components/Buttons/Button"; // Adjust path
+import Modal from "@/components/Dialog/Modal";
+import DialogTitle from "@/components/Dialog/DialogTitle";
+import Button from "@/components/Buttons/Button";
 import {
   Loader2,
   AlertCircle,
@@ -19,38 +17,33 @@ import {
   Tag,
   PhilippinePeso,
   CalendarDays,
-  // Clock, // Clock icon might not be used anymore
-  // Info, // Info icon might not be used anymore
-  Receipt, // Icons
+  Receipt,
 } from "lucide-react";
 
-// --- Types ---
 import {
   PayslipData,
   ReleaseSalaryHandler,
-  AttendanceRecord, // Import needed types
+  AttendanceRecord,
   SalaryBreakdownItem,
-  SALARY_COMMISSION_RATE, // Assuming this is defined correctly
-  AccountData, // Assuming this is defined correctly
-} from "@/lib/Types"; // Adjust path
+  SALARY_COMMISSION_RATE,
+  AccountData,
+} from "@/lib/Types";
 import { PayslipStatus } from "@prisma/client";
 
-// --- Props ---
 type ManagePayslipModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  payslipData: PayslipData; // The core payslip data
+  payslipData: PayslipData;
   onReleaseSalary: ReleaseSalaryHandler;
-  isReleasing: boolean; // Loading state specifically for the release action
-  releaseError: string | null; // Error from the release action
-  // --- Added Props for Historical Data Display ---
+  isReleasing: boolean;
+  releaseError: string | null;
+
   attendanceRecords: AttendanceRecord[];
   breakdownItems: SalaryBreakdownItem[];
-  isModalDataLoading: boolean; // Loading state for attendance/breakdown
-  modalDataError: string | null; // Error fetching attendance/breakdown
+  isModalDataLoading: boolean;
+  modalDataError: string | null;
 };
 
-// --- Helper Functions ---
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
@@ -66,12 +59,12 @@ const formatCurrency = (value: number | null | undefined): string => {
     maximumFractionDigits: 2,
   });
 };
-// Updated formatDate to handle invalid dates more robustly
+
 const formatDate = (date: Date | string | null | undefined): string => {
   if (!date) return "N/A";
   try {
     const d = new Date(date);
-    // Check if the constructed date is valid
+
     if (!isValid(d)) {
       console.warn("Invalid date passed to formatDate:", date);
       return "Invalid Date";
@@ -123,26 +116,22 @@ const formatDateRange = (start: Date, end: Date): string => {
   }
 };
 
-// Calendar Styles
 const modifierStyles = {
   present: {
-    backgroundColor: "#A7F3D0", // green-200
-    color: "#065F46", // green-800
+    backgroundColor: "#A7F3D0",
+    color: "#065F46",
     fontWeight: "bold",
     borderRadius: "50%",
   },
   absent: {
-    backgroundColor: "#FECACA", // red-200
-    color: "#991B1B", // red-800
+    backgroundColor: "#FECACA",
+    color: "#991B1B",
     textDecoration: "line-through",
     opacity: 0.8,
     borderRadius: "50%",
   },
-  // 'today' modifier is less critical in historical view, but can be kept
-  // today: { fontWeight: 'bold', border: '1px solid currentColor' },
 };
 
-// --- Component ---
 export default function ManagePayslipModal({
   isOpen,
   onClose,
@@ -150,13 +139,12 @@ export default function ManagePayslipModal({
   onReleaseSalary,
   isReleasing,
   releaseError,
-  // --- Destructure new props ---
+
   attendanceRecords,
   breakdownItems,
   isModalDataLoading,
   modalDataError,
 }: ManagePayslipModalProps) {
-  // --- State for Calendar Month ---
   const [currentMonth, setCurrentMonth] = useState<Date>(() => {
     const endDate =
       payslipData.periodEndDate instanceof Date &&
@@ -171,7 +159,6 @@ export default function ManagePayslipModal({
     return startOfMonth(endDate || startDate || new Date());
   });
 
-  // Reset month when the payslip data changes
   useEffect(() => {
     const endDate =
       payslipData.periodEndDate instanceof Date &&
@@ -319,7 +306,7 @@ export default function ManagePayslipModal({
                     }}
                     modifiersStyles={modifierStyles}
                     className="text-sm [&_button:focus]:ring-1 [&_button:focus]:ring-offset-1 [&_button]:rounded-full [&_button]:border-0"
-                    captionLayout="dropdown" // Corrected: Use "dropdown"
+                    captionLayout="dropdown"
                     fromYear={periodStartDate.getFullYear()}
                     toYear={periodEndDate.getFullYear()}
                   />

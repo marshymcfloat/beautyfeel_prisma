@@ -1,10 +1,6 @@
-// src/app/api/branches/route.ts
 import { NextResponse } from "next/server";
-import { withAccelerate } from "@prisma/extension-accelerate";
-import { PrismaClient } from "@prisma/client";
+import prisma from "@/lib/prisma";
 
-const prisma = new PrismaClient().$extends(withAccelerate());
-// GET /api/branches - Fetch all branches
 export async function GET() {
   try {
     const branches = await prisma.branch.findMany({

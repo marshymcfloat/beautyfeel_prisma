@@ -4,9 +4,8 @@ import { MinusCircle, PlusCircle, XCircle } from "lucide-react";
 import { cashierActions } from "@/lib/Slices/CashierSlice";
 import { AvailedItem } from "@/lib/Types";
 
-// SelectedItemProps type is now AvailedItem + the disabled prop
 type SelectedItemProps = AvailedItem & {
-  disabled?: boolean; // Define the disabled prop
+  disabled?: boolean;
 };
 
 export default function SelectedItem({
@@ -16,12 +15,11 @@ export default function SelectedItem({
   originalPrice,
   discountApplied,
   type,
-  disabled, // Accept the disabled prop
+  disabled,
 }: SelectedItemProps) {
   const dispatch = useDispatch();
 
   const handleRemove = () => {
-    // Prevent action if disabled
     if (!disabled) {
       dispatch(
         cashierActions.selectItem({
@@ -35,7 +33,6 @@ export default function SelectedItem({
   };
 
   const handleQuantity = (identifier: "inc" | "dec") => {
-    // Prevent action if disabled
     if (!disabled) {
       if (type === "set") {
         console.warn("Cannot change quantity of a Service Set item.");
@@ -45,14 +42,12 @@ export default function SelectedItem({
     }
   };
 
-  // Calculate display price per unit after item-level discount
   const discountedPricePerUnit =
     quantity > 0
       ? (originalPrice * quantity - discountApplied) / quantity
       : originalPrice;
 
   return (
-    // Added disabled opacity style to the container div
     <div
       className={`mb-2 flex items-center justify-between rounded-md border border-gray-200 bg-gray-50 p-2 text-sm shadow-sm ${disabled ? "opacity-60" : ""}`}
     >
@@ -80,8 +75,7 @@ export default function SelectedItem({
           <>
             <button
               onClick={() => handleQuantity("dec")}
-              // Disable if quantity is 1 or less OR if the component is disabled
-              disabled={quantity <= 1 || disabled} // Apply the disabled prop here
+              disabled={quantity <= 1 || disabled}
               className="rounded-full p-1 text-red-600 hover:bg-red-100 disabled:cursor-not-allowed disabled:text-gray-400"
               aria-label="Decrease quantity"
             >
@@ -90,8 +84,7 @@ export default function SelectedItem({
             <span className="px-1 font-medium">{quantity}</span>
             <button
               onClick={() => handleQuantity("inc")}
-              // Disable if the component is disabled
-              disabled={disabled} // Apply the disabled prop here
+              disabled={disabled}
               className="rounded-full p-1 text-green-600 hover:bg-green-100 disabled:cursor-not-allowed disabled:text-gray-400"
               aria-label="Increase quantity"
             >
@@ -101,8 +94,7 @@ export default function SelectedItem({
         )}
         <button
           onClick={handleRemove}
-          // Disable if the component is disabled
-          disabled={disabled} // Apply the disabled prop here
+          disabled={disabled}
           className="ml-2 rounded-full p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-700 disabled:cursor-not-allowed disabled:text-gray-400"
           aria-label="Remove item"
         >

@@ -3,11 +3,10 @@
 import React from "react";
 
 interface CalendarComponentProps {
-  className?: string; // Accept className prop
+  className?: string;
 }
 
 const CalendarComponent: React.FC<CalendarComponentProps> = ({ className }) => {
-  // Destructure className prop
   const today = new Date();
 
   const phtOptionsDate: Intl.DateTimeFormatOptions = {
@@ -24,13 +23,12 @@ const CalendarComponent: React.FC<CalendarComponentProps> = ({ className }) => {
     .format(today)
     .toUpperCase();
 
-  // Merge the passed className
   const calendarClasses = `
     flex aspect-[4/3] w-full flex-col items-center justify-center
     rounded-lg border border-customGray/30 bg-customOffWhite/70 p-3 text-center
     shadow-custom transition-all duration-150 ease-in-out hover:border-customGray/50 hover:shadow-md active:scale-95
     sm:aspect-square sm:p-4 md:max-w-none
-    ${className || ""} // Merge the passed className
+    ${className || ""} 
   `;
 
   return (
@@ -39,7 +37,7 @@ const CalendarComponent: React.FC<CalendarComponentProps> = ({ className }) => {
         {month}
       </p>
       <p className="text-4xl font-bold text-customBlack sm:text-4xl">{day}</p>
-      {/* Placeholder for bottom spacing */}
+      {}
       <div className="h-[10px] sm:h-[12px]"></div>
     </div>
   );

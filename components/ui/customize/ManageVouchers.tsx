@@ -53,15 +53,15 @@ export default function ManageVouchers() {
       if (cachedData) {
         setVouchers(cachedData);
         setIsLoading(false);
-        // console.log("[Cache] Vouchers loaded from cache");
+
         return;
       }
     }
-    // console.log("[Cache] Fetching vouchers");
+
     try {
       const fetched = await getAllVouchers();
       setVouchers(fetched);
-      setCachedData(VOUCHERS_CACHE_KEY, fetched); // No params needed for this cache
+      setCachedData(VOUCHERS_CACHE_KEY, fetched);
     } catch (err: any) {
       setListError(err.message || "Failed load.");
       setVouchers([]);
@@ -75,7 +75,6 @@ export default function ManageVouchers() {
   }, [loadData]);
 
   const handleRefresh = () => {
-    // console.log("[Cache] Refreshing vouchers data");
     invalidateCache(VOUCHERS_CACHE_KEY);
     loadData(true);
   };
@@ -100,7 +99,7 @@ export default function ManageVouchers() {
       if (!res.success) setListError(res.message);
       else {
         invalidateCache(VOUCHERS_CACHE_KEY);
-        await loadData(true); // force refresh
+        await loadData(true);
       }
     });
   };
@@ -122,7 +121,7 @@ export default function ManageVouchers() {
           setIsModalOpen(false);
           setEditingVoucher(null);
           invalidateCache(VOUCHERS_CACHE_KEY);
-          await loadData(true); // force refresh
+          await loadData(true);
         } else {
           let msg = res.message;
           if (res.errors) msg += ` (${Object.values(res.errors).join(", ")})`;
@@ -136,10 +135,9 @@ export default function ManageVouchers() {
   const closeModal = () => setIsModalOpen(false);
   const isSaving = isPending;
 
-  // --- Styles & Helpers ---
   const thStyleBase =
     "px-4 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top"; // Use align-top
+  const tdStyleBase = "px-4 py-2 text-sm text-customBlack/90 align-top";
   const inputStyle =
     "mt-1 block w-full rounded border border-customGray p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed";
   const labelStyle = "block text-sm font-medium text-customBlack/80";
@@ -151,7 +149,7 @@ export default function ManageVouchers() {
 
   return (
     <div className="p-1">
-      {/* Header */}
+      {}
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-lg font-semibold text-customBlack">
           Manage Vouchers
@@ -184,7 +182,7 @@ export default function ManageVouchers() {
         <p className={errorMsgStyle}>{listError}</p>
       )}
 
-      {/* Table */}
+      {}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading ? (
           <p className="py-10 text-center text-customBlack/70">Loading...</p>
@@ -194,15 +192,15 @@ export default function ManageVouchers() {
           <table className="min-w-full divide-y divide-customGray/30">
             <thead className="bg-customGray/10">
               <tr>
-                {/* Code: Always Visible */}
+                {}
                 <th className={thStyleBase}>Code</th>
-                {/* Value: Always Visible */}
+                {}
                 <th className={thStyleBase}>Value</th>
-                {/* Status: Hidden on xs, visible sm+ */}
+                {}
                 <th className={`${thStyleBase} hidden sm:table-cell`}>
                   Status
                 </th>
-                {/* Actions: Always Visible */}
+                {}
                 <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
@@ -212,17 +210,17 @@ export default function ManageVouchers() {
                   key={v.id}
                   className={`hover:bg-customLightBlue/10 ${v.usedAt ? "opacity-60" : ""}`}
                 >
-                  {/* Code: Always visible, no wrap, mono */}
+                  {}
                   <td
                     className={`${tdStyleBase} whitespace-nowrap font-mono uppercase`}
                   >
                     {v.code}
                   </td>
-                  {/* Value: Always visible, no wrap */}
+                  {}
                   <td className={`${tdStyleBase} whitespace-nowrap`}>
                     {v.value}
                   </td>
-                  {/* Status: Hidden on xs */}
+                  {}
                   <td className={`${tdStyleBase} hidden sm:table-cell`}>
                     {v.usedAt ? (
                       <span
@@ -239,7 +237,7 @@ export default function ManageVouchers() {
                       </span>
                     )}
                   </td>
-                  {/* Actions: Always visible, no wrap, right aligned */}
+                  {}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button
                       onClick={() => handleEdit(v)}
@@ -267,7 +265,7 @@ export default function ManageVouchers() {
         )}
       </div>
 
-      {/* Modal */}
+      {}
       <Modal
         isOpen={isModalOpen}
         onClose={closeModal}

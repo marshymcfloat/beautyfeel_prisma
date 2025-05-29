@@ -10,7 +10,7 @@ import Button from "@/components/Buttons/Button";
 
 interface UserServedTodayWidgetProps {
   loggedInUserId: string | undefined;
-  className?: string; // Accept className prop
+  className?: string;
 }
 
 const formatCompletedAtToPHT = (
@@ -36,7 +36,7 @@ const formatCompletedAtToPHT = (
 
 export default function UserServedTodayWidget({
   loggedInUserId,
-  className, // Destructure className prop
+  className,
 }: UserServedTodayWidgetProps) {
   const [servedServices, setServedServices] = useState<AvailedServicesProps[]>(
     [],
@@ -75,10 +75,8 @@ export default function UserServedTodayWidget({
 
   const servicesCount = servedServices.length;
 
-  // If loggedInUserId is null/undefined and not loading, render nothing or a placeholder
   if (!loggedInUserId && !isLoading) return null;
 
-  // Apply classes and merge className
   const widgetClasses = `
     flex aspect-[4/3] w-full flex-col items-center justify-center
     rounded-lg border border-customGray/30 bg-customOffWhite/70 p-3 text-center
@@ -86,7 +84,7 @@ export default function UserServedTodayWidget({
     sm:aspect-square sm:p-4 md:max-w-none
     ${servicesCount > 0 && !isLoading && !error ? "cursor-pointer hover:border-customGray/50 hover:shadow-md active:scale-95" : ""}
     ${isLoading ? "animate-pulse opacity-60 cursor-wait" : ""}
-    ${className || ""} // Merge the passed className
+    ${className || ""} 
   `;
 
   return (

@@ -1,6 +1,5 @@
-// components/ui/Spinner.tsx
 import React from "react";
-import clsx from "clsx"; // Assuming you have clsx installed
+import clsx from "clsx";
 
 interface SpinnerProps {
   /**
@@ -30,14 +29,13 @@ interface SpinnerProps {
 }
 
 export default function Spinner({
-  size = "size-8", // Default spinner size
-  height = "h-auto", // Default container height
+  size = "size-8",
+  height = "h-auto",
   text,
   className,
-  textColor = "text-gray-600", // Default text color
+  textColor = "text-gray-600",
 }: SpinnerProps) {
   return (
-    // Outer container: handles height, centering, and general classNames
     <div
       className={clsx(
         "flex flex-col items-center justify-center",
@@ -45,14 +43,14 @@ export default function Spinner({
         className,
       )}
     >
-      {/* Inner spinner element: handles size and spinner animation/colors */}
+      {}
       <div
         className={clsx(
           "animate-spin rounded-full border-4 border-t-4 border-customDarkPink border-t-white",
           size,
         )}
       ></div>
-      {/* Optional text below the spinner */}
+      {}
       {text && (
         <p className={clsx("mt-2 text-sm font-medium", textColor)}>{text}</p>
       )}

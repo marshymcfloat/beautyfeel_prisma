@@ -1,8 +1,8 @@
-"use client"; // This makes this component a Client Component
+"use client";
 
 import React, { useState, useEffect, ChangeEvent, useRef } from "react";
 import debounce from "lodash.debounce";
-import { Loader2 } from "lucide-react"; // Import Loader2 icon
+import { Loader2 } from "lucide-react";
 
 interface Customer {
   id: string;
@@ -12,7 +12,7 @@ interface Customer {
 
 interface AttendedFollowUp {
   id: string;
-  attendedDate: string; // Formatted date string from the API
+  attendedDate: string;
   originatingServiceTitle: string;
 }
 
@@ -78,21 +78,17 @@ const CustomerHistoryWidget: React.FC = () => {
     if (query.length < 2) {
       setSearchResults([]);
       setSearchError(null);
-      // Do not clear selectedCustomer and its history if the user is just clearing the search
-      // Only clear them if a new search is initiated or explicitly cleared
-      // However, if search query is cleared, it's reasonable to hide the dropdown.
-      // If selectedCustomer exists, its details remain visible.
+
       setIsLoadingSearch(false);
       debouncedFetchCustomersRef.current?.cancel();
       return;
     }
 
     setIsLoadingSearch(true);
-    // Clear previous results and errors when a new search is initiated
+
     setSearchResults([]);
     setSearchError(null);
-    // If user types a new search, it implies they are looking for someone else,
-    // so clear the currently selected customer and their history.
+
     setSelectedCustomer(null);
     setAttendedFollowUps([]);
     setHistoryError(null);
@@ -108,9 +104,8 @@ const CustomerHistoryWidget: React.FC = () => {
     debouncedFetchCustomersRef.current?.cancel();
     setIsLoadingSearch(false);
     setSelectedCustomer(customer);
-    setSearchResults([]); // Hide search results dropdown
-    // setSearchQuery(customer.name); // Optional: update input to selected customer's name
-    // Kept commented to retain typed query, allowing easy new search
+    setSearchResults([]);
+
     fetchCustomerHistory(customer.id);
   };
 
@@ -156,14 +151,14 @@ const CustomerHistoryWidget: React.FC = () => {
 
       <div className="relative mb-4">
         {" "}
-        {/* Container for input, label, and dropdown */}
+        {}
         <input
           type="text"
           id="customer-search"
           className="peer relative z-0 h-[50px] w-full rounded-md border-2 border-gray-300 bg-white px-3 shadow-custom outline-none transition-colors duration-150 focus:border-pink-500"
           value={searchQuery}
           onChange={handleSearchInputChange}
-          placeholder=" " // Required for peer-[:not(:placeholder-shown)]
+          placeholder=" "
           autoComplete="off"
         />
         <label
@@ -172,7 +167,7 @@ const CustomerHistoryWidget: React.FC = () => {
         >
           Search Customer
         </label>
-        {/* Show search results dropdown, only if results exist AND no customer is selected */}
+        {}
         {searchResults.length > 0 && !selectedCustomer && (
           <ul className="absolute left-0 top-full z-20 mt-1 max-h-48 w-full overflow-y-auto rounded-md border border-gray-300 bg-white shadow-lg">
             <div className="p-2">
@@ -190,7 +185,7 @@ const CustomerHistoryWidget: React.FC = () => {
         )}
       </div>
 
-      {/* Display Spinner or Error during search */}
+      {}
       {isLoadingSearch && searchQuery.length >= 2 && (
         <div className="mt-1 flex items-center text-sm text-gray-500">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Searching...
@@ -200,11 +195,11 @@ const CustomerHistoryWidget: React.FC = () => {
         <p className="mt-1 text-sm text-red-500">{searchError}</p>
       )}
 
-      {/* Display History section only if a customer is selected */}
+      {}
       {selectedCustomer && (
         <div className="mt-4">
           {" "}
-          {/* Added mt-4 for spacing from input group/errors */}
+          {}
           <h4 className="text-md mb-2 font-medium">
             History for:{" "}
             <span className="font-bold">{selectedCustomer.name}</span>
@@ -212,7 +207,7 @@ const CustomerHistoryWidget: React.FC = () => {
           {isLoadingHistory && (
             <div className="flex items-center text-sm text-gray-500">
               {" "}
-              {/* Consistent loading display */}
+              {}
               <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading
               history...
             </div>

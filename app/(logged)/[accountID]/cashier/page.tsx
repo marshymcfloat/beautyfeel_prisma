@@ -1,11 +1,9 @@
-// app/(logged)/[accountID]/cashier/page.tsx
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useParams, useRouter } from "next/navigation";
 
-// Component Imports
 import Spinner from "@/components/ui/Spinner";
 import DateTimePicker from "@/components/Inputs/DateTimePicker";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
@@ -23,11 +21,9 @@ import {
   HelpCircle,
 } from "lucide-react";
 
-// Server Actions & Redux
 import {
   transactionSubmission,
   getActiveDiscountRules,
-  // getAllBranches is now handled by Redux Thunk
   cancelRecommendedAppointmentAction,
 } from "@/lib/ServerAction";
 import { RootState, AppDispatch } from "@/lib/reduxStore";
@@ -35,16 +31,15 @@ import { cashierActions, CashierState } from "@/lib/Slices/CashierSlice";
 import {
   fetchServices,
   fetchServiceSets,
-  fetchBranches, // Import the thunk for branches
+  fetchBranches,
 } from "@/lib/Slices/DataSlice";
 
-// Prisma & Custom Types
 import {
   PaymentMethod as PrismaPaymentMethod,
-  Branch as PrismaBranch, // Use PrismaBranch for type safety
+  Branch as PrismaBranch,
   FollowUpPolicy,
-  Service as PrismaService, // Added for type hint
-  ServiceSet as PrismaServiceSet, // Added for type hint
+  Service as PrismaService,
+  ServiceSet as PrismaServiceSet,
 } from "@prisma/client";
 import type {
   FetchedItem,
@@ -52,7 +47,6 @@ import type {
   CustomerWithRecommendations as CustomerData,
 } from "@/lib/Types";
 
-// --- Options for Select Inputs ---
 const serviceTypeOptions = [
   { id: "single" as const, title: "Single Service" },
   { id: "set" as const, title: "Service Set" },
@@ -77,52 +71,46 @@ export default function CashierPage() {
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
-  const [selectedBranchId, setSelectedBranchId] = useState<string>("all"); // Local UI filter
+  const [selectedBranchId, setSelectedBranchId] = useState<string>("all");
   const [isCancellingRa, setIsCancellingRa] = useState<string | null>(null);
   const [cancellationError, setCancellationError] = useState<string | null>(
     null,
   );
 
-  // Data from Redux 'data' slice
   const {
     services,
     serviceSets,
-    branches, // Get branches from Redux
+    branches,
     itemsLoading,
-    branchesLoading, // Use branchesLoading from Redux
+    branchesLoading,
     itemsError,
-    branchesError, // Use branchesError from Redux
+    branchesError,
   } = useSelector((state: RootState) => state.data);
 
-  // Data from Redux 'cashier' slice
   const cashierForm = useSelector((state: RootState) => state.cashier);
   const {
     name,
     email,
-    customerId, // Include customerId to determine email input disabled state
+    customerId,
     servicesAvailed,
     grandTotal,
     totalDiscount,
     subTotal,
     serviceType,
     serveTime,
-    date, // Keep date for form submission logic
-    time, // Keep time for form submission logic
+    date,
+    time,
     paymentMethod,
     customerRecommendations,
     selectedRecommendedAppointmentId,
     generateNewFollowUpForFulfilledRA,
-    appliedDiscountRules, // For checking if rules need fetching
+    appliedDiscountRules,
   } = cashierForm;
 
-  // --- Define overall disabled state ---
-  // Disabled if submitting, data is loading, or a recommendation is being cancelled
   const isCashierDisabled =
     isSubmitting || itemsLoading || branchesLoading || !!isCancellingRa;
-  // -----------------------------------
 
   useEffect(() => {
-    // Fetch if data is not present, not loading, and no error
     if (!services && !itemsLoading && !itemsError) {
       dispatch(fetchServices());
     }
@@ -130,11 +118,9 @@ export default function CashierPage() {
       dispatch(fetchServiceSets());
     }
     if (!branches && !branchesLoading && !branchesError) {
-      dispatch(fetchBranches()); // Dispatch thunk for branches
+      dispatch(fetchBranches());
     }
 
-    // Fetch discount rules if not already fetched (or if explicitly needed)
-    // This check assumes appliedDiscountRules is populated once fetched successfully.
     if (appliedDiscountRules.length === 0) {
       getActiveDiscountRules()
         .then((rules) => {
@@ -170,29 +156,27 @@ export default function CashierPage() {
     services,
     serviceSets,
     branches,
-    appliedDiscountRules.length, // Use length to check if rules might need fetching
+    appliedDiscountRules.length,
     itemsLoading,
     branchesLoading,
     itemsError,
     branchesError,
   ]);
 
-  // Combined handler for CustomerInput
   const handleCustomerSelectedFromInput = useCallback(
     (customer: CustomerData | null) => {
-      // customer will be null if the input is cleared by the user
       const payload = {
         customer: customer
           ? {
               id: customer.id,
               name: customer.name,
               email: customer.email,
-              recommendedAppointments: customer.recommendedAppointments, // Include recs
+              recommendedAppointments: customer.recommendedAppointments,
             }
           : null,
       };
       dispatch(cashierActions.setCustomerData(payload));
-      // When a customer is selected or cleared, also clear any potential form errors related to the customer fields
+
       setFormErrors((prev) => {
         const newState = { ...prev };
         delete newState.name;
@@ -203,19 +187,14 @@ export default function CashierPage() {
     [dispatch],
   );
 
-  // Handler for raw input changes in the CustomerInput field (when user is typing)
   const handleCustomerNameInputChange = useCallback(
     (value: string) => {
       dispatch(cashierActions.setCustomerName(value));
-      // If user starts typing after selecting a customer, clear email and customerId
+
       if (customerId !== null) {
         dispatch(cashierActions.setEmail(null));
-        // Note: CustomerInput component should ideally handle calling onCustomerSelect(null)
-        // when the typed value doesn't match a selected customer. If not, you might
-        // need additional logic here or in CustomerInput to clear customerId.
-        // For now, relying on CustomerInput's onCustomerSelect(null) is the standard pattern.
       }
-      // Clear customer name validation error if user starts typing
+
       setFormErrors((prev) => {
         const newState = { ...prev };
         delete newState.name;
@@ -225,16 +204,13 @@ export default function CashierPage() {
     [dispatch, customerId],
   );
 
-  // Handler for raw input changes in the separate Email field
-  // This only updates the `email` state in Redux.
   const handleEmailInputChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const value = e.target.value;
-      // We only allow typing in the email field if NO existing customer is selected.
-      // If an existing customer IS selected, the email input is disabled and shows the selected customer's email (from Redux state).
+
       if (customerId === null) {
         dispatch(cashierActions.setEmail(value));
-        // Clear email validation error if user starts typing
+
         setFormErrors((prev) => {
           const newState = { ...prev };
           delete newState.email;
@@ -242,7 +218,7 @@ export default function CashierPage() {
         });
       }
     },
-    [dispatch, customerId], // Include customerId in deps
+    [dispatch, customerId],
   );
 
   const handleSelectRecommendation = useCallback(
@@ -291,7 +267,6 @@ export default function CashierPage() {
   const branchOptions = useMemo(() => {
     const options = [{ id: "all", title: "All Branches" }];
     if (branches?.length) {
-      // branches can be null initially if fetchBranches is pending
       options.push(
         ...branches.map((b: PrismaBranch) => ({ id: b.id, title: b.title })),
       );
@@ -305,14 +280,12 @@ export default function CashierPage() {
 
     if (serviceType === "single") {
       const filteredServices =
-        selectedBranchId === "all" || !services // Handle null services if still loading/error
+        selectedBranchId === "all" || !services
           ? services || []
           : (services as PrismaService[]).filter(
-              // Cast to PrismaService[]
               (s) => s.branchId === selectedBranchId || !s.branchId,
             );
       displayItems = filteredServices.map((s: PrismaService) => ({
-        // Type s as PrismaService
         id: s.id,
         title: s.title,
         price: s.price,
@@ -320,7 +293,6 @@ export default function CashierPage() {
       }));
     } else if (serviceType === "set") {
       displayItems = (serviceSets || []).map((set: PrismaServiceSet) => ({
-        // Type set as PrismaServiceSet
         id: set.id,
         title: set.title,
         price: set.price,
@@ -337,11 +309,10 @@ export default function CashierPage() {
       !selectedRecommendation?.originatingServiceId
     )
       return;
-    // Prevent adding if disabled
+
     if (isCashierDisabled) return;
 
     const serviceData = (services as PrismaService[]).find(
-      // Cast services
       (s) => s.id === selectedRecommendation.originatingServiceId,
     );
     if (serviceData) {
@@ -365,11 +336,10 @@ export default function CashierPage() {
     services,
     itemsLoading,
     isCashierDisabled,
-  ]); // Added isCashierDisabled to deps
+  ]);
 
   const handleCancelRecommendation = useCallback(
     async (recommendationId: string) => {
-      // Prevent cancellation if disabled
       if (isCashierDisabled) return;
 
       if (
@@ -399,11 +369,10 @@ export default function CashierPage() {
         setIsCancellingRa(null);
       }
     },
-    [dispatch, selectedRecommendedAppointmentId, isCashierDisabled], // Added isCashierDisabled to deps
+    [dispatch, selectedRecommendedAppointmentId, isCashierDisabled],
   );
 
   const handleConfirmClick = async () => {
-    // Prevent submission if disabled
     if (isCashierDisabled) return;
 
     setIsSubmitting(true);
@@ -415,7 +384,6 @@ export default function CashierPage() {
       localErrors.servicesAvailed = "Select at least one service.";
     if (!paymentMethod) localErrors.paymentMethod = "Payment method required.";
     if (serveTime === "later" && (!date || !time)) {
-      // Use date and time from cashierForm
       localErrors.serveTime = "Booking Date and Time are required for 'Later'.";
     }
     if (
@@ -465,14 +433,12 @@ export default function CashierPage() {
   };
 
   const handleCancel = () => {
-    // Prevent cancellation if disabled (e.g., during RA cancellation)
-    if (isCashierDisabled && !isSubmitting) return; // Allow canceling if just submitting the form
+    if (isCashierDisabled && !isSubmitting) return;
 
     dispatch(cashierActions.reset());
     router.push(`/${accountId}`);
   };
 
-  // Determine if the separate email input should be disabled
   const isEmailInputDisabledByCustomer = customerId !== null;
 
   const inputErrorClass = "mt-1 text-xs text-red-500 px-1";
@@ -491,9 +457,9 @@ export default function CashierPage() {
       <div className="flex flex-shrink-0 items-center border-b border-customGray bg-white p-4 shadow-sm">
         <button
           onClick={handleCancel}
-          className="mr-4 rounded-full p-1.5 text-customGray hover:bg-customGray/20 hover:text-customBlack focus:outline-none focus:ring-1 focus:ring-customDarkPink disabled:cursor-not-allowed disabled:opacity-50" // Add disabled styles
+          className="mr-4 rounded-full p-1.5 text-customGray hover:bg-customGray/20 hover:text-customBlack focus:outline-none focus:ring-1 focus:ring-customDarkPink disabled:cursor-not-allowed disabled:opacity-50"
           aria-label="Cancel and Go Back"
-          disabled={isCashierDisabled && !isSubmitting} // Disable if loading/cancelling RA, but allow if submitting the form itself
+          disabled={isCashierDisabled && !isSubmitting}
         >
           <ChevronLeft size={22} />
         </button>
@@ -503,7 +469,7 @@ export default function CashierPage() {
         </h1>
       </div>
       {/* Overall Loading/Submitting/Cancelling Spinner */}
-      {(isSubmitting || !!isCancellingRa) && ( // Show spinner only for submission or cancellation
+      {(isSubmitting || !!isCancellingRa) && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-customOffWhite/70 backdrop-blur-sm">
           <Spinner text={isSubmitting ? "Submitting..." : "Cancelling..."} />
         </div>
@@ -530,23 +496,22 @@ export default function CashierPage() {
             <span>{cancellationError}</span>
           </div>
         )}
-        {branchesError &&
-          !branchesLoading && ( // Check branchesError from Redux
-            <div className="flex items-center gap-2 rounded border border-amber-400 bg-amber-50 p-2 text-sm font-medium text-amber-700">
-              <AlertCircle size={16} />
-              <span>{branchesError}</span>
-            </div>
-          )}
+        {branchesError && !branchesLoading && (
+          <div className="flex items-center gap-2 rounded border border-amber-400 bg-amber-50 p-2 text-sm font-medium text-amber-700">
+            <AlertCircle size={16} />
+            <span>{branchesError}</span>
+          </div>
+        )}
 
         <div className="w-full">
           <CustomerInput
             error={formErrors.name}
             initialValue={name}
             onCustomerSelect={handleCustomerSelectedFromInput}
-            onChange={handleCustomerNameInputChange} // Pass handler for raw input
-            disabled={isCashierDisabled} // Apply overall disabled state
+            onChange={handleCustomerNameInputChange}
+            disabled={isCashierDisabled}
           />
-          {formErrors.name && ( // Display name error if present
+          {formErrors.name && (
             <p className={inputErrorClass}>{formErrors.name}</p>
           )}
         </div>
@@ -555,13 +520,12 @@ export default function CashierPage() {
           <div className="relative w-full">
             <input
               value={email ?? ""}
-              onChange={handleEmailInputChange} // Use the new handler
+              onChange={handleEmailInputChange}
               placeholder=" "
               type="email"
               id="email-input"
-              // Disable based on customer selection OR overall disabled state
               disabled={isEmailInputDisabledByCustomer || isCashierDisabled}
-              className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-customGray"} bg-white px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100`} // Add disabled styles
+              className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-customGray"} bg-white px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink disabled:cursor-not-allowed disabled:border-gray-300 disabled:bg-gray-100`}
               aria-invalid={!!formErrors.email}
               aria-describedby={formErrors.email ? "email-error" : undefined}
             />
@@ -570,7 +534,7 @@ export default function CashierPage() {
               className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-customOffWhite px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : isEmailInputDisabledByCustomer || isCashierDisabled ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${isEmailInputDisabledByCustomer || isCashierDisabled ? "cursor-not-allowed" : "cursor-text"}`}
             >
               E-mail{" "}
-              {(customerId === null || email?.trim()) && customerId === null // Indicate required for new customer only if no customer selected OR if email is present but customer is null
+              {(customerId === null || email?.trim()) && customerId === null
                 ? "*"
                 : "(From selected customer)"}
             </label>
@@ -580,7 +544,7 @@ export default function CashierPage() {
               {formErrors.email}
             </p>
           )}
-          {customerId === null && ( // Hint only for new customers
+          {customerId === null && (
             <p className="mt-1 px-1 text-xs text-gray-500">
               Required for new customers.
             </p>
@@ -630,7 +594,7 @@ export default function CashierPage() {
                         !itemsLoading && (
                           <button
                             onClick={handleAddRecommendedServiceToCart}
-                            disabled={isCashierDisabled || itemsLoading} // Apply overall disabled state
+                            disabled={isCashierDisabled || itemsLoading}
                             className="flex-shrink-0 rounded bg-customDarkPink px-3 py-1 text-xs font-semibold text-white hover:bg-customDarkPink/90 active:bg-customDarkPink/80 disabled:opacity-50"
                           >
                             Add Service
@@ -641,7 +605,7 @@ export default function CashierPage() {
                         !isCancellingRa && <Spinner size="sm" />}
                       <button
                         onClick={() => handleSelectRecommendation(null)}
-                        disabled={isCashierDisabled} // Apply overall disabled state
+                        disabled={isCashierDisabled}
                         className="flex-shrink-0 rounded border border-customDarkPink px-3 py-1 text-xs font-semibold text-customDarkPink hover:bg-customDarkPink hover:text-white active:bg-customDarkPink/90 disabled:opacity-50"
                         title="Change selected recommendation"
                       >
@@ -651,7 +615,7 @@ export default function CashierPage() {
                         onClick={() =>
                           handleCancelRecommendation(selectedRecommendation.id)
                         }
-                        disabled={isCashierDisabled} // Apply overall disabled state
+                        disabled={isCashierDisabled}
                         className="rounded-full p-1 text-red-500 hover:bg-red-100 disabled:opacity-50"
                         title="Cancel this recommendation"
                       >
@@ -682,7 +646,7 @@ export default function CashierPage() {
                             )
                           }
                           disabled={
-                            isCashierDisabled || // Apply overall disabled state
+                            isCashierDisabled ||
                             selectedRecommendation.originatingService
                               ?.followUpPolicy === FollowUpPolicy.NONE
                           }
@@ -724,12 +688,10 @@ export default function CashierPage() {
                   {customerRecommendations.map((rec) => (
                     <li
                       key={rec.id}
-                      // Guard click handler with disabled state check
                       onClick={() => {
                         if (!isCashierDisabled)
                           handleSelectRecommendation(rec.id);
                       }}
-                      // Apply styles based on disabled state
                       className={`flex cursor-pointer items-center justify-between rounded-md border border-customGray/50 bg-white p-2 text-sm text-customBlack shadow-sm ${isCashierDisabled ? "cursor-not-allowed opacity-60" : "hover:border-customLightBlue hover:bg-white"}`}
                     >
                       <span>
@@ -749,7 +711,7 @@ export default function CashierPage() {
                           e.stopPropagation();
                           handleCancelRecommendation(rec.id);
                         }}
-                        disabled={isCashierDisabled} // Apply overall disabled state
+                        disabled={isCashierDisabled}
                         className="ml-2 rounded-full p-1 text-red-500 hover:bg-red-100 disabled:opacity-50"
                         title="Cancel recommendation"
                       >
@@ -783,12 +745,12 @@ export default function CashierPage() {
             labelKey="title"
             value={serviceType}
             required
-            disabled={isCashierDisabled} // Apply overall disabled state
+            disabled={isCashierDisabled}
           />
           {serviceType === "single" &&
             (branchesLoading ||
               (branches && branches.length > 0) ||
-              branchesError) && ( // Check branchesError from Redux
+              branchesError) && (
               <SelectInputGroup
                 label="Filter by Branch"
                 name="branchFilter"
@@ -798,9 +760,9 @@ export default function CashierPage() {
                 valueKey="id"
                 labelKey="title"
                 value={selectedBranchId}
-                isLoading={branchesLoading} // Use branchesLoading from Redux
+                isLoading={branchesLoading}
                 error={formErrors.branchFilter}
-                disabled={isCashierDisabled} // Apply overall disabled state
+                disabled={isCashierDisabled}
               />
             )}
         </div>
@@ -824,7 +786,7 @@ export default function CashierPage() {
                 : undefined
             }
             required
-            disabled={isCashierDisabled} // Apply overall disabled state
+            disabled={isCashierDisabled}
           />
           {serveTime === "later" && (
             <DateTimePicker
@@ -835,7 +797,7 @@ export default function CashierPage() {
                   ? formErrors.serveTime
                   : undefined)
               }
-              disabled={isCashierDisabled} // Apply overall disabled state
+              disabled={isCashierDisabled}
             />
           )}
         </div>
@@ -848,20 +810,16 @@ export default function CashierPage() {
             isLoading={itemsLoading}
             data={itemsToDisplay}
             error={formErrors.servicesAvailed || itemsError || undefined}
-            disabled={isCashierDisabled} // Apply overall disabled state
+            disabled={isCashierDisabled}
           />
           {formErrors.servicesAvailed && (
             <p className={inputErrorClass}>{formErrors.servicesAvailed}</p>
           )}
-          {itemsError && ( // Display items error below ServicesSelect if needed
-            <p className={inputErrorClass}>{itemsError}</p>
-          )}
+          {itemsError && <p className={inputErrorClass}>{itemsError}</p>}
         </div>
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <VoucherInput
-            disabled={isCashierDisabled} // Apply overall disabled state
-          />
+          <VoucherInput disabled={isCashierDisabled} />
           <SelectInputGroup
             label="Payment Method"
             name="paymentMethod"
@@ -873,7 +831,7 @@ export default function CashierPage() {
             value={paymentMethod ?? ""}
             error={formErrors.paymentMethod}
             required
-            disabled={isCashierDisabled} // Apply overall disabled state
+            disabled={isCashierDisabled}
           />
         </div>
         {formErrors.voucherCode && (
@@ -889,7 +847,7 @@ export default function CashierPage() {
               <SelectedItem
                 key={item.id + (item.type ?? "")}
                 {...item}
-                disabled={isCashierDisabled} // Apply overall disabled state to each item
+                disabled={isCashierDisabled}
               />
             ))
           ) : (
@@ -923,7 +881,6 @@ export default function CashierPage() {
       <div className={actionButtonsContainerClass}>
         <Button
           onClick={handleCancel}
-          // Disable if loading/cancelling RA, but allow if just submitting the form itself
           disabled={isCashierDisabled && !isSubmitting}
           type="button"
           invert
@@ -934,7 +891,6 @@ export default function CashierPage() {
         <Button
           onClick={handleConfirmClick}
           type="button"
-          // Disable if loading, submitting, cancelling RA, or basic validation fails
           disabled={
             isCashierDisabled ||
             !name.trim() ||

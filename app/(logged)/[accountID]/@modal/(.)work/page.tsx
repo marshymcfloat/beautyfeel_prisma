@@ -38,7 +38,6 @@ export default function WorkInterceptedModal() {
   >(new Set());
   const [error, setError] = useState<string | null>(null);
 
-  // --- Socket.IO Setup ---
   useEffect(() => {
     if (typeof accountId !== "string" || !accountId) {
       setError("Invalid User ID.");
@@ -76,7 +75,6 @@ export default function WorkInterceptedModal() {
     };
   }, [accountId]);
 
-  // --- Currency Formatting ---
   const formatCurrency = (value: number | null | undefined): string => {
     if (
       value == null ||
@@ -93,7 +91,6 @@ export default function WorkInterceptedModal() {
     });
   };
 
-  // --- Socket Event Handlers (Updates) ---
   const handleAvailedServiceUpdate = useCallback(
     (updatedAvailedService: AvailedServicesProps) => {
       if (!updatedAvailedService?.id) return;
@@ -128,7 +125,6 @@ export default function WorkInterceptedModal() {
     [],
   );
 
-  // --- Socket Event Handlers (Completion) ---
   const handleTransactionCompletion = useCallback(
     (completedTransaction: TransactionProps) => {
       if (!completedTransaction?.id) return;
@@ -142,7 +138,6 @@ export default function WorkInterceptedModal() {
     [],
   );
 
-  // --- Socket Event Handlers (Errors) ---
   const handleCheckError = useCallback(
     (error: { availedServiceId?: string; message?: string }) => {
       if (!error?.availedServiceId) return;
@@ -157,7 +152,6 @@ export default function WorkInterceptedModal() {
     [],
   );
 
-  // --- Register Socket Listeners ---
   useEffect(() => {
     if (!socket) return;
     socket.on("availedServiceUpdated", handleAvailedServiceUpdate);
@@ -177,7 +171,6 @@ export default function WorkInterceptedModal() {
     handleCheckError,
   ]);
 
-  // --- Fetch Initial Data ---
   useEffect(() => {
     let isMounted = true;
     async function fetchTransactionsData() {
@@ -217,29 +210,24 @@ export default function WorkInterceptedModal() {
     const serveNowItems: TransactionProps[] = [];
     const futureItems: TransactionProps[] = [];
 
-    const now = new Date(); // Current date and time
+    const now = new Date();
 
     fetchedTransactions.forEach((tx) => {
       if (tx.status === "PENDING") {
-        const bookedForDate = tx.bookedFor; // Assumes it's already a Date object
+        const bookedForDate = tx.bookedFor;
 
         if (!bookedForDate) {
-          // No booking date, assume serve now
           serveNowItems.push(tx);
         } else {
-          // Compare the full bookedFor timestamp with the current time "now"
           if (bookedForDate <= now) {
-            // Booked for now or in the past
             serveNowItems.push(tx);
           } else {
-            // Booked for a future time (could be later today or a future date)
             futureItems.push(tx);
           }
         }
       }
     });
 
-    // Sort both lists by the original bookedFor timestamp (earliest first)
     serveNowItems.sort(
       (a, b) => (a.bookedFor?.getTime() ?? 0) - (b.bookedFor?.getTime() ?? 0),
     );
@@ -252,9 +240,7 @@ export default function WorkInterceptedModal() {
       futureTransactions: futureItems,
     };
   }, [fetchedTransactions]);
-  // --- *** END UPDATED *** ---
 
-  // --- UI Event Handlers ---
   const handleSelectTransaction = (transaction: TransactionProps) => {
     setError(null);
     setSelectedTransaction(transaction);
@@ -262,7 +248,6 @@ export default function WorkInterceptedModal() {
   const handleCloseDetails = () => setSelectedTransaction(null);
   const handleModalClose = () => router.back();
 
-  // --- Action: Toggle Service Check ---
   const handleServiceCheckToggle = useCallback(
     (availedService: AvailedServicesProps, wantsToBecomeChecked: boolean) => {
       if (
@@ -291,7 +276,6 @@ export default function WorkInterceptedModal() {
     [socket, accountId, processingCheckActions],
   );
 
-  // --- Helper: Determine if Checkbox is Disabled ---
   const isCheckboxDisabled = useCallback(
     (service: AvailedServicesProps): boolean => {
       return (
@@ -303,7 +287,6 @@ export default function WorkInterceptedModal() {
     [accountId, processingCheckActions],
   );
 
-  // --- Render Helper: Transaction Table Section ---
   const renderTransactionTable = (
     transactions: TransactionProps[],
     title: string,
@@ -373,7 +356,6 @@ export default function WorkInterceptedModal() {
     </div>
   );
 
-  // --- Main Render Logic ---
   const renderContent = () => {
     if (loading)
       return (
