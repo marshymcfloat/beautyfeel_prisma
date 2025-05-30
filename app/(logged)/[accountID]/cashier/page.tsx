@@ -508,7 +508,7 @@ export default function CashierPage() {
             error={formErrors.name}
             initialValue={name}
             onCustomerSelect={handleCustomerSelectedFromInput}
-            onChange={handleCustomerNameInputChange}
+            onInputChange={handleCustomerNameInputChange}
             disabled={isCashierDisabled}
           />
           {formErrors.name && (

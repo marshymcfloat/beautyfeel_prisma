@@ -97,6 +97,21 @@ const io = new Server(httpServer, {
 
 const transactionCompletionTimers = new Map();
 
+function calculateNextRecommendedDate(baseDate, daysToAdd) {
+  const date = new Date(baseDate); // baseDate should be UTC
+  if (daysToAdd && parseInt(daysToAdd, 10) > 0) {
+    date.setUTCDate(date.getUTCDate() + parseInt(daysToAdd, 10));
+  } else {
+    console.warn(
+      `[calculateNextRecommendedDate] Invalid daysToAdd (${daysToAdd}), defaulting to 7 days.`,
+    );
+    date.setUTCDate(date.getUTCDate() + 7);
+  }
+  // Optionally set to start of day UTC or a specific time UTC
+  // date.setUTCHours(0, 0, 0, 0);
+  return date;
+}
+
 function formatInstructionsToHtml(instructionsText) {
   if (!instructionsText) return "";
 
@@ -458,347 +473,458 @@ function startCompletionTimer(transactionId) {
 
 async function completeTransactionAndCalculateSalary(transactionId) {
   console.log(
-    `[Socket TXN Complete ${transactionId}] Processing final completion and salary calculation (with role-based discount logic) and potential post-treatment emails.`,
+    `[Socket TXN Complete ${transactionId}] START Processing. Phase 1: Core Financials.`,
   );
-  let transactionDetailsAfterCommit = null;
 
+  let coreTransactionCommitDetails = null;
+  let customerDataForPostOps = null; // To store { id, name, email }
+  let availedServicesDataForPostOps = []; // To store [{ id, service: { id, title, ...raFields } }]
+  let transactionBookedForDate = null;
+
+  // --- PHASE 1: Core Financial Transaction ---
   try {
-    const result = await prisma.$transaction(
+    coreTransactionCommitDetails = await prisma.$transaction(
       async (tx) => {
-        const transactionData = await tx.transaction.findUnique({
+        // Step 1: Fetch transaction data needed for this phase
+        const transactionDataForCoreOps = await tx.transaction.findUnique({
           where: { id: transactionId },
-
           select: {
             id: true,
             status: true,
             grandTotal: true,
             discount: true,
+            bookedFor: true,
             customerId: true,
+            // Customer data for post-op RA creation & emails (can't avoid fetching some of it here)
             customer: { select: { id: true, name: true, email: true } },
             availedServices: {
               select: {
-                id: true,
+                id: true, // For RA linking
                 servedById: true,
                 status: true,
                 price: true,
-                commissionValue: true,
-                postTreatmentEmailSentAt: true,
-                servedBy: {
-                  select: { id: true, role: true },
-                },
+                commissionValue: true, // To check if update needed
+                // Service details needed for salary AND for RA decision later
                 service: {
                   select: {
                     id: true,
                     title: true,
-                    sendPostTreatmentEmail: true,
-                    postTreatmentEmailSubject: true,
-                    postTreatmentInstructions: true,
+                    recommendFollowUp: true,
+                    recommendedFollowUpDays: true,
+                    followUpPolicy: true,
                   },
                 },
+                servedBy: { select: { id: true, role: true } }, // For salary
+                postTreatmentEmailSentAt: true, // For email logic later
+                // Also include fields if service itself has email/instructions for post-treatment
+                // e.g., service: { select { ..., sendPostTreatmentEmail, postTreatmentInstructions }}
               },
             },
+            // Include voucherUsed if needed for broadcast
+            voucherUsed: { select: { code: true, value: true } },
           },
         });
 
-        if (!transactionData) {
+        if (!transactionDataForCoreOps) {
           console.warn(
-            `[Socket TXN Complete ${transactionId}] Transaction not found within transaction. Aborting.`,
+            `[Socket TXN Complete ${transactionId}] CoreTX: TXN not found. Aborting.`,
           );
-          return null;
+          throw new Error("Transaction not found for core processing."); // Will cause rollback
         }
 
         const allServicesDone =
-          transactionData.availedServices.length > 0 &&
-          transactionData.availedServices.every(
+          transactionDataForCoreOps.availedServices.length > 0 &&
+          transactionDataForCoreOps.availedServices.every(
             (as) => as.status === Status.DONE,
           );
 
-        if (transactionData.status !== Status.PENDING || !allServicesDone) {
+        if (
+          transactionDataForCoreOps.status !== Status.PENDING ||
+          !allServicesDone
+        ) {
           console.warn(
-            `[Socket TXN Complete ${transactionId}] Final state check FAILED within transaction. Status: ${transactionData.status}, AllServicesDone: ${allServicesDone}. Aborting.`,
+            `[Socket TXN Complete ${transactionId}] CoreTX: Final state check FAILED. Status: ${transactionDataForCoreOps.status}, AllDone: ${allServicesDone}. Aborting.`,
           );
-          return null;
+          throw new Error("Transaction state not valid for completion."); // Will cause rollback
         }
 
+        // Prepare data for post-transaction operations
+        customerDataForPostOps = transactionDataForCoreOps.customer;
+        availedServicesDataForPostOps =
+          transactionDataForCoreOps.availedServices.map((as) => ({
+            id: as.id,
+            service: as.service, // Contains service details for RA
+          }));
+        transactionBookedForDate =
+          transactionDataForCoreOps.bookedFor || new Date();
+
+        // Step 2: Salary Calculation Logic
         const salaryUpdates = new Map();
         const availedServiceCommissionUpdates = [];
-
         const originalSumOfServicePrices =
-          transactionData.availedServices.reduce(
+          transactionDataForCoreOps.availedServices.reduce(
             (sum, service) => sum + (service.price || 0),
             0,
           );
-
-        console.log(
-          `[Socket TXN Complete ${transactionId}] Original Sum: ${originalSumOfServicePrices}, Grand Total: ${transactionData.grandTotal}, Discount Applied: ${transactionData.discount}.`,
-        );
-
         const discountFactor =
           originalSumOfServicePrices > 0
-            ? transactionData.grandTotal / originalSumOfServicePrices
+            ? transactionDataForCoreOps.grandTotal / originalSumOfServicePrices
             : 1;
         console.log(
-          `[Socket TXN Complete ${transactionId}] Discount Factor: ${discountFactor.toFixed(4)}`,
+          `[Socket TXN Complete ${transactionId}] CoreTX: Discount Factor: ${discountFactor.toFixed(4)}`,
         );
 
-        for (const availedSvc of transactionData.availedServices) {
+        for (const availedSvc of transactionDataForCoreOps.availedServices) {
           if (
             availedSvc.servedById &&
             availedSvc.status === Status.DONE &&
             availedSvc.servedBy
           ) {
             const effectivePrice = (availedSvc.price || 0) * discountFactor;
-
-            let commissionRate = 0.1;
-            if (availedSvc.servedBy.role.includes(Role.MASSEUSE)) {
+            let commissionRate = 0.1; // Default
+            if (availedSvc.servedBy.role.includes(Role.MASSEUSE))
               commissionRate = 0.5;
-            } else {
-            }
+            // Add other role-based rates if necessary
 
             const calculatedCommission = Math.max(
               0,
               Math.floor(effectivePrice * commissionRate),
             );
-
-            console.log(
-              `[Socket TXN Complete ${transactionId}] AS ${availedSvc.id}: Original Price=${availedSvc.price}, Effective Price=${effectivePrice.toFixed(2)}, Rate=${commissionRate * 100}%, Calculated Commission=${calculatedCommission}`,
-            );
-
             salaryUpdates.set(
               availedSvc.servedById,
               (salaryUpdates.get(availedSvc.servedById) || 0) +
                 calculatedCommission,
             );
 
-            availedServiceCommissionUpdates.push({
-              id: availedSvc.id,
-              commissionValue: calculatedCommission,
-            });
-          } else if (
-            availedSvc.status === Status.DONE &&
-            !availedSvc.servedById
-          ) {
-            console.warn(
-              `[Socket TXN Complete ${transactionId}] AS ${availedSvc.id}: Status DONE but no servedBy user assigned. Skipping commission calculation for this item.`,
-            );
+            // Only add to update list if commission actually changed
+            if (availedSvc.commissionValue !== calculatedCommission) {
+              availedServiceCommissionUpdates.push({
+                id: availedSvc.id,
+                commissionValue: calculatedCommission,
+              });
+            }
           }
         }
 
+        // Step 3: Update Transaction Status
         await tx.transaction.update({
           where: { id: transactionId },
           data: { status: Status.DONE },
         });
         console.log(
-          `[Socket TXN Complete ${transactionId}] Transaction status set to DONE within transaction.`,
+          `[Socket TXN Complete ${transactionId}] CoreTX: TXN status set to DONE.`,
         );
 
-        const updatesNeeded = availedServiceCommissionUpdates.filter(
-          (update) => {
-            const originalAS = transactionData.availedServices.find(
-              (as) => as.id === update.id,
-            );
-
-            return (
-              originalAS &&
-              originalAS.commissionValue !== update.commissionValue
-            );
-          },
-        );
-
-        if (updatesNeeded.length > 0) {
-          console.log(
-            `[Socket TXN Complete ${transactionId}] Updating commission values for ${updatesNeeded.length} availed services within transaction.`,
-          );
+        // Step 4: Update AvailedService Commissions (if changed)
+        if (availedServiceCommissionUpdates.length > 0) {
           await Promise.all(
-            updatesNeeded.map((updateData) =>
-              tx.availedService
-                .update({
-                  where: { id: updateData.id },
-                  data: { commissionValue: updateData.commissionValue },
-                })
-                .catch((e) => {
-                  console.error(
-                    `[Socket TXN Complete ${transactionId}] AvailedService commission update failed for AS ${updateData.id} within transaction:`,
-                    e,
-                  );
-
-                  throw new Error(
-                    `AvailedService commission update failed for AS ${updateData.id}: ${e.message}`,
-                  );
-                }),
+            availedServiceCommissionUpdates.map((upd) =>
+              tx.availedService.update({
+                where: { id: upd.id },
+                data: { commissionValue: upd.commissionValue },
+              }),
             ),
+          );
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: Updated ${availedServiceCommissionUpdates.length} AS commission values.`,
           );
         }
 
+        // Step 5: Update Account Salaries
         if (salaryUpdates.size > 0) {
-          console.log(
-            `[Socket TXN Complete ${transactionId}] Applying salary increments for ${salaryUpdates.size} accounts within transaction.`,
-          );
           await Promise.all(
             Array.from(salaryUpdates.entries()).map(([accId, salAmount]) =>
-              tx.account
-                .update({
-                  where: { id: accId },
-                  data: { salary: { increment: salAmount } },
-                })
-                .catch((e) => {
-                  console.error(
-                    `[Socket TXN Complete ${transactionId}] Salary update failed for Account ${accId} within transaction:`,
-                    e,
-                  );
-
-                  throw new Error(
-                    `Salary update failed for Account ${accId}: ${e.message}`,
-                  );
-                }),
+              tx.account.update({
+                where: { id: accId },
+                data: { salary: { increment: salAmount } },
+              }),
             ),
+          );
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: Applied salary increments for ${salaryUpdates.size} accounts.`,
           );
         }
 
-        const finalTransactionState = await tx.transaction.findUnique({
-          where: { id: transactionId },
-          include: {
-            customer: { select: { id: true, name: true, email: true } },
-            availedServices: {
-              include: {
-                service: {
-                  select: {
-                    id: true,
-                    title: true,
-                    sendPostTreatmentEmail: true,
-                    postTreatmentEmailSubject: true,
-                    postTreatmentInstructions: true,
-                  },
-                },
-                checkedBy: { select: { id: true, name: true } },
-                servedBy: { select: { id: true, name: true, role: true } },
-              },
-            },
-            voucherUsed: { select: { code: true, value: true } },
-          },
-        });
-
-        return finalTransactionState;
+        // Return the fetched data (or a subset) to be used for broadcasting and post-treatment emails
+        // This object will be `coreTransactionCommitDetails` outside the $transaction
+        return transactionDataForCoreOps;
       },
       {
-        timeout: 15000,
-        maxWait: 10000,
+        maxWait: 10000, // How long the client waits for the transaction to be acquired
+        timeout: 15000, // Max execution time (Accelerate's limit)
       },
+    ); // End of prisma.$transaction for Core Financials
+
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 1: Core Financials COMMITTED successfully.`,
     );
+  } catch (error) {
+    console.error(
+      `[Socket TXN Complete ${transactionId}] Phase 1: CRITICAL error during CORE financial transaction:`,
+      error,
+    );
+    io.emit("transactionCompletionFailed", {
+      transactionId,
+      message: `Core financial processing failed: ${error.message}`,
+    });
+    return; // Stop further processing
+  }
 
-    if (result && result.status === Status.DONE) {
-      transactionDetailsAfterCommit = result;
+  // --- PHASE 2: RecommendedAppointment Creation (Post-Core-Transaction) ---
+  // This runs only if Phase 1 succeeded.
+  let raProcessingError = null;
+  if (
+    coreTransactionCommitDetails &&
+    customerDataForPostOps &&
+    availedServicesDataForPostOps.length > 0
+  ) {
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 2: START RecommendedAppointment Creation.`,
+    );
+    try {
+      for (const availedSvcData of availedServicesDataForPostOps) {
+        const serviceDef = availedSvcData.service; // serviceDef now comes from the prepared data
 
-      if (transactionDetailsAfterCommit?.customer?.email) {
-        const customer = transactionDetailsAfterCommit.customer;
-        const availedServices = transactionDetailsAfterCommit.availedServices;
+        if (
+          serviceDef &&
+          serviceDef.recommendFollowUp &&
+          serviceDef.followUpPolicy !== FollowUpPolicy.NONE &&
+          serviceDef.recommendedFollowUpDays
+        ) {
+          let shouldCreateNewRA = false;
 
-        console.log(
-          `[Socket TXN Complete ${transactionId}] Transaction committed. Checking ${availedServices.length} availed services for post-treatment emails for customer ${customer.name} (${customer.email}).`,
-        );
+          // Check if an RA for this service type was *just fulfilled* by THIS transaction
+          // This query is now outside the main 'tx' block, using 'prisma.'
+          const fulfilledRA = await prisma.recommendedAppointment.findFirst({
+            where: {
+              attendedTransactionId: transactionId,
+              originatingServiceId: serviceDef.id,
+            },
+            select: {
+              id: true,
+              suppressNextFollowUpGeneration: true,
+              originatingService: {
+                select: { followUpPolicy: true, title: true },
+              },
+            },
+          });
 
-        for (const as of availedServices) {
-          if (
-            as.service &&
-            as.service.sendPostTreatmentEmail &&
-            as.service.postTreatmentInstructions &&
-            as.postTreatmentEmailSentAt === null
-          ) {
-            const subject =
-              as.service.postTreatmentEmailSubject ||
-              `Post-Treatment Care Instructions for ${as.service.title}`;
-            const instructionsHtml = formatInstructionsToHtml(
-              as.service.postTreatmentInstructions,
-            );
-
-            const bodyContentHtml = `
-                 <p>Hi ${customer.name || "there"},</p>
-                 <p>Thank you for visiting BeautyFeel today! Here are some important post-treatment care instructions for your recent service${availedServices.length > 1 ? " (" + as.service.title + ")" : ""}:</p>
-                 <div class="instructions-block"> ${instructionsHtml} </div>
-                 <p style="margin-top: 15px;">Following these instructions will help ensure optimal results and smooth recovery.</p>
-                 <p>If you have any questions, please don't hesitate to contact us.</p>
-                 <p>We look forward to seeing you again soon!</p>
-            `;
-
-            console.log(
-              `[Socket TXN Complete ${transactionId}] Preparing to send post-treatment email for AS ${as.id} (${as.service.title}) to ${customer.email}`,
-            );
-
-            const emailSentSuccessfully = await sendCustomHtmlEmail(
-              customer.email,
-              customer.name,
-              subject,
-              bodyContentHtml,
-            );
-
-            if (emailSentSuccessfully) {
-              try {
-                await prisma.availedService.update({
-                  where: { id: as.id },
-                  data: { postTreatmentEmailSentAt: new Date() },
-                });
+          if (fulfilledRA) {
+            if (!fulfilledRA.suppressNextFollowUpGeneration) {
+              if (
+                fulfilledRA.originatingService?.followUpPolicy ===
+                  FollowUpPolicy.EVERY_TIME ||
+                fulfilledRA.originatingService?.followUpPolicy ===
+                  FollowUpPolicy.ONCE
+              ) {
+                shouldCreateNewRA = true;
                 console.log(
-                  `[Socket TXN Complete ${transactionId}] Marked postTreatmentEmailSentAt for AS ${as.id}.`,
+                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA. Fulfilled RA (${fulfilledRA.id} - ${fulfilledRA.originatingService?.title}) allows it.`,
                 );
-              } catch (dbUpdateError) {
-                console.error(
-                  `[Socket TXN Complete ${transactionId}] Failed to update AS ${as.id} post-email send:`,
-                  dbUpdateError,
+              } else {
+                console.log(
+                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating. Fulfilled RA (${fulfilledRA.id}) policy ${fulfilledRA.originatingService?.followUpPolicy} does not permit new (e.g. after NONE or if ONCE was already the fulfillment).`,
                 );
               }
+            } else {
+              console.log(
+                `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating. Fulfilled RA (${fulfilledRA.id} - ${fulfilledRA.originatingService?.title}) explicitly suppresses.`,
+              );
             }
+          } else {
+            shouldCreateNewRA = true;
+            console.log(
+              `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA (standard availment, policy: ${serviceDef.followUpPolicy}).`,
+            );
+          }
 
-            await new Promise((r) => setTimeout(r, CRON_ITEM_PROCESSING_DELAY));
-          } else if (as.status === Status.DONE) {
-            if (!as.service) {
-              console.warn(
-                `[Socket TXN Complete ${transactionId}] Skipping post-treatment email for AS ${as.id}: No linked Service found.`,
-              );
-            } else if (!as.service.sendPostTreatmentEmail) {
+          if (shouldCreateNewRA) {
+            const nextRecommendedDate = calculateNextRecommendedDate(
+              transactionBookedForDate,
+              serviceDef.recommendedFollowUpDays,
+            );
+            await prisma.recommendedAppointment.create({
+              data: {
+                customerId: customerDataForPostOps.id,
+                recommendedDate: nextRecommendedDate,
+                originatingTransactionId: transactionId,
+                originatingAvailedServiceId: availedSvcData.id,
+                originatingServiceId: serviceDef.id,
+                status: RecommendedAppointmentStatus.RECOMMENDED,
+              },
+            });
+            console.log(
+              `[RA Create - PostTX ${transactionId}] CREATED new RA for service ${serviceDef.title} (AS_ID: ${availedSvcData.id}). Date: ${nextRecommendedDate.toISOString()}`,
+            );
+          }
+        }
+      }
+      console.log(
+        `[Socket TXN Complete ${transactionId}] Phase 2: RecommendedAppointment Creation FINISHED.`,
+      );
+    } catch (error) {
+      raProcessingError = error;
+      console.error(
+        `[Socket TXN Complete ${transactionId}] Phase 2: Error during RecommendedAppointment creation:`,
+        error,
+      );
+      // Decide on error handling: log, notify admin. Financials are already committed.
+    }
+  }
+
+  // --- PHASE 3: Update Customer's nextAppointment (Post-RA-Creation) ---
+  if (
+    coreTransactionCommitDetails &&
+    customerDataForPostOps &&
+    !raProcessingError
+  ) {
+    // Proceed if RA creation didn't throw a blocking error
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 3: START Customer NextAppointment Update.`,
+    );
+    try {
+      const customerWithRAs = await prisma.customer.findUnique({
+        where: { id: customerDataForPostOps.id },
+        select: {
+          nextAppointment: true,
+          recommendedAppointments: {
+            where: {
+              status: {
+                in: [
+                  RecommendedAppointmentStatus.RECOMMENDED,
+                  RecommendedAppointmentStatus.SCHEDULED,
+                ],
+              },
+              recommendedDate: { gte: startOfDay(new Date()) },
+            },
+            orderBy: { recommendedDate: "asc" },
+            take: 1,
+            select: { recommendedDate: true },
+          },
+        },
+      });
+
+      if (customerWithRAs) {
+        const newEarliestRADate =
+          customerWithRAs.recommendedAppointments[0]?.recommendedDate || null;
+        const currentNextAppt = customerWithRAs.nextAppointment || null;
+        let needsUpdate = false;
+        if (
+          (newEarliestRADate === null && currentNextAppt !== null) ||
+          (newEarliestRADate !== null && currentNextAppt === null) ||
+          (newEarliestRADate !== null &&
+            currentNextAppt !== null &&
+            !isEqual(
+              startOfDay(newEarliestRADate),
+              startOfDay(currentNextAppt),
+            ))
+        ) {
+          needsUpdate = true;
+        }
+
+        if (needsUpdate) {
+          await prisma.customer.update({
+            where: { id: customerDataForPostOps.id },
+            data: { nextAppointment: newEarliestRADate },
+          });
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerDataForPostOps.id} nextAppointment set to ${newEarliestRADate?.toISOString() || "null"}.`,
+          );
+        } else {
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerDataForPostOps.id} nextAppointment did not require update.`,
+          );
+        }
+      }
+      console.log(
+        `[Socket TXN Complete ${transactionId}] Phase 3: Customer NextAppointment Update FINISHED.`,
+      );
+    } catch (error) {
+      console.error(
+        `[Socket TXN Complete ${transactionId}] Phase 3: Error updating customer nextAppointment:`,
+        error,
+      );
+    }
+  }
+
+  // --- PHASE 4: Post-Treatment Email Logic & Broadcasting ---
+  // This uses `coreTransactionCommitDetails` which contains the full transaction details from the end of Phase 1.
+  if (coreTransactionCommitDetails) {
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 4: START Post-Treatment Emails and Broadcast.`,
+    );
+    // Post-Treatment Email Logic (ensure `coreTransactionCommitDetails` has the necessary service fields)
+    if (coreTransactionCommitDetails.customer?.email) {
+      const customer = coreTransactionCommitDetails.customer;
+      for (const as of coreTransactionCommitDetails.availedServices) {
+        // Ensure 'as.service' has 'sendPostTreatmentEmail' and 'postTreatmentInstructions' selected in Phase 1 fetch
+        if (
+          as.service &&
+          as.service.sendPostTreatmentEmail &&
+          as.service.postTreatmentInstructions &&
+          as.postTreatmentEmailSentAt === null
+        ) {
+          const subject =
+            as.service.postTreatmentEmailSubject ||
+            `Post-Treatment Care for ${as.service.title}`;
+          const instructionsHtml = formatInstructionsToHtml(
+            as.service.postTreatmentInstructions,
+          ); // Ensure formatInstructionsToHtml is defined
+          const bodyContentHtml = `
+               <p>Hi ${customer.name || "there"},</p>
+               <p>Thank you! Here are care instructions for your service${coreTransactionCommitDetails.availedServices.length > 1 ? " (" + as.service.title + ")" : ""}:</p>
+               <div class="instructions-block"> ${instructionsHtml} </div>
+               <p style="margin-top: 15px;">We look forward to seeing you again!</p>`;
+
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Phase 4: Preparing post-treatment email for AS ${as.id} (${as.service.title}) to ${customer.email}`,
+          );
+          const emailSentSuccessfully = await sendCustomHtmlEmail(
+            customer.email,
+            customer.name,
+            subject,
+            bodyContentHtml,
+          ); // Ensure sendCustomHtmlEmail is defined
+
+          if (emailSentSuccessfully) {
+            try {
+              await prisma.availedService.update({
+                where: { id: as.id },
+                data: { postTreatmentEmailSentAt: new Date() },
+              });
               console.log(
-                `[Socket TXN Complete ${transactionId}] Skipping post-treatment email for AS ${as.id} (${as.service.title}): Email sending not enabled for this service.`,
+                `[Socket TXN Complete ${transactionId}] Phase 4: Marked postTreatmentEmailSentAt for AS ${as.id}.`,
               );
-            } else if (!as.service.postTreatmentInstructions) {
-              console.warn(
-                `[Socket TXN Complete ${transactionId}] Skipping post-treatment email for AS ${as.id} (${as.service.title}): Instructions are missing.`,
-              );
-            } else if (as.postTreatmentEmailSentAt !== null) {
-              console.log(
-                `[Socket TXN Complete ${transactionId}] Skipping post-treatment email for AS ${as.id} (${as.service.title}): Email already sent at ${as.postTreatmentEmailSentAt}.`,
+            } catch (dbUpdateError) {
+              console.error(
+                `[Socket TXN Complete ${transactionId}] Phase 4: Failed to update AS ${as.id} post-email send:`,
+                dbUpdateError,
               );
             }
           }
+          await new Promise((r) =>
+            setTimeout(r, CRON_ITEM_PROCESSING_DELAY || 100),
+          ); // Ensure CRON_ITEM_PROCESSING_DELAY is defined
         }
-      } else {
-        console.log(
-          `[Socket TXN Complete ${transactionId}] No customer email available or customer data missing on committed transaction. Skipping post-treatment emails for this transaction.`,
-        );
       }
-
-      io.emit("transactionCompleted", transactionDetailsAfterCommit);
-      console.log(
-        `[Socket TXN Complete ${transactionId}] Transaction successfully completed, post-txn tasks processed, and broadcasted.`,
-      );
     } else {
       console.log(
-        `[Socket TXN Complete ${transactionId}] Main DB transaction did not complete successfully or status is not DONE. No broadcast or post-txn tasks performed. Result:`,
-        result,
+        `[Socket TXN Complete ${transactionId}] Phase 4: No customer email for post-treatment messages.`,
       );
-
-      io.emit("transactionCompletionFailed", {
-        transactionId,
-        message: "Transaction could not be finalized on the server.",
-      });
     }
-  } catch (error) {
-    console.error(
-      `[Socket TXN Complete ${transactionId}] CRITICAL error during completeTransactionAndCalculateSalary (outside main transaction block):`,
-      error,
-    );
 
+    io.emit("transactionCompleted", coreTransactionCommitDetails); // Broadcast the result of the core transaction
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 4: FINISHED. Transaction processed (RA creation attempted: ${raProcessingError ? "Failed" : "Succeeded/Skipped"}). Broadcasted.`,
+    );
+  } else if (!coreTransactionCommitDetails) {
+    // This case should have been caught by the return after Phase 1 error
+    console.error(
+      `[Socket TXN Complete ${transactionId}] Reached Phase 4 without coreTransactionCommitDetails. This indicates a logic flaw.`,
+    );
     io.emit("transactionCompletionFailed", {
       transactionId,
-      message: `Critical server error during post-completion processing: ${error.message}`,
+      message: "Internal server error after core processing.",
     });
   }
 }

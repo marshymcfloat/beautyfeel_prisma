@@ -23,6 +23,8 @@ import {
   DiscountType,
   Branch,
   PayslipStatus,
+  Transaction,
+  RecommendedAppointment,
   Account,
   FollowUpPolicy,
   PayslipRequestStatus,
@@ -98,6 +100,31 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { ParamValue } from "next/dist/server/request/params";
 import { Resend } from "resend";
+
+interface CustomerWithDetails {
+  id: string;
+  name: string;
+  email: string | null;
+  totalPaid: number;
+  nextAppointment: Date | null;
+  transactions: Array<
+    Pick<
+      Transaction,
+      "id" | "createdAt" | "grandTotal" | "status" | "bookedFor"
+    > & {
+      availedServices: Array<{
+        service?: { title: string } | null;
+        originatingSetTitle?: string | null;
+      }>;
+    }
+  >;
+  recommendedAppointments: Array<
+    Pick<RecommendedAppointment, "id" | "recommendedDate" | "status"> & {
+      originatingService?: { title: string } | null;
+    }
+  >;
+  purchasedGiftCertificatesCount: number;
+}
 
 interface GcCreationData {
   code: string;
@@ -1590,8 +1617,7 @@ export async function transactionSubmission(
 ): Promise<TransactionSubmissionResponse> {
   let bookingDateTimeForConfirmationEmail: Date | null = null;
   let servicesForConfirmationEmail: { name: string }[] = [];
-
-  const transactionProcessingStartTimeUTC = new Date();
+  const transactionProcessingStartTimeUTC = new Date(); // Mark start time
 
   try {
     const {
@@ -1609,18 +1635,18 @@ export async function transactionSubmission(
       generateNewFollowUpForFulfilledRA,
     } = transactionForm;
 
+    // --- Validation ---
     const errors: Record<string, string> = {};
     if (!name || !name.trim()) errors.name = "Customer name is required.";
     const trimmedEmail = email?.trim() || null;
-    if (
-      trimmedEmail &&
-      !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(trimmedEmail)
-    ) {
+
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
       errors.email = "Invalid email format.";
     }
     if (!servicesAvailed || servicesAvailed.length === 0) {
       errors.servicesAvailed = "At least one service or set must be selected.";
     }
+    // Note: Payment method validation is included in the original code, good.
     if (!paymentMethod) {
       errors.paymentMethod = "Payment method is required.";
     }
@@ -1636,58 +1662,64 @@ export async function transactionSubmission(
       };
     }
 
-    const customerNameFormatted = formatName(name);
+    const customerNameFormatted = formatName(name); // Assuming formatName utility
+    let finalBookingDateTimeUTC = transactionProcessingStartTimeUTC; // Default to now if serveTime is 'now'
 
-    let finalBookingDateTimeUTC = transactionProcessingStartTimeUTC;
+    if (serveTime === "later" && dateString && timeString) {
+      try {
+        const [year, month, day] = dateString.split("-").map(Number);
+        const [hours, minutes] = timeString.split(":").map(Number);
 
-    if (serveTime === "later") {
-      if (dateString && timeString) {
-        try {
-          const [year, month, day] = dateString.split("-").map(Number);
-          const [hours, minutes] = timeString.split(":").map(Number);
+        const phtEquivalentUTC = new Date(
+          Date.UTC(year, month - 1, day, hours, minutes, 0),
+        );
+        const phtOffsetMs = MANILA_OFFSET_HOURS * 60 * 60 * 1000;
+        const targetUTCMs = phtEquivalentUTC.getTime() - phtOffsetMs;
 
-          const phtDate = new Date(year, month - 1, day, hours, minutes);
+        finalBookingDateTimeUTC = new Date(targetUTCMs);
 
-          const phtTimestampMs =
-            Date.UTC(year, month - 1, day, hours, minutes) -
-            MANILA_OFFSET_HOURS * 60 * 60 * 1000;
-          finalBookingDateTimeUTC = new Date(phtTimestampMs);
-
-          if (isNaN(finalBookingDateTimeUTC.getTime())) {
-            throw new Error(
-              "Invalid date/time string resulted in an invalid Date object after time zone adjustment.",
-            );
-          }
-
-          bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC;
-        } catch (e: any) {
-          console.error(
-            "Server Action: Error parsing or converting date/time for 'later' booking:",
-            e.message,
-            e,
+        if (isNaN(finalBookingDateTimeUTC.getTime())) {
+          throw new Error(
+            "Invalid date/time for 'later' booking after UTC conversion.",
           );
-          return {
-            success: false,
-            message: "Invalid date or time format for 'later' booking.",
-            errors: {
-              serveTime: [
-                "Invalid date or time format provided or time zone conversion failed.",
-              ],
-            },
-          };
         }
+        bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC; // Store for email
+      } catch (e: any) {
+        console.error(
+          "Server Action: Error parsing date/time for 'later' booking:",
+          e.message,
+          e,
+        );
+        return {
+          success: false,
+          message: "Invalid date or time format for 'later' booking.",
+          errors: { serveTime: ["Invalid date or time format provided."] },
+        };
       }
     }
 
+    // Start the database transaction
     const transactionResult = await prisma.$transaction(
       async (tx) => {
+        // --- Customer Handling ---
         let customerRecord;
-        const existingCustomer = await tx.customer.findFirst({
-          where: { name: customerNameFormatted },
-        });
-        if (existingCustomer) {
-          customerRecord = existingCustomer;
+        // Try to find by ID first if transactionForm.customerId is available from cashier state
+        if (transactionForm.customerId) {
+          customerRecord = await tx.customer.findUnique({
+            where: { id: transactionForm.customerId },
+          });
+        }
+        // If not found by ID or no ID provided, try by name (less reliable for existing)
+        if (!customerRecord) {
+          customerRecord = await tx.customer.findFirst({
+            where: { name: customerNameFormatted },
+          });
+        }
+
+        if (customerRecord) {
+          // Existing customer
           if (trimmedEmail && customerRecord.email !== trimmedEmail) {
+            // Update email if changed and provided
             try {
               customerRecord = await tx.customer.update({
                 where: { id: customerRecord.id },
@@ -1698,10 +1730,17 @@ export async function transactionSubmission(
                 throw new Error(
                   `The email "${trimmedEmail}" is already associated with another customer.`,
                 );
-              throw e;
+              throw e; // Re-throw other errors
             }
           }
         } else {
+          // New customer
+          // Note: Original code threw error if email was missing for new customer
+          // Let's make sure required fields are present for a new customer record
+          if (!trimmedEmail)
+            throw new Error(
+              "Email is required to create a new customer profile.",
+            );
           try {
             customerRecord = await tx.customer.create({
               data: { name: customerNameFormatted, email: trimmedEmail },
@@ -1711,10 +1750,11 @@ export async function transactionSubmission(
               throw new Error(
                 `The email "${trimmedEmail}" is already in use by another customer.`,
               );
-            throw e;
+            throw e; // Re-throw other errors
           }
         }
 
+        // --- Voucher Handling ---
         let processedVoucherId: string | null = null;
         if (voucherCode && voucherCode.trim()) {
           const voucher = await tx.voucher.findUnique({
@@ -1728,35 +1768,87 @@ export async function transactionSubmission(
             );
           await tx.voucher.update({
             where: { id: voucher.id },
-            data: { usedAt: new Date() },
+            data: { usedAt: new Date() }, // Mark as used
           });
           processedVoucherId = voucher.id;
         }
 
+        // --- Transaction Record Creation ---
         const newTransactionRecord = await tx.transaction.create({
           data: {
             customerId: customerRecord.id,
-            paymentMethod: paymentMethod,
+            paymentMethod: paymentMethod as PaymentMethod, // Ensure paymentMethod is of PaymentMethod enum type
             grandTotal,
             discount: totalDiscount,
-            status: Status.PENDING,
-            bookedFor: finalBookingDateTimeUTC,
+            status: Status.PENDING, // Initial status
+            bookedFor: finalBookingDateTimeUTC, // Use the calculated booking time
             voucherId: processedVoucherId,
-            createdAt: transactionProcessingStartTimeUTC,
+            createdAt: transactionProcessingStartTimeUTC, // Record when the transaction processing started
+            // branchId might be needed if transactions are branch-specific
           },
         });
 
-        servicesForConfirmationEmail = [];
-        for (const item of servicesAvailed) {
+        // --- Optimization: Fetch all required service and set details in bulk ---
+        const serviceItemIds = servicesAvailed
+          .filter((item) => item.type === "service")
+          .map((item) => item.id);
+        const setItemIds = servicesAvailed
+          .filter((item) => item.type === "set")
+          .map((item) => item.id);
+
+        // Fetch service details
+        const serviceDetailsMap = new Map<
+          string,
+          { id: string; price: number }
+        >();
+        if (serviceItemIds.length > 0) {
+          const serviceDetails = await tx.service.findMany({
+            where: { id: { in: serviceItemIds } },
+            select: { id: true, price: true },
+          });
+          serviceDetails.forEach((s) => serviceDetailsMap.set(s.id, s));
+        }
+
+        // Fetch set details and the services within them
+        const setDetailsMap = new Map<
+          string,
+          {
+            id: string;
+            title: string;
+            services: { id: string; price: number; title: string }[];
+          }
+        >();
+        const servicesInSetsMap = new Map<
+          string,
+          { id: string; price: number; title: string }[]
+        >();
+        if (setItemIds.length > 0) {
+          const setDetailsWithServices = await tx.serviceSet.findMany({
+            where: { id: { in: setItemIds } },
+            include: {
+              services: { select: { id: true, price: true, title: true } }, // Services within the set
+            },
+          });
+          setDetailsWithServices.forEach((set) => {
+            setDetailsMap.set(set.id, set);
+            servicesInSetsMap.set(set.id, set.services);
+          });
+        }
+        // --- End Optimization Fetch ---
+
+        // --- Availed Services Creation (Using fetched data) ---
+        servicesForConfirmationEmail = []; // Reset for this transaction
+        for (const item of servicesAvailed as AvailedItem[]) {
+          // Cast to ensure type
+          // Use item.name for confirmation email, assuming AvailedItem has `name` property
+          // If not, adjust this to use service/set title from fetched data.
           servicesForConfirmationEmail.push({ name: item.name });
 
           if (item.type === "service") {
-            const serviceDetails = await tx.service.findUnique({
-              where: { id: item.id },
-              select: { price: true },
-            });
+            const serviceDetails = serviceDetailsMap.get(item.id);
 
-            const commission = serviceDetails
+            // Calculate initial commission based on the original service price fetched
+            const initialCommission = serviceDetails
               ? Math.floor(serviceDetails.price * SALARY_COMMISSION_RATE)
               : 0;
 
@@ -1764,50 +1856,71 @@ export async function transactionSubmission(
               data: {
                 transactionId: newTransactionRecord.id,
                 serviceId: item.id,
-                quantity: item.quantity,
-                price: item.originalPrice,
-                commissionValue: commission,
-                status: Status.PENDING,
+                quantity: item.quantity || 1, // Default to 1 if quantity not present
+                price: item.originalPrice, // Use the price from the form/cart (can be affected by client-side logic/discounts)
+                // Note: It might be better to store the *original* service price fetched
+                // from the database here instead of item.originalPrice if you need
+                // to reconstruct the transaction cost accurately server-side.
+                commissionValue: initialCommission, // Calculated based on original price
+                status: Status.PENDING, // Worker will mark as DONE
               },
             });
           } else if (item.type === "set") {
-            const setDetails = await tx.serviceSet.findUnique({
-              where: { id: item.id },
-              include: {
-                services: { select: { id: true, price: true, title: true } },
-              },
-            });
+            const servicesInSet = servicesInSetsMap.get(item.id);
+            const setDetails = setDetailsMap.get(item.id); // Get set title/id
 
-            if (setDetails?.services) {
-              for (const serviceInSet of setDetails.services) {
-                const commission = Math.floor(
+            if (servicesInSet && setDetails) {
+              for (const serviceInSet of servicesInSet) {
+                // Commission for service within a set is based on its individual price
+                const initialCommissionInSet = Math.floor(
                   serviceInSet.price * SALARY_COMMISSION_RATE,
                 );
                 await tx.availedService.create({
                   data: {
                     transactionId: newTransactionRecord.id,
-                    serviceId: serviceInSet.id,
-                    quantity: 1,
-                    price: 0,
-                    commissionValue: commission,
+                    serviceId: serviceInSet.id, // ID of the individual service in the set
+                    quantity: item.quantity || 1, // Quantity of the set applies to each service in it
+                    price: 0, // Price is typically on the set itself, not individual services within it for transaction purposes
+                    commissionValue: initialCommissionInSet,
                     originatingSetId: setDetails.id,
                     originatingSetTitle: setDetails.title,
                     status: Status.PENDING,
                   },
                 });
               }
+            } else {
+              console.warn(
+                `[TX Submit] Set details or services not found for set ID: ${item.id}`,
+              );
+              // Decide how to handle this - maybe throw an error or log and continue?
+              // Throwing might be safer to ensure data integrity.
+              throw new Error(
+                `Failed to find details for set "${item.name}". Please try again.`,
+              );
             }
+          } else {
+            console.warn(
+              `[TX Submit] Unknown item type encountered: ${item.type}`,
+            );
+            // Handle unexpected item types if necessary
           }
         }
+        // --- End Availed Services Creation ---
+
+        // --- Handle existing RA fulfillment and update customer.nextAppointment ---
+        let customerIdForNextApptUpdate: string = customerRecord.id;
 
         if (selectedRecommendedAppointmentId) {
           const raToLink = await tx.recommendedAppointment.findUnique({
             where: { id: selectedRecommendedAppointmentId },
             include: {
-              originatingService: { select: { followUpPolicy: true } },
+              originatingService: {
+                select: { id: true, followUpPolicy: true, title: true },
+              },
             },
           });
 
+          // Check if the RA exists, belongs to the customer, and is not already marked ATTENDED
           if (
             raToLink &&
             raToLink.customerId === customerRecord.id &&
@@ -1815,44 +1928,45 @@ export async function transactionSubmission(
             !raToLink.attendedTransactionId
           ) {
             let suppressNextGenFlag = false;
-
+            // Determine if follow-up generation should be suppressed based on policy and user choice
             if (
               raToLink.originatingService?.followUpPolicy ===
               FollowUpPolicy.NONE
             ) {
-              suppressNextGenFlag = true;
+              suppressNextGenFlag = true; // Always suppress if policy is NONE
             } else {
+              // For ONCE or EVERY_TIME, suppress only if the user unchecked the box
               suppressNextGenFlag = !generateNewFollowUpForFulfilledRA;
             }
-
             await tx.recommendedAppointment.update({
               where: { id: selectedRecommendedAppointmentId },
               data: {
                 status: RecommendedAppointmentStatus.ATTENDED,
                 attendedTransactionId: newTransactionRecord.id,
-
                 suppressNextFollowUpGeneration: suppressNextGenFlag,
               },
             });
             console.log(
-              `Server Action: Linked RecommendedAppointment ${selectedRecommendedAppointmentId} to Transaction ${newTransactionRecord.id}`,
+              `[TX Submit] Linked RA ${selectedRecommendedAppointmentId} (${raToLink.originatingService?.title}) to TX ${newTransactionRecord.id}. suppressNextGen: ${suppressNextGenFlag}`,
             );
           } else {
             console.warn(
-              `Server Action: Skipped linking RecommendedAppointment ${selectedRecommendedAppointmentId} to transaction ${newTransactionRecord.id}. Conditions not met: RA found=${!!raToLink}, customerMatch=${raToLink?.customerId === customerRecord.id}, notAttended=${raToLink?.status !== RecommendedAppointmentStatus.ATTENDED}, notLinked=${!raToLink?.attendedTransactionId}`,
+              `[TX Submit] Skipped linking RA ${selectedRecommendedAppointmentId}. Conditions not met or RA not found/already processed. RA found: ${!!raToLink}, Belongs to customer: ${raToLink?.customerId === customerRecord.id}, Status: ${raToLink?.status}, Attended TX: ${raToLink?.attendedTransactionId}`,
             );
           }
         }
 
+        // Update customer's totalPaid
         await tx.customer.update({
           where: { id: customerRecord.id },
           data: { totalPaid: { increment: grandTotal } },
         });
 
-        const customerAfterRAsUpdate = await tx.customer.findUnique({
-          where: { id: customerRecord.id },
+        // Re-evaluate and Update customer.nextAppointment
+        // This happens after an RA might have been marked ATTENDED
+        const customerForNextApptQuery = await tx.customer.findUnique({
+          where: { id: customerIdForNextApptUpdate },
           select: {
-            nextAppointment: true,
             recommendedAppointments: {
               where: {
                 status: {
@@ -1861,7 +1975,7 @@ export async function transactionSubmission(
                     RecommendedAppointmentStatus.SCHEDULED,
                   ],
                 },
-                recommendedDate: { gte: startOfDay(new Date()) },
+                recommendedDate: { gte: startOfDay(new Date()) }, // Future active RAs from today onwards
               },
               orderBy: { recommendedDate: "asc" },
               take: 1,
@@ -1870,41 +1984,18 @@ export async function transactionSubmission(
           },
         });
         const newEarliestActiveRADate =
-          customerAfterRAsUpdate?.recommendedAppointments[0]?.recommendedDate ||
-          null;
-        const currentNextApptDate =
-          customerAfterRAsUpdate?.nextAppointment || null;
+          customerForNextApptQuery?.recommendedAppointments[0]
+            ?.recommendedDate || null;
+        await tx.customer.update({
+          where: { id: customerIdForNextApptUpdate },
+          data: { nextAppointment: newEarliestActiveRADate },
+        });
+        console.log(
+          `[TX Submit] Updated customer ${customerIdForNextApptUpdate} nextAppointment to ${newEarliestActiveRADate?.toISOString() || "null"}`,
+        );
+        // --- End RA handling and nextAppointment update ---
 
-        if (
-          (newEarliestActiveRADate === null && currentNextApptDate !== null) ||
-          (newEarliestActiveRADate !== null && currentNextApptDate === null) ||
-          (newEarliestActiveRADate !== null &&
-            currentNextApptDate !== null &&
-            !isEqual(
-              startOfDay(newEarliestActiveRADate),
-              startOfDay(currentNextApptDate),
-            ))
-        ) {
-          await tx.customer.update({
-            where: { id: customerRecord.id },
-            data: { nextAppointment: newEarliestActiveRADate },
-          });
-          console.log(
-            `Server Action: Updated customer ${customerRecord.id} nextAppointment to ${newEarliestActiveRADate}`,
-          );
-        } else if (
-          newEarliestActiveRADate === null &&
-          currentNextApptDate !== null
-        ) {
-          await tx.customer.update({
-            where: { id: customerRecord.id },
-            data: { nextAppointment: null },
-          });
-          console.log(
-            `Server Action: Cleared customer ${customerRecord.id} nextAppointment as no future RAs exist.`,
-          );
-        }
-
+        // Return necessary data from the transaction
         return {
           transaction: newTransactionRecord,
           customerForEmail: {
@@ -1913,75 +2004,114 @@ export async function transactionSubmission(
           },
         };
       },
-      {
-        timeout: 15000,
-      },
+      // Keep your desired client-side timeout, but note Accelerate has its own limit
+      { timeout: 15000, maxWait: 10000 },
     );
 
-    const {
-      transaction: createdTransaction,
-      customerForEmail: customerForEmailConfirmationData,
-    } = transactionResult;
+    // Extract data from the transaction result
+    const { transaction: createdTransaction, customerForEmail: customerData } =
+      transactionResult;
 
+    // Send booking confirmation email if applicable (outside the transaction)
     if (
       serveTime === "later" &&
-      customerForEmailConfirmationData?.email &&
+      customerData?.email &&
       bookingDateTimeForConfirmationEmail
     ) {
-      await sendBookingConfirmationEmail(
-        customerForEmailConfirmationData.name,
-        customerForEmailConfirmationData.email,
-        bookingDateTimeForConfirmationEmail,
-        servicesForConfirmationEmail,
-        LOGO_URL_SA,
-      );
-    } else if (serveTime === "later") {
-      console.log(
-        "Server Action: Skipping booking confirmation email because customer has no email or it wasn't a 'later' booking.",
-      );
+      // Note: Error handling for the email sending should ideally be separate
+      // so it doesn't fail the main transaction submission response.
+      try {
+        await sendBookingConfirmationEmail(
+          customerData.name,
+          customerData.email,
+          bookingDateTimeForConfirmationEmail,
+          servicesForConfirmationEmail,
+          LOGO_URL_SA,
+        );
+      } catch (emailError) {
+        console.error(
+          "[TX Submit] Error sending confirmation email:",
+          emailError,
+        );
+        // Optionally return a warning in the success response
+        // return { success: true, transactionId: createdTransaction.id, warning: "Transaction saved, but confirmation email failed." };
+      }
     }
 
+    // Success response
     return { success: true, transactionId: createdTransaction.id };
   } catch (error: unknown) {
-    console.error(
-      "--- Transaction Submission Failed (Outer Catch - Server Action) ---",
-      error,
-    );
+    // --- Centralized Error Handling ---
+    console.error("[TX Submit] CRITICAL Error:", error);
     let message =
       "An unexpected error occurred during the transaction process.";
     const fieldErrors: Record<string, string[]> = {};
 
-    if (
-      error &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "P2028"
-    ) {
-      message =
-        "The transaction took too long to complete and was timed out. Please try again or contact support if the issue persists.";
-      fieldErrors.general = [message];
-    } else if (error instanceof Error) {
-      message = error.message;
+    if (error instanceof Error) {
+      message = error.message; // Use the specific error message
 
-      if (message.includes("voucher") && message.includes("used"))
-        fieldErrors.voucherCode = [message];
-      else if (message.includes("Invalid voucher code"))
-        fieldErrors.voucherCode = [message];
-      else if (
+      // Map specific known errors to field errors
+      if (
         message.includes("email") &&
-        (message.includes("already in use") ||
-          message.includes("associated with another customer"))
-      )
+        (message.includes("already used") ||
+          message.includes("associated with another customer") ||
+          message.includes("required to create a new customer profile")) // Catch new customer email error
+      ) {
         fieldErrors.email = [message];
-      else if (
-        message.includes("Invalid date or time format") ||
-        message.includes("time zone conversion failed")
-      )
+      } else if (message.includes("voucher")) {
+        fieldErrors.voucherCode = [message];
+      } else if (
+        message.includes("date or time format") ||
+        message.includes("Invalid date/time")
+      ) {
         fieldErrors.serveTime = [message];
-      else fieldErrors.general = [message];
+      } else if (message.includes("Failed to find details for set")) {
+        fieldErrors.servicesAvailed = [message]; // Link set error to services field
+      }
+      // Add more specific error checks if needed
+
+      // If it's a Prisma Client KnownRequestError (like P6005), check its details
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        typeof (error as any).code === "string"
+      ) {
+        const prismaError = error as any; // Cast for easier access to potential Prisma properties
+
+        if (prismaError.code === "P6005") {
+          // This is the Accelerate Timeout error
+          message =
+            "The transaction took too long to complete. Please try again or simplify the transaction if possible.";
+          fieldErrors.general = [message]; // Or link to a relevant field if applicable
+          console.error(
+            "Prisma Accelerate Timeout Error (P6005):",
+            prismaError.message,
+            prismaError.response?.body,
+          );
+        } else if (prismaError.code === "P2002") {
+          // Catch P2002 unique constraint errors not explicitly handled above
+          const target =
+            prismaError.meta?.target?.join(", ") || "unknown field";
+          message = `A unique constraint failed: ${target}. This usually means a record with the same value already exists.`;
+          if (target.includes("email")) fieldErrors.email = [message];
+          else if (target.includes("code")) fieldErrors.voucherCode = [message];
+          else fieldErrors.general = [message];
+        } else if (prismaError.code === "P2028") {
+          // Generic transaction timeout (less specific than P6005 with Accelerate)
+          message = "The transaction timed out. Please try again.";
+          fieldErrors.general = [message];
+        }
+        // Add other specific Prisma error codes you want to handle with custom messages
+      } else {
+        // For generic Error objects or unknown errors not specifically handled
+        fieldErrors.general = [message]; // Put the error message in a general bucket
+      }
     } else {
-      fieldErrors.general = [message];
+      // Handle non-Error type throws
+      fieldErrors.general = [message]; // Fallback to general error bucket
     }
+
     return { success: false, message, errors: fieldErrors };
   }
 }
@@ -7659,180 +7789,293 @@ export async function deleteEmailTemplateAction(id: string) {
   }
 }
 
-export async function getCustomersAction(): Promise<CustomerForDisplay[]> {
+export async function getCustomersAction(): Promise<CustomerWithDetails[]> {
   try {
-    const customers = await prisma.customer.findMany({
+    const customersFromDb = await prisma.customer.findMany({
+      orderBy: {
+        name: "asc",
+      },
+      // Use select at the top level to explicitly include scalar fields and relations
       select: {
         id: true,
         name: true,
         email: true,
         totalPaid: true,
         nextAppointment: true,
+
+        // Include relations within the select block
+        transactionHistory: {
+          orderBy: { createdAt: "desc" },
+          take: 20,
+          select: {
+            // Nested select for the relation
+            id: true,
+            createdAt: true,
+            grandTotal: true,
+            status: true,
+            bookedFor: true,
+            availedServices: {
+              take: 5,
+              select: {
+                // Nested select for the relation's relation
+                service: { select: { title: true } },
+                originatingSetTitle: true,
+              },
+            },
+          },
+        },
+        recommendedAppointments: {
+          // Include relation within select
+          where: {
+            status: { in: ["RECOMMENDED", "SCHEDULED"] },
+            recommendedDate: { gte: startOfDay(new Date()) },
+          },
+          orderBy: { recommendedDate: "asc" },
+          take: 10,
+          select: {
+            // Nested select for the relation
+            id: true,
+            recommendedDate: true,
+            status: true,
+            originatingService: { select: { title: true } },
+          },
+        },
+        _count: {
+          // Include _count within select
+          select: { purchasedGiftCertificates: true },
+        },
       },
-      orderBy: {
-        name: "asc",
-      },
+      // Remove the top-level 'include' as 'select' is now used
+      // include: { ... } // This part is moved into 'select'
     });
 
-    return customers;
+    // The shape of customersFromDb now precisely matches the CustomerWithDetails interface
+    // because of the explicit select, resolving the type error.
+    return customersFromDb.map((customer) => ({
+      id: customer.id,
+      name: customer.name,
+      email: customer.email,
+      totalPaid: customer.totalPaid,
+      nextAppointment: customer.nextAppointment,
+      transactions: customer.transactionHistory,
+      recommendedAppointments: customer.recommendedAppointments,
+      purchasedGiftCertificatesCount: customer._count.purchasedGiftCertificates,
+    }));
   } catch (error) {
-    console.error("Error fetching customers:", error);
-    throw new Error("Failed to fetch customers. Please try again.");
+    console.error("Error fetching customers with details:", error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      throw new Error(`Database error: ${error.message} (Code: ${error.code})`);
+    }
+    throw new Error(
+      "Failed to fetch customer data. Please try refreshing the page.",
+    );
+  } finally {
+    await prisma.$disconnect(); // Good practice to disconnect in standalone functions
   }
 }
+export async function createCustomerAction(formData: FormData) {
+  const name = formData.get("name") as string | null;
+  const email = formData.get("email") as string | null;
 
-export async function createCustomerAction(formData: FormData): Promise<{
-  success: boolean;
-  message?: string;
-  errors?: Record<string, string[]>;
-}> {
-  const rawData = {
-    name: formData.get("name"),
-    email: formData.get("email"),
-  };
+  const trimmedName = name?.trim();
+  const trimmedEmail = email?.trim();
 
-  const validation = CustomerSchema.safeParse(rawData);
-
-  if (!validation.success) {
+  if (!trimmedName) {
     return {
       success: false,
-      message: "Validation failed. Please check your input.",
-      errors: validation.error.flatten().fieldErrors,
+      message: "Name is required.",
+      errors: { name: ["Name is required."] },
+    };
+  }
+  if (trimmedName.length > 50) {
+    return {
+      success: false,
+      message: "Name cannot exceed 50 characters.",
+      errors: { name: ["Name too long."] },
+    };
+  }
+  if (
+    trimmedEmail &&
+    trimmedEmail.length > 0 &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
+  ) {
+    return {
+      success: false,
+      message: "Invalid email format provided.",
+      errors: { email: ["Invalid email format."] },
     };
   }
 
-  const { name, email } = validation.data;
-  const finalEmail = email?.trim() || null;
-
   try {
-    if (finalEmail && !(await isEmailUnique(finalEmail))) {
-      return {
-        success: false,
-        message: "Validation failed.",
-        errors: { email: ["This email address is already in use."] },
-      };
-    }
-
-    await prisma.customer.create({
+    const newCustomer = await prisma.customer.create({
       data: {
-        name,
-        email: finalEmail,
+        name: trimmedName,
+        email: trimmedEmail && trimmedEmail.length > 0 ? trimmedEmail : null,
       },
     });
-
     invalidateCache(CUSTOMERS_CACHE_KEY);
-    return { success: true, message: "Customer created successfully." };
-  } catch (error) {
-    console.error("Error creating customer:", error);
+    // revalidateTag('customers');
+    return {
+      success: true,
+      message: "Customer created successfully!",
+      customer: newCustomer,
+    };
+  } catch (error: any) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const target = error.meta?.target as string[] | undefined;
+      if (target && target.includes("email")) {
+        return {
+          success: false,
+          message:
+            "This email address is already registered to another customer.",
+          errors: { email: ["Email already in use."] },
+        };
+      }
+      return {
+        success: false,
+        message: "A customer with these unique details already exists.",
+        errors: { form: ["Unique constraint failed."] },
+      };
+    }
+    console.error("Create customer error:", error);
     return {
       success: false,
-      message: "An unexpected error occurred while creating the customer.",
+      message:
+        error.message ||
+        "An unexpected error occurred while creating the customer.",
     };
   }
 }
 
 export async function updateCustomerAction(
-  id: string,
+  customerId: string,
   formData: FormData,
-): Promise<{
-  success: boolean;
-  message?: string;
-  errors?: Record<string, string[]>;
-}> {
-  const rawData = {
-    name: formData.get("name"),
-    email: formData.get("email"),
-  };
+) {
+  const name = formData.get("name") as string | null;
+  const email = formData.get("email") as string | null;
 
-  const validation = CustomerSchema.safeParse(rawData);
+  const trimmedName = name?.trim();
+  const trimmedEmail = email?.trim();
 
-  if (!validation.success) {
+  if (!trimmedName) {
     return {
       success: false,
-      message: "Validation failed. Please check your input.",
-      errors: validation.error.flatten().fieldErrors,
+      message: "Name is required.",
+      errors: { name: ["Name is required."] },
+    };
+  }
+  if (trimmedName.length > 50) {
+    return {
+      success: false,
+      message: "Name cannot exceed 50 characters.",
+      errors: { name: ["Name too long."] },
+    };
+  }
+  if (
+    trimmedEmail &&
+    trimmedEmail.length > 0 &&
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)
+  ) {
+    return {
+      success: false,
+      message: "Invalid email format provided.",
+      errors: { email: ["Invalid email format."] },
     };
   }
 
-  const { name, email } = validation.data;
-  const finalEmail = email?.trim() || null;
-
   try {
-    if (finalEmail && !(await isEmailUnique(finalEmail, id))) {
-      return {
-        success: false,
-        message: "Validation failed.",
-        errors: {
-          email: ["This email address is already in use by another customer."],
-        },
-      };
-    }
-
-    await prisma.customer.update({
-      where: { id },
+    const updatedCustomer = await prisma.customer.update({
+      where: { id: customerId },
       data: {
-        name,
-        email: finalEmail,
+        name: trimmedName,
+        email: trimmedEmail && trimmedEmail.length > 0 ? trimmedEmail : null,
       },
     });
-
     invalidateCache(CUSTOMERS_CACHE_KEY);
-    return { success: true, message: "Customer updated successfully." };
-  } catch (error) {
-    console.error(`Error updating customer ${id}:`, error);
-
+    // revalidateTag('customers');
+    return {
+      success: true,
+      message: "Customer details updated successfully!",
+      customer: updatedCustomer,
+    };
+  } catch (error: any) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      const target = error.meta?.target as string[] | undefined;
+      if (target && target.includes("email")) {
+        return {
+          success: false,
+          message:
+            "This email address is already registered to another customer.",
+          errors: { email: ["Email already in use by another customer."] },
+        };
+      }
+      return {
+        success: false,
+        message: "Update failed due to a conflict with existing data.",
+        errors: { form: ["Unique constraint failed on update."] },
+      };
+    }
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2025"
-    ) {
-      return { success: false, message: "Customer not found." };
-    }
-    return {
-      success: false,
-      message: "An unexpected error occurred while updating the customer.",
-    };
-  }
-}
-
-export async function deleteCustomerAction(id: string): Promise<{
-  success: boolean;
-  message?: string;
-}> {
-  try {
-    await prisma.customer.delete({
-      where: { id },
-    });
-
-    invalidateCache(CUSTOMERS_CACHE_KEY);
-    return { success: true, message: "Customer deleted successfully." };
-  } catch (error) {
-    console.error(`Error deleting customer ${id}:`, error);
-
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2003"
     ) {
       return {
         success: false,
-        message:
-          "Cannot delete this customer. They have associated records (e.g., transactions). Please remove those records first.",
+        message: "Customer not found. The record may have been deleted.",
       };
     }
-
-    if (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2025"
-    ) {
-      return { success: false, message: "Customer not found." };
-    }
-
+    console.error("Update customer error:", error);
     return {
       success: false,
-      message: "An unexpected error occurred while deleting the customer.",
+      message:
+        error.message ||
+        "An unexpected error occurred while updating the customer.",
     };
   }
 }
 
+export async function deleteCustomerAction(customerId: string) {
+  try {
+    await prisma.customer.delete({
+      where: { id: customerId },
+    });
+    invalidateCache(CUSTOMERS_CACHE_KEY);
+    // revalidateTag('customers');
+    return {
+      success: true,
+      message: "Customer has been successfully deleted.",
+    };
+  } catch (error: any) {
+    console.error("Delete customer error:", error);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === "P2003") {
+        return {
+          success: false,
+          message:
+            "Cannot delete this customer as they have associated records (like transactions or appointments). Please remove or reassign these records first.",
+        };
+      }
+      if (error.code === "P2025") {
+        return {
+          success: false,
+          message: "Customer not found. They may have already been deleted.",
+        };
+      }
+    }
+    return {
+      success: false,
+      message:
+        error.message ||
+        "An unexpected error occurred while trying to delete the customer.",
+    };
+  }
+}
 async function getAccountDailyRate(accountId: string): Promise<number> {
   const account = await prisma.account.findUnique({
     where: { id: accountId },

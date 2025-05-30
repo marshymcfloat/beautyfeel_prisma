@@ -439,7 +439,7 @@ export default function CashierInterceptedModal() {
             error={formErrors.name}
             initialValue={name}
             onCustomerSelect={handleCustomerSelected}
-            onChange={handleCustomerNameInputChange}
+            onInputChange={handleCustomerNameInputChange}
             disabled={isAnyProcessLoading}
           />
           {formErrors.name && (
@@ -464,7 +464,7 @@ export default function CashierInterceptedModal() {
             />
             <label
               htmlFor="email-input"
-              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-customOffWhite px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : isEmailInputDisabled ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${isEmailInputDisabled ? "cursor-not-allowed" : "cursor-text"}`}
+              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-white px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : isEmailInputDisabled ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${isEmailInputDisabled ? "cursor-not-allowed" : "cursor-text"}`}
             >
               E-mail {customerId === null ? "*" : "(From selected customer)"}{" "}
               {/* Indicate required for new */}
