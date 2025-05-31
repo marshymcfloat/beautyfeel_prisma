@@ -1616,8 +1616,8 @@ export async function transactionSubmission(
   transactionForm: CashierState,
 ): Promise<TransactionSubmissionResponse> {
   let bookingDateTimeForConfirmationEmail: Date | null = null;
-  let servicesForConfirmationEmail: { name: string }[] = [];
-  const transactionProcessingStartTimeUTC = new Date(); // Mark start time
+  let servicesForConfirmationEmail: { name: string }[] = []; // List for the email body
+  const transactionProcessingStartTimeUTC = new Date(); // Mark start time on the server
 
   try {
     const {
@@ -1625,44 +1625,65 @@ export async function transactionSubmission(
       date: dateString,
       time: timeString,
       serveTime,
-      email,
-      servicesAvailed,
+      email, // email might be null or undefined from the client
+      servicesAvailed, // This is likely the AvailedItem[] type defined above
       voucherCode,
       paymentMethod,
       grandTotal,
       totalDiscount,
       selectedRecommendedAppointmentId,
       generateNewFollowUpForFulfilledRA,
+      customerId: formCustomerId, // Use a different name to avoid conflict with customerRecord.id
     } = transactionForm;
 
-    // --- Validation ---
+    // --- Server-side Validation (Basic Sanity Checks) ---
+    // Note: Client-side handles most validation, but server should verify critical fields
     const errors: Record<string, string> = {};
-    if (!name || !name.trim()) errors.name = "Customer name is required.";
-    const trimmedEmail = email?.trim() || null;
+    if (!name || !name.trim())
+      errors.name = "Customer name is required (server check).";
 
+    const trimmedEmail = email?.trim() || null; // Use null if email is null/undefined or empty after trim
+
+    // Keep email format validation only if email IS provided
     if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      errors.email = "Invalid email format.";
+      errors.email = "Invalid email format (server check).";
     }
+
     if (!servicesAvailed || servicesAvailed.length === 0) {
-      errors.servicesAvailed = "At least one service or set must be selected.";
+      errors.servicesAvailed =
+        "At least one service or set must be selected (server check).";
     }
-    // Note: Payment method validation is included in the original code, good.
     if (!paymentMethod) {
-      errors.paymentMethod = "Payment method is required.";
+      errors.paymentMethod = "Payment method is required (server check).";
     }
+    // Validate payment method is a valid enum value if provided
+    if (
+      paymentMethod &&
+      !Object.values(PaymentMethod).includes(paymentMethod as any)
+    ) {
+      errors.paymentMethod = "Invalid payment method provided (server check).";
+    }
+
     if (serveTime === "later" && (!dateString || !timeString)) {
-      errors.serveTime = "Date and time are required for later service.";
+      errors.serveTime =
+        "Date and time are required for later service (server check).";
     }
+
+    // Additional check: Ensure selected items have price > 0 unless they are part of a set with price 0?
+    // This depends on how your UI handles prices and discounts.
+    // For simplicity, skipping this complex check for now.
 
     if (Object.keys(errors).length > 0) {
+      console.warn("[TX Submit] Server-side validation failed:", errors);
       return {
         success: false,
-        message: "Validation failed. Please check the form.",
-        errors: convertErrorsToStringArrays(errors),
+        message: "Validation failed. Please check the form.", // Generic message for client
+        errors: convertErrorsToStringArrays(errors), // Send specific errors back
       };
     }
+    // --- End Server-side Validation ---
 
-    const customerNameFormatted = formatName(name); // Assuming formatName utility
+    const customerNameFormatted = formatName(name); // Assuming formatName utility exists
     let finalBookingDateTimeUTC = transactionProcessingStartTimeUTC; // Default to now if serveTime is 'now'
 
     if (serveTime === "later" && dateString && timeString) {
@@ -1670,20 +1691,26 @@ export async function transactionSubmission(
         const [year, month, day] = dateString.split("-").map(Number);
         const [hours, minutes] = timeString.split(":").map(Number);
 
-        const phtEquivalentUTC = new Date(
-          Date.UTC(year, month - 1, day, hours, minutes, 0),
-        );
-        const phtOffsetMs = MANILA_OFFSET_HOURS * 60 * 60 * 1000;
-        const targetUTCMs = phtEquivalentUTC.getTime() - phtOffsetMs;
+        // Create date object in PHT (UTC+8)
+        // Note: This assumes the server environment's default timezone doesn't interfere
+        // A more robust way is to calculate UTC explicitly using PHT offset.
+        const targetDatePHT = new Date(year, month - 1, day, hours, minutes, 0); // Month is 0-indexed
 
-        finalBookingDateTimeUTC = new Date(targetUTCMs);
+        // Calculate the equivalent UTC time
+        const phtOffsetMinutes = MANILA_OFFSET_HOURS * 60;
+        const targetUtcTime =
+          targetDatePHT.getTime() -
+          targetDatePHT.getTimezoneOffset() * 60000 +
+          phtOffsetMinutes * 60000;
+        finalBookingDateTimeUTC = new Date(targetUtcTime);
 
         if (isNaN(finalBookingDateTimeUTC.getTime())) {
           throw new Error(
             "Invalid date/time for 'later' booking after UTC conversion.",
           );
         }
-        bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC; // Store for email
+        // Store the calculated UTC time for the confirmation email
+        bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC;
       } catch (e: any) {
         console.error(
           "Server Action: Error parsing date/time for 'later' booking:",
@@ -1704,27 +1731,40 @@ export async function transactionSubmission(
         // --- Customer Handling ---
         let customerRecord;
         // Try to find by ID first if transactionForm.customerId is available from cashier state
-        if (transactionForm.customerId) {
+        if (formCustomerId) {
           customerRecord = await tx.customer.findUnique({
-            where: { id: transactionForm.customerId },
+            where: { id: formCustomerId },
           });
+          // If customerId was provided but not found, maybe it was deleted? Error or create new?
+          // Decided to let it fall through to create new if not found by ID.
+          if (!customerRecord) {
+            console.warn(
+              `[TX Submit] Customer ID ${formCustomerId} provided in form but not found in DB. Proceeding to lookup by name or create new.`,
+            );
+          }
         }
-        // If not found by ID or no ID provided, try by name (less reliable for existing)
+
+        // If not found by ID or no ID provided, try by name
         if (!customerRecord) {
           customerRecord = await tx.customer.findFirst({
             where: { name: customerNameFormatted },
+            // Add email to where clause if you want to match by name AND email for finding existing
+            // where: { name: customerNameFormatted, email: trimmedEmail || undefined }, // Use undefined to ignore null/empty email in where
           });
-        }
-
-        if (customerRecord) {
-          // Existing customer
-          if (trimmedEmail && customerRecord.email !== trimmedEmail) {
-            // Update email if changed and provided
+          // If found by name but the form email is different from the DB email, update the DB email
+          if (
+            customerRecord &&
+            trimmedEmail !== null &&
+            customerRecord.email !== trimmedEmail
+          ) {
             try {
               customerRecord = await tx.customer.update({
                 where: { id: customerRecord.id },
                 data: { email: trimmedEmail },
               });
+              console.log(
+                `[TX Submit] Updated email for existing customer ${customerRecord.id}`,
+              );
             } catch (e: any) {
               if (e.code === "P2002" && e.meta?.target?.includes("email"))
                 throw new Error(
@@ -1732,26 +1772,52 @@ export async function transactionSubmission(
                 );
               throw e; // Re-throw other errors
             }
-          }
-        } else {
-          // New customer
-          // Note: Original code threw error if email was missing for new customer
-          // Let's make sure required fields are present for a new customer record
-          if (!trimmedEmail)
-            throw new Error(
-              "Email is required to create a new customer profile.",
+          } else if (
+            customerRecord &&
+            trimmedEmail === null &&
+            customerRecord.email !== null
+          ) {
+            // User cleared email field for existing customer. Do not clear DB email.
+            console.log(
+              `[TX Submit] User cleared email field for existing customer ${customerRecord.id}. Keeping existing email in DB.`,
             );
+          }
+        }
+
+        // If still no customer record, create a new one
+        if (!customerRecord) {
+          // New customer - email is optional now
           try {
             customerRecord = await tx.customer.create({
-              data: { name: customerNameFormatted, email: trimmedEmail },
+              data: {
+                name: customerNameFormatted,
+                email: trimmedEmail, // Allow null for email here
+              },
             });
+            console.log(
+              `[TX Submit] Created new customer ${customerRecord.id}`,
+            );
           } catch (e: any) {
-            if (e.code === "P2002" && e.meta?.target?.includes("email"))
+            // Handle unique email constraint error only if an email was provided
+            if (
+              e.code === "P2002" &&
+              e.meta?.target?.includes("email") &&
+              trimmedEmail !== null
+            ) {
               throw new Error(
                 `The email "${trimmedEmail}" is already in use by another customer.`,
               );
+            }
+            // Handle unique name constraint error if you have one (less common without email)
+            // if (e.code === "P2002" && e.meta?.target?.includes("name")) {
+            //     throw new Error(`A customer with the name "${customerNameFormatted}" already exists.`);
+            // }
             throw e; // Re-throw other errors
           }
+        }
+        // Ensure we have a customerRecord ID before proceeding
+        if (!customerRecord?.id) {
+          throw new Error("Failed to create or find customer record.");
         }
 
         // --- Voucher Handling ---
@@ -1771,6 +1837,7 @@ export async function transactionSubmission(
             data: { usedAt: new Date() }, // Mark as used
           });
           processedVoucherId = voucher.id;
+          console.log(`[TX Submit] Applied voucher ${voucher.id}`);
         }
 
         // --- Transaction Record Creation ---
@@ -1780,13 +1847,17 @@ export async function transactionSubmission(
             paymentMethod: paymentMethod as PaymentMethod, // Ensure paymentMethod is of PaymentMethod enum type
             grandTotal,
             discount: totalDiscount,
-            status: Status.PENDING, // Initial status
+            status: Status.PENDING, // Initial status (or COMPLETED if payment is confirmed immediately)
             bookedFor: finalBookingDateTimeUTC, // Use the calculated booking time
             voucherId: processedVoucherId,
             createdAt: transactionProcessingStartTimeUTC, // Record when the transaction processing started
-            // branchId might be needed if transactions are branch-specific
+            // branchId might be needed here if transactions are tied to a specific branch context
+            // originBranchId: transactionForm.originBranchId, // Example if tracked in cashier state
           },
         });
+        console.log(
+          `[TX Submit] Created transaction ${newTransactionRecord.id}`,
+        );
 
         // --- Optimization: Fetch all required service and set details in bulk ---
         const serviceItemIds = servicesAvailed
@@ -1796,15 +1867,15 @@ export async function transactionSubmission(
           .filter((item) => item.type === "set")
           .map((item) => item.id);
 
-        // Fetch service details
+        // Fetch service details (including price and title)
         const serviceDetailsMap = new Map<
           string,
-          { id: string; price: number }
+          { id: string; price: number; title: string }
         >();
         if (serviceItemIds.length > 0) {
           const serviceDetails = await tx.service.findMany({
             where: { id: { in: serviceItemIds } },
-            select: { id: true, price: true },
+            select: { id: true, price: true, title: true },
           });
           serviceDetails.forEach((s) => serviceDetailsMap.set(s.id, s));
         }
@@ -1814,19 +1885,19 @@ export async function transactionSubmission(
           string,
           {
             id: string;
-            title: string;
-            services: { id: string; price: number; title: string }[];
+            title: string; // Keep set title
+            services: { id: string; price: number; title: string }[]; // Services within the set
           }
         >();
         const servicesInSetsMap = new Map<
           string,
-          { id: string; price: number; title: string }[]
+          { id: string; price: number; title: string }[] // Store services array by set ID
         >();
         if (setItemIds.length > 0) {
           const setDetailsWithServices = await tx.serviceSet.findMany({
             where: { id: { in: setItemIds } },
             include: {
-              services: { select: { id: true, price: true, title: true } }, // Services within the set
+              services: { select: { id: true, price: true, title: true } }, // Select required fields for services
             },
           });
           setDetailsWithServices.forEach((set) => {
@@ -1837,63 +1908,82 @@ export async function transactionSubmission(
         // --- End Optimization Fetch ---
 
         // --- Availed Services Creation (Using fetched data) ---
-        servicesForConfirmationEmail = []; // Reset for this transaction
+        servicesForConfirmationEmail = []; // Reset for this transaction details
         for (const item of servicesAvailed as AvailedItem[]) {
-          // Cast to ensure type
-          // Use item.name for confirmation email, assuming AvailedItem has `name` property
-          // If not, adjust this to use service/set title from fetched data.
-          servicesForConfirmationEmail.push({ name: item.name });
+          // Cast to ensure type safety
+          // Use item.title from client or fetch title from DB details?
+          // Using item.title from client for email list, assuming it's reliable.
+          servicesForConfirmationEmail.push({ name: item.name }); // Use title for email
 
           if (item.type === "service") {
             const serviceDetails = serviceDetailsMap.get(item.id);
 
-            // Calculate initial commission based on the original service price fetched
-            const initialCommission = serviceDetails
-              ? Math.floor(serviceDetails.price * SALARY_COMMISSION_RATE)
-              : 0;
+            if (!serviceDetails) {
+              console.warn(
+                `[TX Submit] Service details not found for ID: ${item.id}`,
+              );
+              // Decide how to handle this - error or skip? Error is safer.
+              throw new Error(
+                `Failed to find details for service "${item.name}". Please try again.`,
+              );
+            }
+
+            // Calculate initial commission based on the original service price fetched from DB
+            const initialCommission = Math.floor(
+              serviceDetails.price * SALARY_COMMISSION_RATE,
+            );
 
             await tx.availedService.create({
               data: {
                 transactionId: newTransactionRecord.id,
                 serviceId: item.id,
-                quantity: item.quantity || 1, // Default to 1 if quantity not present
-                price: item.originalPrice, // Use the price from the form/cart (can be affected by client-side logic/discounts)
-                // Note: It might be better to store the *original* service price fetched
-                // from the database here instead of item.originalPrice if you need
-                // to reconstruct the transaction cost accurately server-side.
-                commissionValue: initialCommission, // Calculated based on original price
+                quantity: item.quantity || 1, // Assuming quantity is 1 if not specified or from UI
+                // Store the price from the client-side cart item (reflects discounts/vouchers applied in UI)
+                price: item.originalPrice,
+                // OR store the original DB price: price: serviceDetails.price, // Depends on reporting needs
+
+                commissionValue: initialCommission, // Calculated based on original DB price
                 status: Status.PENDING, // Worker will mark as DONE
               },
             });
+            console.log(
+              `[TX Submit] Created availedService for service ${item.id}`,
+            );
           } else if (item.type === "set") {
             const servicesInSet = servicesInSetsMap.get(item.id);
             const setDetails = setDetailsMap.get(item.id); // Get set title/id
 
             if (servicesInSet && setDetails) {
               for (const serviceInSet of servicesInSet) {
-                // Commission for service within a set is based on its individual price
+                // Commission for service within a set is based on its individual price from the DB
                 const initialCommissionInSet = Math.floor(
                   serviceInSet.price * SALARY_COMMISSION_RATE,
                 );
+
                 await tx.availedService.create({
                   data: {
                     transactionId: newTransactionRecord.id,
                     serviceId: serviceInSet.id, // ID of the individual service in the set
-                    quantity: item.quantity || 1, // Quantity of the set applies to each service in it
-                    price: 0, // Price is typically on the set itself, not individual services within it for transaction purposes
-                    commissionValue: initialCommissionInSet,
-                    originatingSetId: setDetails.id,
-                    originatingSetTitle: setDetails.title,
+                    quantity: item.quantity || 1, // Quantity of the set applies to each service within it
+                    // Price for individual services within a set is typically 0 on the transaction line item
+                    // as the price is applied to the set itself.
+                    price: 0,
+                    commissionValue: initialCommissionInSet, // Commission based on individual service price in set
+                    originatingSetId: setDetails.id, // Link back to the set
+                    originatingSetTitle: setDetails.title, // Store set title for easier reporting
                     status: Status.PENDING,
                   },
                 });
+                console.log(
+                  `[TX Submit] Created availedService for service ${serviceInSet.id} within set ${item.id}`,
+                );
               }
             } else {
               console.warn(
                 `[TX Submit] Set details or services not found for set ID: ${item.id}`,
               );
-              // Decide how to handle this - maybe throw an error or log and continue?
-              // Throwing might be safer to ensure data integrity.
+              // Decide how to handle this - throw an error or log and continue?
+              // Throwing is safer to ensure data integrity if a set's contents are missing.
               throw new Error(
                 `Failed to find details for set "${item.name}". Please try again.`,
               );
@@ -1902,13 +1992,13 @@ export async function transactionSubmission(
             console.warn(
               `[TX Submit] Unknown item type encountered: ${item.type}`,
             );
-            // Handle unexpected item types if necessary
+            // Log or throw error for unexpected item types if necessary
           }
         }
         // --- End Availed Services Creation ---
 
         // --- Handle existing RA fulfillment and update customer.nextAppointment ---
-        let customerIdForNextApptUpdate: string = customerRecord.id;
+        let customerIdForNextApptUpdate: string = customerRecord.id; // Use this ID for the final customer update
 
         if (selectedRecommendedAppointmentId) {
           const raToLink = await tx.recommendedAppointment.findUnique({
@@ -1944,6 +2034,8 @@ export async function transactionSubmission(
                 status: RecommendedAppointmentStatus.ATTENDED,
                 attendedTransactionId: newTransactionRecord.id,
                 suppressNextFollowUpGeneration: suppressNextGenFlag,
+                // Optionally record the actual date it was attended if different from bookedFor
+                // attendedAt: new Date(), // If you want a timestamp
               },
             });
             console.log(
@@ -1953,6 +2045,8 @@ export async function transactionSubmission(
             console.warn(
               `[TX Submit] Skipped linking RA ${selectedRecommendedAppointmentId}. Conditions not met or RA not found/already processed. RA found: ${!!raToLink}, Belongs to customer: ${raToLink?.customerId === customerRecord.id}, Status: ${raToLink?.status}, Attended TX: ${raToLink?.attendedTransactionId}`,
             );
+            // Consider if this should be an error if the user *selected* an RA they thought was active
+            // but it turned out not to be. For now, it's a warning and proceeds without linking.
           }
         }
 
@@ -1961,31 +2055,38 @@ export async function transactionSubmission(
           where: { id: customerRecord.id },
           data: { totalPaid: { increment: grandTotal } },
         });
+        console.log(
+          `[TX Submit] Updated totalPaid for customer ${customerRecord.id}`,
+        );
 
         // Re-evaluate and Update customer.nextAppointment
-        // This happens after an RA might have been marked ATTENDED
+        // This happens after an RA might have been marked ATTENDED.
+        // Find the earliest future active recommendation for this customer.
         const customerForNextApptQuery = await tx.customer.findUnique({
           where: { id: customerIdForNextApptUpdate },
           select: {
             recommendedAppointments: {
               where: {
+                customerId: customerIdForNextApptUpdate, // Redundant but explicit
                 status: {
                   in: [
                     RecommendedAppointmentStatus.RECOMMENDED,
                     RecommendedAppointmentStatus.SCHEDULED,
                   ],
                 },
-                recommendedDate: { gte: startOfDay(new Date()) }, // Future active RAs from today onwards
+                // Find future recommendations from *today's* perspective, not the bookedFor date
+                recommendedDate: { gte: startOfDay(new Date()) },
               },
               orderBy: { recommendedDate: "asc" },
-              take: 1,
+              take: 1, // Get only the earliest one
               select: { recommendedDate: true },
             },
           },
         });
         const newEarliestActiveRADate =
           customerForNextApptQuery?.recommendedAppointments[0]
-            ?.recommendedDate || null;
+            ?.recommendedDate || null; // Will be null if no future active RAs
+
         await tx.customer.update({
           where: { id: customerIdForNextApptUpdate },
           data: { nextAppointment: newEarliestActiveRADate },
@@ -1995,47 +2096,54 @@ export async function transactionSubmission(
         );
         // --- End RA handling and nextAppointment update ---
 
-        // Return necessary data from the transaction
+        // Return necessary data from the transaction for post-transaction actions (like email)
         return {
           transaction: newTransactionRecord,
           customerForEmail: {
             name: customerRecord.name,
-            email: customerRecord.email,
+            email: customerRecord.email, // Pass the potentially null email
           },
         };
       },
-      // Keep your desired client-side timeout, but note Accelerate has its own limit
-      { timeout: 15000, maxWait: 10000 },
+      // Keep your desired client-side timeout, but note Accelerate has its own limit (typically 15s)
+      { timeout: 15000, maxWait: 10000 }, // Example timeouts
     );
 
     // Extract data from the transaction result
     const { transaction: createdTransaction, customerForEmail: customerData } =
       transactionResult;
 
-    // Send booking confirmation email if applicable (outside the transaction)
+    // Send booking confirmation email if applicable (outside the transaction block)
+    // This check correctly handles the case where customerData.email is null
     if (
       serveTime === "later" &&
-      customerData?.email &&
+      customerData?.email && // Ensure email exists
       bookingDateTimeForConfirmationEmail
     ) {
-      // Note: Error handling for the email sending should ideally be separate
-      // so it doesn't fail the main transaction submission response.
       try {
         await sendBookingConfirmationEmail(
           customerData.name,
           customerData.email,
           bookingDateTimeForConfirmationEmail,
-          servicesForConfirmationEmail,
-          LOGO_URL_SA,
+          servicesForConfirmationEmail, // Use the list of services for the email
+          LOGO_URL_SA, // Pass logo URL
+        );
+        console.log(
+          `[TX Submit] Booking confirmation email sent to ${customerData.email}`,
         );
       } catch (emailError) {
         console.error(
           "[TX Submit] Error sending confirmation email:",
           emailError,
         );
-        // Optionally return a warning in the success response
+        // The main transaction succeeded, so we return success.
+        // Optionally add a warning message to the success response if email failure is non-critical.
         // return { success: true, transactionId: createdTransaction.id, warning: "Transaction saved, but confirmation email failed." };
       }
+    } else if (serveTime === "later") {
+      console.log(
+        `[TX Submit] Skipping confirmation email for TX ${createdTransaction.id}. Reason: email not provided or serveTime is not 'later'.`,
+      );
     }
 
     // Success response
@@ -2045,28 +2153,30 @@ export async function transactionSubmission(
     console.error("[TX Submit] CRITICAL Error:", error);
     let message =
       "An unexpected error occurred during the transaction process.";
-    const fieldErrors: Record<string, string[]> = {};
+    const fieldErrors: Record<string, string[]> = {}; // Use string[] for consistency with client's error mapping
 
     if (error instanceof Error) {
-      message = error.message; // Use the specific error message
+      message = error.message; // Use the specific error message from the throw
 
       // Map specific known errors to field errors
       if (
         message.includes("email") &&
         (message.includes("already used") ||
-          message.includes("associated with another customer") ||
-          message.includes("required to create a new customer profile")) // Catch new customer email error
+          message.includes("associated with another customer"))
       ) {
-        fieldErrors.email = [message];
+        fieldErrors.email = [message]; // Use array format
       } else if (message.includes("voucher")) {
-        fieldErrors.voucherCode = [message];
+        fieldErrors.voucherCode = [message]; // Use array format
       } else if (
         message.includes("date or time format") ||
         message.includes("Invalid date/time")
       ) {
-        fieldErrors.serveTime = [message];
-      } else if (message.includes("Failed to find details for set")) {
-        fieldErrors.servicesAvailed = [message]; // Link set error to services field
+        fieldErrors.serveTime = [message]; // Use array format
+      } else if (
+        message.includes("Failed to find details for set") ||
+        message.includes("Failed to find details for service")
+      ) {
+        fieldErrors.servicesAvailed = [message]; // Link item errors to services field
       }
       // Add more specific error checks if needed
 
@@ -2077,13 +2187,13 @@ export async function transactionSubmission(
         "code" in error &&
         typeof (error as any).code === "string"
       ) {
-        const prismaError = error as any; // Cast for easier access to potential Prisma properties
+        const prismaError = error as any; // Cast for easier access
 
         if (prismaError.code === "P6005") {
-          // This is the Accelerate Timeout error
+          // Accelerate Timeout error
           message =
-            "The transaction took too long to complete. Please try again or simplify the transaction if possible.";
-          fieldErrors.general = [message]; // Or link to a relevant field if applicable
+            "The transaction took too long to complete. Please try again or simplify the transaction.";
+          fieldErrors.general = [message];
           console.error(
             "Prisma Accelerate Timeout Error (P6005):",
             prismaError.message,
@@ -2091,28 +2201,50 @@ export async function transactionSubmission(
           );
         } else if (prismaError.code === "P2002") {
           // Catch P2002 unique constraint errors not explicitly handled above
+          // (already handled specific email/voucher in the if/else if chain above)
+          // This catch-all for P2002 might be redundant if specific ones are caught,
+          // but good fallback.
           const target =
             prismaError.meta?.target?.join(", ") || "unknown field";
           message = `A unique constraint failed: ${target}. This usually means a record with the same value already exists.`;
-          if (target.includes("email")) fieldErrors.email = [message];
-          else if (target.includes("code")) fieldErrors.voucherCode = [message];
+          // Try to map to a field if not already done
+          if (!fieldErrors.email && target.includes("email"))
+            fieldErrors.email = [message];
+          else if (!fieldErrors.voucherCode && target.includes("code"))
+            fieldErrors.voucherCode = [message];
           else fieldErrors.general = [message];
         } else if (prismaError.code === "P2028") {
-          // Generic transaction timeout (less specific than P6005 with Accelerate)
+          // Generic transaction timeout
           message = "The transaction timed out. Please try again.";
           fieldErrors.general = [message];
+        } else {
+          // For other specific Prisma errors you might encounter
+          console.error(
+            `Unhandled Prisma Error ${prismaError.code}:`,
+            prismaError,
+          );
+          // Default message remains the same or can be made more specific
+          if (Object.keys(fieldErrors).length === 0) {
+            // Only add general error if no specific fields were identified
+            fieldErrors.general = [message];
+          }
         }
-        // Add other specific Prisma error codes you want to handle with custom messages
       } else {
-        // For generic Error objects or unknown errors not specifically handled
-        fieldErrors.general = [message]; // Put the error message in a general bucket
+        // For generic Error objects or unknown non-Prisma errors not specifically handled
+        if (Object.keys(fieldErrors).length === 0) {
+          fieldErrors.general = [message]; // Put the error message in a general bucket
+        }
       }
     } else {
-      // Handle non-Error type throws
-      fieldErrors.general = [message]; // Fallback to general error bucket
+      // Handle non-Error type throws (e.g., throw "some string")
+      fieldErrors.general = ["An unknown error occurred."]; // Fallback to general error bucket
     }
 
+    // Return a structured error response
     return { success: false, message, errors: fieldErrors };
+  } finally {
+    // Ensure Prisma client is disconnected if needed (usually handled automatically in Next.js server actions)
+    // await prisma.$disconnect(); // Uncomment if needed based on your Prisma setup
   }
 }
 

@@ -214,20 +214,18 @@ export default function CashierInterceptedModal() {
   );
 
   const handleEmailInputChange = useCallback(
+    // <-- Keep this function, but remove the customerId check inside
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const value = e.target.value;
-
-      if (customerId === null) {
-        dispatch(cashierActions.setEmail(value));
-
-        setFormErrors((prev) => {
-          const newState = { ...prev };
-          delete newState.email;
-          return newState;
-        });
-      }
+      // Allow setting email regardless of customerId status
+      dispatch(cashierActions.setEmail(value || null)); // Set to null if value is empty string or null
+      setFormErrors((prev) => {
+        const newState = { ...prev };
+        delete newState.email;
+        return newState;
+      });
     },
-    [dispatch, customerId],
+    [dispatch],
   );
 
   const handleSelectRecommendation = useCallback(
@@ -354,12 +352,15 @@ export default function CashierInterceptedModal() {
     setFormErrors({});
     let localErrors: Record<string, string> = {};
 
+    // Name is still required
     if (!name.trim()) localErrors.name = "Customer name required.";
 
-    if (customerId === null && (!email || !email.trim())) {
-      localErrors.email = "Email is required for new customers.";
-    }
+    // *** REMOVE the old email requirement check: ***
+    // if (customerId === null && (!email || !email.trim())) {
+    //   localErrors.email = "Email is required for new customers.";
+    // }
 
+    // *** KEEP the email format validation if email IS provided: ***
     if (
       email &&
       email.trim() &&
@@ -368,9 +369,12 @@ export default function CashierInterceptedModal() {
       localErrors.email = "Invalid email format.";
     }
 
+    // Services are still required
     if (!servicesAvailed.length)
       localErrors.servicesAvailed = "Select at least one service.";
+    // Payment method is still required
     if (!paymentMethod) localErrors.paymentMethod = "Payment method required.";
+    // Date/time required for later booking
     if (serveTime === "later" && (!date || !time))
       localErrors.serveTime = "Date and time required for later booking.";
 
@@ -447,27 +451,25 @@ export default function CashierInterceptedModal() {
           )}
         </div>
 
-        {/* Email Input (visible and editable only if no existing customer is selected) */}
-        {/* Always render, but control disabled state and label */}
         <div className="w-full">
           <div className="relative w-full">
             <input
-              value={email ?? ""}
+              value={email ?? ""} // Use ?? "" to handle null gracefully
               onChange={handleEmailInputChange}
-              placeholder=" "
+              placeholder=" " // Required for the label animation
               type="email"
               id="email-input"
-              disabled={isEmailInputDisabled || isAnyProcessLoading}
+              disabled={isAnyProcessLoading}
               className={`peer relative z-0 h-[50px] w-full rounded-md border-2 ${formErrors.email ? "border-red-500" : "border-gray-300"} px-3 pt-1 shadow-sm outline-none transition-colors duration-150 focus:border-customDarkPink disabled:cursor-not-allowed disabled:bg-gray-100`}
               aria-invalid={!!formErrors.email}
               aria-describedby={formErrors.email ? "email-error" : undefined}
             />
             <label
               htmlFor="email-input"
-              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-white px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : isEmailInputDisabled ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${isEmailInputDisabled ? "cursor-not-allowed" : "cursor-text"}`}
+              className={`pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 transform bg-white px-1 text-base font-medium transition-all duration-150 peer-placeholder-shown:top-1/2 peer-placeholder-shown:-translate-y-1/2 peer-placeholder-shown:text-base peer-focus:top-0 peer-focus:z-10 peer-focus:-translate-y-1/2 peer-focus:text-xs peer-[:not(:placeholder-shown)]:top-0 peer-[:not(:placeholder-shown)]:z-10 peer-[:not(:placeholder-shown)]:-translate-y-1/2 peer-[:not(:placeholder-shown)]:text-xs ${formErrors.email ? "text-red-600" : customerId !== null && email ? "text-gray-400" : "text-gray-500"} peer-focus:${formErrors.email ? "text-red-600" : "text-customDarkPink"} ${customerId !== null && email ? "cursor-not-allowed" : "cursor-text"}`} // Adjust label color/cursor for pre-filled email if desired
             >
-              E-mail {customerId === null ? "*" : "(From selected customer)"}{" "}
-              {/* Indicate required for new */}
+              E-mail{" "}
+              {customerId !== null ? "(From selected customer)" : "(Optional)"}
             </label>
           </div>
           {formErrors.email && (
@@ -475,12 +477,12 @@ export default function CashierInterceptedModal() {
               {formErrors.email}
             </p>
           )}
-          {/* Optional hint text */}
-          {customerId === null && (
+          {/* Optional hint text (can remove if label is sufficient) */}
+          {/* {customerId === null && (
             <p className="mt-1 px-1 text-xs text-gray-500">
-              Required for new customers.
+              Optional. Providing an email allows for customer profile creation.
             </p>
-          )}
+          )} */}
         </div>
 
         {/* Customer Recommendations Section */}
@@ -510,8 +512,6 @@ export default function CashierInterceptedModal() {
                     {selectedRecommendation.originatingService
                       ?.followUpPolicy && (
                       <span className="ml-0 mt-1 inline-block rounded-full bg-customLightBlue px-2 py-0.5 text-xs text-customBlack sm:ml-2 sm:mt-0">
-                        {" "}
-                        {/* Adjusted margin/display for responsiveness */}
                         Policy:{" "}
                         {
                           selectedRecommendation.originatingService
@@ -811,17 +811,16 @@ export default function CashierInterceptedModal() {
           type="button"
           disabled={
             isAnyProcessLoading ||
-            !name.trim() ||
-            (customerId === null && (!email || !email.trim())) ||
-            (customerId === null &&
-              email &&
+            !name.trim() || // Name is required
+            // Email format check if email is provided (removed the requirement for new customers)
+            (email &&
               email.trim() &&
               !/^[\w-]+(\.[\w-]+)*@([\w-]+\.)+[a-zA-Z]{2,7}$/.test(
                 email.trim(),
               )) ||
-            !servicesAvailed.length ||
-            !paymentMethod ||
-            (serveTime === "later" && (!date || !time))
+            !servicesAvailed.length || // Services required
+            !paymentMethod || // Payment method required
+            (serveTime === "later" && (!date || !time)) // Date/time required for later
           }
         >
           {isSubmitting ? "Submitting..." : "Confirm Transaction"}
