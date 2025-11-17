@@ -1319,11 +1319,11 @@ export interface SalaryBreakdownItem {
   availedServiceId: string; // Added: Useful to link back to the parent AS
   unitId: string; // Added for clarity, although 'id' is already the unit ID
   serviceTitle: string | null; // Title of the Service
+  servicePrice: number; // Price per unit (calculated from parent AS price / quantity or service.price)
   customerName: string | null; // Name of the Customer from the Transaction
   completedAt: Date | null; // Completion time (servedAt) for THIS UNIT
   commissionEarned: number; // Commission calculated FOR THIS UNIT
   originatingSetTitle: string | null; // Title from the originating ServiceSet
-  // REMOVED servicePrice: number; // Removed as it was causing a type mismatch
 }
 
 export type CustomerProp = {
