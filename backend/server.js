@@ -83,6 +83,13 @@ const CRON_ITEM_PROCESSING_DELAY = parseInt(
 );
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE || "Asia/Manila";
 
+// --- CRON Job Execution Tracking (Prevent Overlapping Executions) ---
+const cronJobExecutions = new Map();
+const CRON_EXECUTION_TIMEOUT_MS = parseInt(
+  process.env.CRON_EXECUTION_TIMEOUT_MS || "300000", // 5 minutes default timeout
+  10,
+);
+
 // --- Email Retry Configuration ---
 const MAX_EMAIL_RETRIES = parseInt(process.env.MAX_EMAIL_RETRIES || "3", 10); // Max attempts after the initial one
 const BASE_EMAIL_RETRY_DELAY_MS = parseInt(
@@ -2229,6 +2236,65 @@ io.on("connection", async (socket) => {
 
 // --- CRON JOBs ---
 
+// Wrapper function to prevent overlapping executions and track timing
+async function executeCronJobWithLock(jobName, jobFunction) {
+  const now = Date.now();
+  const lastExecution = cronJobExecutions.get(jobName);
+
+  // Check if previous execution is still running (with timeout protection)
+  if (lastExecution && lastExecution.isRunning) {
+    const executionDuration = now - lastExecution.startTime;
+    if (executionDuration < CRON_EXECUTION_TIMEOUT_MS) {
+      console.warn(
+        `[Cron ${jobName}] Previous execution still running (${Math.round(executionDuration / 1000)}s). Skipping this cycle to prevent overlap.`,
+      );
+      return;
+    } else {
+      // Previous execution timed out, mark as failed and continue
+      console.error(
+        `[Cron ${jobName}] Previous execution timed out after ${Math.round(executionDuration / 1000)}s. Forcing new execution.`,
+      );
+      lastExecution.isRunning = false;
+    }
+  }
+
+  // Mark as running
+  cronJobExecutions.set(jobName, {
+    isRunning: true,
+    startTime: now,
+    lastRunTime: lastExecution?.lastRunTime || null,
+    executionCount: (lastExecution?.executionCount || 0) + 1,
+  });
+
+  const scheduledTime = new Date();
+  const timeDrift = lastExecution
+    ? now - (lastExecution.expectedNextRun || now)
+    : 0;
+
+  if (Math.abs(timeDrift) > 5000) {
+    // Log if drift is more than 5 seconds
+    console.warn(
+      `[Cron ${jobName}] Time drift detected: ${Math.round(timeDrift / 1000)}s from expected time.`,
+    );
+  }
+
+  try {
+    // Execute the actual job function
+    await jobFunction();
+  } catch (error) {
+    console.error(`[Cron ${jobName}] Error during execution:`, error);
+  } finally {
+    // Mark as completed
+    const execution = cronJobExecutions.get(jobName);
+    if (execution) {
+      execution.isRunning = false;
+      execution.lastRunTime = now;
+      execution.lastDuration = now - execution.startTime;
+      execution.expectedNextRun = now; // Will be updated by cron scheduler
+    }
+  }
+}
+
 async function checkAndSendFollowUpReminders() {
   if (!resend) {
     console.log(
@@ -2236,8 +2302,10 @@ async function checkAndSendFollowUpReminders() {
     );
     return;
   }
+  
+  const jobStartTime = Date.now();
   console.log(
-    `[Cron FollowUp] Starting check for follow-up recommendation reminders...`,
+    `[Cron FollowUp] Starting check for follow-up recommendation reminders at ${new Date().toISOString()}...`,
   );
 
   const now = new Date();
@@ -2498,8 +2566,10 @@ async function checkAndSendFollowUpReminders() {
       e,
     );
   }
+  
+  const jobDuration = Date.now() - jobStartTime;
   console.log(
-    `[Cron FollowUp] Follow-up recommendation reminder check finished.`,
+    `[Cron FollowUp] Follow-up recommendation reminder check finished in ${Math.round(jobDuration / 1000)}s.`,
   );
 }
 
@@ -2510,8 +2580,10 @@ async function checkAndSendBookingReminders() {
     );
     return;
   }
+  
+  const jobStartTime = Date.now();
   console.log(
-    `[Cron BookingReminder] Cycle START. Current UTC: ${new Date().toISOString()}`,
+    `[Cron BookingReminder] Cycle START at ${new Date().toISOString()}. Current UTC: ${new Date().toISOString()}`,
   );
 
   const nowUTC = new Date();
@@ -2671,27 +2743,49 @@ async function checkAndSendBookingReminders() {
       e,
     );
   }
-  console.log(`[Cron BookingReminder] Cycle END.`);
+  
+  const jobDuration = Date.now() - jobStartTime;
+  console.log(
+    `[Cron BookingReminder] Cycle END in ${Math.round(jobDuration / 1000)}s.`,
+  );
 }
 
 // --- Socket Server Startup ---
 
 if (resend) {
-  cron.schedule(FOLLOW_UP_CRON_SCHEDULE, checkAndSendFollowUpReminders, {
-    scheduled: true,
-    timezone: CRON_TIMEZONE,
-  });
+  // Schedule with execution lock wrapper to prevent overlapping executions
+  cron.schedule(
+    FOLLOW_UP_CRON_SCHEDULE,
+    () => executeCronJobWithLock("FollowUp", checkAndSendFollowUpReminders),
+    {
+      scheduled: true,
+      timezone: CRON_TIMEZONE,
+    },
+  );
   console.log(
     `[Cron] Follow-up recommendation reminders scheduled: '${FOLLOW_UP_CRON_SCHEDULE}' (Timezone: ${CRON_TIMEZONE})`,
   );
 
-  cron.schedule(BOOKING_REMINDER_CRON_SCHEDULE, checkAndSendBookingReminders, {
-    scheduled: true,
-    timezone: CRON_TIMEZONE,
-  });
+  cron.schedule(
+    BOOKING_REMINDER_CRON_SCHEDULE,
+    () => executeCronJobWithLock("BookingReminder", checkAndSendBookingReminders),
+    {
+      scheduled: true,
+      timezone: CRON_TIMEZONE,
+    },
+  );
   console.log(
     `[Cron] 1-hour booking reminders scheduled: '${BOOKING_REMINDER_CRON_SCHEDULE}' (Timezone: ${CRON_TIMEZONE})`,
   );
+  
+  // Log CRON job status periodically (every 5 minutes)
+  setInterval(() => {
+    console.log(`[Cron Status] Active jobs:`, {
+      FollowUp: cronJobExecutions.get("FollowUp") || { status: "never run" },
+      BookingReminder:
+        cronJobExecutions.get("BookingReminder") || { status: "never run" },
+    });
+  }, 5 * 60 * 1000); // Every 5 minutes
 } else {
   console.warn(
     `[Cron] RESEND_API_KEY not set. All email reminder tasks are DISABLED.`,

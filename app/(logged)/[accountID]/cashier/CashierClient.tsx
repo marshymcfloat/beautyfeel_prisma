@@ -625,19 +625,21 @@ export default function CashierClient({
         )}
 
         <SelectInputGroup
+          name="serviceType"
           label="Service Type"
           options={serviceTypeOptions}
           value={serviceType}
-          onChange={(value) => handleSelectChanges("serviceType", value)}
+          onChange={handleSelectChanges}
           disabled={isCashierDisabled}
         />
 
         {serviceType === "single" && (
           <SelectInputGroup
+            name="branchFilter"
             label="Branch Filter"
             options={branchOptions}
             value={selectedBranchId}
-            onChange={(value) => handleSelectChanges("branchFilter", value)}
+            onChange={handleSelectChanges}
             disabled={isCashierDisabled}
           />
         )}
@@ -699,10 +701,11 @@ export default function CashierClient({
         />
 
         <SelectInputGroup
+          name="serveTime"
           label="Serve Time"
           options={serveTimeOptions}
           value={serveTime}
-          onChange={(value) => handleSelectChanges("serveTime", value)}
+          onChange={handleSelectChanges}
           disabled={isCashierDisabled}
         />
 
@@ -722,10 +725,11 @@ export default function CashierClient({
         )}
 
         <SelectInputGroup
+          name="paymentMethod"
           label="Payment Method"
           options={paymentMethodOptions}
           value={paymentMethod || ""}
-          onChange={(value) => handleSelectChanges("paymentMethod", value)}
+          onChange={handleSelectChanges}
           disabled={isCashierDisabled}
           error={formErrors.paymentMethod}
         />
