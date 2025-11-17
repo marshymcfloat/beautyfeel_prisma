@@ -180,6 +180,37 @@ export default function ManageTransactionsModal({
                 originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
                 originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
                 serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
+                units: as.units.map((unit) => ({
+                  ...unit,
+                  checkedBy: unit.checkedBy
+                    ? {
+                        id: unit.checkedBy.id,
+                        name: unit.checkedBy.name,
+                        username: "", // Not selected in query, set to empty string
+                        email: null, // Not selected in query
+                        role: [], // Not selected in query
+                        salary: 0, // Not selected in query
+                        dailyRate: 0, // Not selected in query
+                        branchId: null, // Not selected in query
+                        canRequestPayslip: false, // Not selected in query
+                        mustChangePassword: false, // Not selected in query
+                      }
+                    : null,
+                  servedBy: unit.servedBy
+                    ? {
+                        id: unit.servedBy.id,
+                        name: unit.servedBy.name,
+                        username: "", // Not selected in query, set to empty string
+                        email: null, // Not selected in query
+                        role: [], // Not selected in query
+                        salary: 0, // Not selected in query
+                        dailyRate: 0, // Not selected in query
+                        branchId: null, // Not selected in query
+                        canRequestPayslip: false, // Not selected in query
+                        mustChangePassword: false, // Not selected in query
+                      }
+                    : null,
+                })),
               })),
             })),
           );
@@ -203,7 +234,37 @@ export default function ManageTransactionsModal({
               originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
               originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
               serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
-              postTreatmentEmailSentAt: as.postTreatmentEmailSentAt ? new Date(as.postTreatmentEmailSentAt) : null, // Ensure undefined becomes null
+              units: as.units.map((unit) => ({
+                ...unit,
+                checkedBy: unit.checkedBy
+                  ? {
+                      id: unit.checkedBy.id,
+                      name: unit.checkedBy.name,
+                      username: "", // Not selected in query, set to empty string
+                      email: null, // Not selected in query
+                      role: [], // Not selected in query
+                      salary: 0, // Not selected in query
+                      dailyRate: 0, // Not selected in query
+                      branchId: null, // Not selected in query
+                      canRequestPayslip: false, // Not selected in query
+                      mustChangePassword: false, // Not selected in query
+                    }
+                  : null,
+                servedBy: unit.servedBy
+                  ? {
+                      id: unit.servedBy.id,
+                      name: unit.servedBy.name,
+                      username: "", // Not selected in query, set to empty string
+                      email: null, // Not selected in query
+                      role: [], // Not selected in query
+                      salary: 0, // Not selected in query
+                      dailyRate: 0, // Not selected in query
+                      branchId: null, // Not selected in query
+                      canRequestPayslip: false, // Not selected in query
+                      mustChangePassword: false, // Not selected in query
+                    }
+                  : null,
+              })),
             })),
           }));
           setTransactions(processedData);
@@ -445,6 +506,37 @@ export default function ManageTransactionsModal({
               originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
               originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
               serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
+              units: as.units?.map((unit) => ({
+                ...unit,
+                checkedBy: unit.checkedBy
+                  ? {
+                      id: unit.checkedBy.id,
+                      name: unit.checkedBy.name,
+                      username: "", // Not selected in query, set to empty string
+                      email: null, // Not selected in query
+                      role: [], // Not selected in query
+                      salary: 0, // Not selected in query
+                      dailyRate: 0, // Not selected in query
+                      branchId: null, // Not selected in query
+                      canRequestPayslip: false, // Not selected in query
+                      mustChangePassword: false, // Not selected in query
+                    }
+                  : null,
+                servedBy: unit.servedBy
+                  ? {
+                      id: unit.servedBy.id,
+                      name: unit.servedBy.name,
+                      username: "", // Not selected in query, set to empty string
+                      email: null, // Not selected in query
+                      role: [], // Not selected in query
+                      salary: 0, // Not selected in query
+                      dailyRate: 0, // Not selected in query
+                      branchId: null, // Not selected in query
+                      canRequestPayslip: false, // Not selected in query
+                      mustChangePassword: false, // Not selected in query
+                    }
+                  : null,
+              })) ?? [],
             }),
           ),
         };
