@@ -381,11 +381,12 @@ export default function ManagePayslips({
                   {/* Actions */}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     {isPending ? (
-                      <Loader2
-                        size={20}
-                        className="text-customBlue/80 inline-block animate-spin"
-                        title="Processing..."
-                      />
+                      <span title="Processing...">
+                        <Loader2
+                          size={20}
+                          className="text-customBlue/80 inline-block animate-spin"
+                        />
+                      </span>
                     ) : (
                       <>
                         {req.status === PayslipRequestStatus.PENDING && (
