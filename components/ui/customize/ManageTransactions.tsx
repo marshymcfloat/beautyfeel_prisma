@@ -85,6 +85,7 @@ export default function ManageTransactions() {
         if (transactionsRes.success && transactionsRes.data) {
           // Normalize undefined to null for fields that can be undefined in TransactionForManagement
           // but are required to be string | null (not undefined) in TransactionListData
+          // Also convert AvailedServiceUnitPropsForManagement to AvailedServiceUnitProps
           const normalizedTransactions: TransactionListData[] =
             transactionsRes.data.map((tx) => ({
               ...tx,
@@ -93,6 +94,16 @@ export default function ManageTransactions() {
                 originatingSetId: as.originatingSetId ?? null,
                 originatingSetTitle: as.originatingSetTitle ?? null,
                 serviceSetId: as.serviceSetId ?? null,
+                // Convert units from AvailedServiceUnitPropsForManagement to AvailedServiceUnitProps
+                // The server action now includes checkedById, servedById, createdAt, and updatedAt
+                units: as.units.map((unit) => ({
+                  ...unit,
+                  // Use the fields that are now included in the server action response
+                  checkedById: (unit as any).checkedById ?? unit.checkedBy?.id ?? null,
+                  servedById: (unit as any).servedById ?? unit.servedBy?.id ?? null,
+                  createdAt: (unit as any).createdAt ?? new Date(),
+                  updatedAt: (unit as any).updatedAt ?? new Date(),
+                })),
               })),
             }));
           setTransactions(normalizedTransactions);

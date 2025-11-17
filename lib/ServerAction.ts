@@ -8164,7 +8164,17 @@ export async function getTransactionsAction(
                   availedServiceId: unit.availedServiceId, // Include parent ID
                   unitPrice: unitPrice, // Include calculated derived value
                   unitCommissionValue: unitCommissionValue, // Include calculated derived value
-                } satisfies AvailedServiceUnitPropsForManagement; // Use satisfies for type check
+                  // Include fields needed for AvailedServiceUnitProps conversion
+                  checkedById: unit.checkedById ?? null,
+                  servedById: unit.servedById ?? null,
+                  createdAt: unit.createdAt,
+                  updatedAt: unit.updatedAt,
+                } satisfies AvailedServiceUnitPropsForManagement & {
+                  checkedById: string | null;
+                  servedById: string | null;
+                  createdAt: Date;
+                  updatedAt: Date;
+                }; // Use satisfies for type check
               },
             );
 
