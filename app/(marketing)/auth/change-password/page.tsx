@@ -21,68 +21,85 @@ export default function ChangePasswordPage() {
     if (status === "loading") {
       return;
     }
+    
     if (status === "unauthenticated") {
-      console.log("ChangePasswordPage: Unauthenticated, redirecting to login.");
+      // Redirect to login with callback to return here after login
       router.replace("/login?callbackUrl=/auth/change-password");
       return;
     }
+    
+    // If user doesn't need to change password, redirect to dashboard
     if (session?.user && session.user.mustChangePassword === false) {
-      console.log(
-        "ChangePasswordPage: Password change not required, redirecting to user dashboard.",
-      );
-      router.replace(`/${session.user.id}`);
+      const dashboardPath = session.user.id ? `/${session.user.id}` : "/";
+      router.replace(dashboardPath);
       return;
     }
-    console.log("ChangePasswordPage: User on page. Session:", session);
   }, [session, status, router]);
 
   const handlePasswordUpdateClick = useCallback(async () => {
     setError(null);
     setSuccessMessage(null);
 
+    // Client-side validation
     if (newPassword.length < 6) {
       setError("Password must be at least 6 characters long.");
       return;
     }
+    
+    if (newPassword.length > 500) {
+      setError("Password is too long. Maximum 500 characters allowed.");
+      return;
+    }
+    
     if (newPassword !== confirmPassword) {
-      setError("Passwords do not match.");
+      setError("Passwords do not match. Please check and try again.");
+      return;
+    }
+
+    // Check if user is authenticated
+    if (!session?.user?.id) {
+      setError("Session expired. Please log in again.");
+      router.replace("/login?callbackUrl=/auth/change-password");
       return;
     }
 
     setIsSubmitting(true);
     try {
       const result = await updateUserPasswordAction(newPassword);
+      
       if (result.success) {
-        setSuccessMessage(result.message);
+        setSuccessMessage(result.message || "Password updated successfully!");
+        
+        // Update session to reflect password change
         await updateSession({ mustChangePassword: false });
+        
+        // Clear form
+        setNewPassword("");
+        setConfirmPassword("");
 
+        // Redirect after short delay to show success message
         setTimeout(() => {
-          if (session?.user?.id) {
-            router.replace(`/${session.user.id}`);
-          } else {
-            router.replace("/");
-          }
-        }, 2000);
+          const dashboardPath = session.user.id ? `/${session.user.id}` : "/";
+          router.replace(dashboardPath);
+          router.refresh(); // Refresh to ensure middleware sees updated session
+        }, 1500);
       } else {
         setError(
           result.message || "Failed to update password. Please try again.",
         );
+        setIsSubmitting(false);
       }
     } catch (err) {
       console.error("ChangePasswordPage submit error:", err);
       setError("An unexpected error occurred. Please try again.");
-    } finally {
-      if (!successMessage) {
-        setIsSubmitting(false);
-      }
+      setIsSubmitting(false);
     }
   }, [
     newPassword,
     confirmPassword,
     router,
     updateSession,
-    session?.user?.id,
-    successMessage,
+    session,
   ]);
 
   if (status === "loading") {

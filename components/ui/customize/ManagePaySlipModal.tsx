@@ -1,8 +1,23 @@
+// File: components/ui/ManagePaySlipModal.tsx
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { format, isValid, startOfMonth } from "date-fns";
-import { DayPicker } from "react-day-picker";
+import {
+  format,
+  isValid,
+  startOfMonth,
+  startOfDay,
+  addDays,
+  isBefore,
+  isEqual,
+  isAfter,
+} from "date-fns";
+import {
+  DayPicker,
+  // Remove DayPickerDefaultProps, CalendarDay
+  // Keep Modifiers
+  Modifiers,
+} from "react-day-picker";
 import "react-day-picker/dist/style.css";
 
 import Modal from "@/components/Dialog/Modal";
@@ -17,7 +32,8 @@ import {
   Tag,
   PhilippinePeso,
   CalendarDays,
-  Receipt,
+  // Remove Lock icon import for now
+  // Lock,
 } from "lucide-react";
 
 import {
@@ -25,10 +41,10 @@ import {
   ReleaseSalaryHandler,
   AttendanceRecord,
   SalaryBreakdownItem,
-  SALARY_COMMISSION_RATE,
-  AccountData,
 } from "@/lib/Types";
 import { PayslipStatus } from "@prisma/client";
+
+// Removed CustomDayProps type as we are not using a custom Day component
 
 type ManagePayslipModalProps = {
   isOpen: boolean;
@@ -40,6 +56,10 @@ type ManagePayslipModalProps = {
 
   attendanceRecords: AttendanceRecord[];
   breakdownItems: SalaryBreakdownItem[];
+
+  lastReleasedPayslipEndDate: Date | null | undefined;
+  lastReleasedTimestamp: Date | null | undefined;
+
   isModalDataLoading: boolean;
   modalDataError: string | null;
 };
@@ -60,75 +80,71 @@ const formatCurrency = (value: number | null | undefined): string => {
   });
 };
 
-const formatDate = (date: Date | string | null | undefined): string => {
-  if (!date) return "N/A";
+const formatDate = (dateInput: Date | string | null | undefined): string => {
+  if (!dateInput) return "N/A";
   try {
-    const d = new Date(date);
-
+    const d = new Date(dateInput);
     if (!isValid(d)) {
-      console.warn("Invalid date passed to formatDate:", date);
+      console.warn("Invalid date passed to formatDate:", dateInput);
       return "Invalid Date";
     }
     return format(d, "MMM d, yyyy");
   } catch (e) {
-    console.error("Error in formatDate:", e, { date });
+    console.error("Error in formatDate:", e, { dateInput });
     return "Invalid Date Format";
   }
 };
-const formatDateRange = (start: Date, end: Date): string => {
-  if (
-    !start ||
-    !end ||
-    !(start instanceof Date) ||
-    !(end instanceof Date) ||
-    isNaN(start.getTime()) ||
-    isNaN(end.getTime())
-  ) {
-    console.warn("Invalid start or end date in formatDateRange:", {
-      start,
-      end,
-    });
-    return "Invalid Period";
-  }
 
+const formatDateRange = (start: Date | string, end: Date | string): string => {
   try {
-    const validStart = new Date(start);
-    const validEnd = new Date(end);
-    if (isNaN(validStart.getTime()) || isNaN(validEnd.getTime())) {
-      console.warn("Invalid Date objects constructed in formatDateRange:", {
-        validStart,
-        validEnd,
-      });
-      return "Invalid Date Objects";
-    }
+    const validStart = typeof start === "string" ? new Date(start) : start;
+    const validEnd = typeof end === "string" ? new Date(end) : end;
 
     if (
-      validStart.getMonth() === validEnd.getMonth() &&
-      validStart.getFullYear() === validEnd.getFullYear()
+      !(validStart instanceof Date) ||
+      !(validEnd instanceof Date) ||
+      isNaN(validStart.getTime()) ||
+      isNaN(validEnd.getTime())
+    ) {
+      console.warn("formatDateRange: Invalid date inputs", { start, end });
+      return "Invalid Period";
+    }
+
+    const startDay = startOfDay(validStart);
+    const endDay = startOfDay(validEnd);
+
+    if (
+      startDay.getMonth() === endDay.getMonth() &&
+      startDay.getFullYear() === endDay.getFullYear()
     )
-      return `${format(validStart, "MMM dd")} - ${format(validEnd, "dd, yyyy")}`;
-    else if (validStart.getFullYear() === validEnd.getFullYear())
-      return `${format(validStart, "MMM dd")} - ${format(validEnd, "MMM dd, yyyy")}`;
-    else return `${format(validStart, "PP")} - ${format(validEnd, "PP")}`;
+      return `${format(startDay, "MMM dd")} - ${format(endDay, "dd, yyyy")}`;
+    else if (startDay.getFullYear() === endDay.getFullYear())
+      return `${format(startDay, "MMM dd")} - ${format(endDay, "MMM dd, yyyy")}`;
+    else return `${format(startDay, "PP")} - ${format(endDay, "PP")}`;
   } catch (e) {
-    console.error("Error formatting date range:", e, { start, end });
-    return "Error Formatting Period";
+    console.error("formatDateRange error:", e, { start, end });
+    return "Error Formatting";
   }
 };
 
 const modifierStyles = {
   present: {
-    backgroundColor: "#A7F3D0",
-    color: "#065F46",
+    backgroundColor: "#A7F3D0", // green-100
+    color: "#065F46", // green-800
     fontWeight: "bold",
     borderRadius: "50%",
   },
   absent: {
-    backgroundColor: "#FECACA",
-    color: "#991B1B",
+    backgroundColor: "#FECACA", // red-100
+    color: "#991B1B", // red-800
     textDecoration: "line-through",
-    opacity: 0.8,
+    opacity: 0.9, // Adjusted for consistency
     borderRadius: "50%",
+  },
+  paid: {
+    backgroundColor: "#E5E7EB", // gray-200
+    color: "#9CA3AF", // gray-400
+    textDecoration: "line-through",
   },
 };
 
@@ -140,12 +156,29 @@ export default function ManagePayslipModal({
   isReleasing,
   releaseError,
 
-  attendanceRecords,
-  breakdownItems,
+  attendanceRecords: rawAttendanceRecords,
+  breakdownItems: rawBreakdownItems,
+
+  lastReleasedPayslipEndDate,
+  lastReleasedTimestamp,
+
   isModalDataLoading,
   modalDataError,
 }: ManagePayslipModalProps) {
-  const [currentMonth, setCurrentMonth] = useState<Date>(() => {
+  // Period dates from payslipData for the calendar range
+  // --- MOVE THESE DECLARATIONS UP ---
+  const periodStartDate = useMemo(() => {
+    const date = new Date(payslipData.periodStartDate);
+    return isValid(date) ? date : undefined;
+  }, [payslipData.periodStartDate]);
+
+  const periodEndDate = useMemo(() => {
+    const date = new Date(payslipData.periodEndDate);
+    return isValid(date) ? date : undefined;
+  }, [payslipData.periodEndDate]);
+  // --- END MOVE ---
+
+  const initialMonth = useMemo(() => {
     const endDate =
       payslipData.periodEndDate instanceof Date &&
       !isNaN(payslipData.periodEndDate.getTime())
@@ -157,20 +190,22 @@ export default function ManagePayslipModal({
         ? payslipData.periodStartDate
         : null;
     return startOfMonth(endDate || startDate || new Date());
-  });
+  }, [payslipData.periodEndDate, payslipData.periodStartDate]);
+
+  const [currentMonth, setCurrentMonth] = useState<Date>(initialMonth);
 
   useEffect(() => {
-    const endDate =
-      payslipData.periodEndDate instanceof Date &&
-      !isNaN(payslipData.periodEndDate.getTime())
-        ? payslipData.periodEndDate
-        : null;
-    const startDate =
-      payslipData.periodStartDate instanceof Date &&
-      !isNaN(payslipData.periodStartDate.getTime())
-        ? payslipData.periodStartDate
-        : null;
-    setCurrentMonth(startOfMonth(endDate || startDate || new Date()));
+    const newInitialMonth = startOfMonth(
+      new Date(payslipData.periodEndDate) ||
+        new Date(payslipData.periodStartDate) ||
+        new Date(),
+    );
+    if (
+      isValid(newInitialMonth) &&
+      !isEqual(startOfMonth(currentMonth), newInitialMonth)
+    ) {
+      setCurrentMonth(newInitialMonth);
+    }
   }, [payslipData.id, payslipData.periodEndDate, payslipData.periodStartDate]);
 
   const handleReleaseClick = () => {
@@ -178,32 +213,102 @@ export default function ManagePayslipModal({
     onReleaseSalary(payslipData.id);
   };
 
+  const attendanceCountingStartDate = useMemo(() => {
+    if (
+      !lastReleasedPayslipEndDate ||
+      !isValid(new Date(lastReleasedPayslipEndDate))
+    ) {
+      const payslipStart = new Date(payslipData.periodStartDate);
+      return isValid(payslipStart) ? startOfDay(payslipStart) : new Date(0);
+    }
+    return startOfDay(addDays(new Date(lastReleasedPayslipEndDate), 1));
+  }, [lastReleasedPayslipEndDate, payslipData.periodStartDate]);
+
+  const filteredAttendanceRecordsForDisplay = useMemo(() => {
+    if (!rawAttendanceRecords) return [];
+    const startDate = attendanceCountingStartDate;
+    return rawAttendanceRecords.filter((r) => {
+      const recordDate = new Date(r.date);
+      return (
+        isValid(recordDate) && !isBefore(startOfDay(recordDate), startDate)
+      );
+    });
+  }, [rawAttendanceRecords, attendanceCountingStartDate]);
+
+  // Filtered Present and Absent days for the calendar modifiers
   const presentDays = useMemo(
     () =>
-      attendanceRecords
+      filteredAttendanceRecordsForDisplay
         ?.filter((r) => r.isPresent)
-        .map((r) => new Date(r.date))
+        .map((r) => startOfDay(new Date(r.date))) // Ensure startOfDay for comparison consistency
         .filter(isValid) ?? [],
-    [attendanceRecords],
+    [filteredAttendanceRecordsForDisplay],
   );
+
   const absentDays = useMemo(
     () =>
-      attendanceRecords
+      filteredAttendanceRecordsForDisplay
         ?.filter((r) => !r.isPresent)
-        .map((r) => new Date(r.date))
+        .map((r) => startOfDay(new Date(r.date))) // Ensure startOfDay for comparison consistency
         .filter(isValid) ?? [],
-    [attendanceRecords],
+    [filteredAttendanceRecordsForDisplay],
   );
 
-  const periodStartDate = useMemo(() => {
-    const date = new Date(payslipData.periodStartDate);
-    return isValid(date) ? date : undefined;
-  }, [payslipData.periodStartDate]);
+  // Calculate days that are within the nominal payslip period BUT are already paid
+  const paidDays = useMemo(() => {
+    // Access periodStartDate and periodEndDate here (now declared above)
+    if (!periodStartDate || !periodEndDate || !lastReleasedPayslipEndDate)
+      return [];
 
-  const periodEndDate = useMemo(() => {
-    const date = new Date(payslipData.periodEndDate);
-    return isValid(date) ? date : undefined;
-  }, [payslipData.periodEndDate]);
+    const start = startOfDay(new Date(periodStartDate));
+    const end = startOfDay(new Date(periodEndDate));
+    const lastPaidEnd = startOfDay(new Date(lastReleasedPayslipEndDate));
+
+    const paidDates: Date[] = [];
+    let currentDate = start;
+
+    // Iterate from the start of the payslip period up to the last paid date (inclusive)
+    // Ensure we don't go beyond the payslip's own end date
+    while (
+      isValid(currentDate) &&
+      !isAfter(currentDate, end) &&
+      !isAfter(currentDate, lastPaidEnd)
+    ) {
+      // Only add the date if it's within the nominal payslip period and on or before the last paid date
+      // The loop condition handles being <= lastPaidEnd, and the outer loop handles <= nominalPeriodEnd
+      if (!isBefore(currentDate, start)) {
+        // Ensure it's not before the nominal start just in case
+        paidDates.push(currentDate);
+      }
+      currentDate = addDays(currentDate, 1);
+    }
+    return paidDates;
+  }, [periodStartDate, periodEndDate, lastReleasedPayslipEndDate]); // Dependencies are now correct
+
+  const commissionFilteringTimestamp = useMemo(() => {
+    if (!lastReleasedTimestamp || !isValid(new Date(lastReleasedTimestamp))) {
+      const payslipStart = new Date(payslipData.periodStartDate);
+      return isValid(payslipStart) ? payslipStart : new Date(0);
+    }
+    return new Date(lastReleasedTimestamp);
+  }, [lastReleasedTimestamp, payslipData.periodStartDate]);
+
+  const filteredBreakdownItemsForDisplay = useMemo(() => {
+    if (!rawBreakdownItems) return [];
+    const cutoffTimestamp = commissionFilteringTimestamp;
+
+    return rawBreakdownItems.filter((item) => {
+      if (!item.completedAt) return false;
+      const itemTimestamp = new Date(item.completedAt);
+      if (!isValid(itemTimestamp)) return false;
+
+      return isAfter(itemTimestamp, cutoffTimestamp);
+    });
+  }, [rawBreakdownItems, commissionFilteringTimestamp]);
+
+  // We no longer need a separate lastPaidPeriodEndUTC memo, as the paidDays memo calculates the dates directly
+
+  // Removed getDayCellClasses helper function
 
   return (
     <Modal
@@ -243,6 +348,18 @@ export default function ManagePayslipModal({
                 Released: {format(new Date(payslipData.releasedDate), "PPpp")}
               </p>
             )}
+          <div className="mt-2 border-t pt-2 text-xs italic text-gray-500">
+            Attendance counted from:{" "}
+            {attendanceCountingStartDate && isValid(attendanceCountingStartDate)
+              ? format(attendanceCountingStartDate, "PP")
+              : "Beginning (No prior release)"}
+            <br /> Commissions counted from:{" "}
+            {commissionFilteringTimestamp &&
+            isValid(commissionFilteringTimestamp)
+              ? format(commissionFilteringTimestamp, "PPpp")
+              : "Beginning (No prior release)"}
+          </div>
+
           <div className="mt-3 space-y-1 border-t border-gray-200 pt-3 text-sm">
             <p className="flex justify-between">
               <span>Base Salary:</span>{" "}
@@ -301,14 +418,19 @@ export default function ManagePayslipModal({
                     fromDate={periodStartDate}
                     toDate={periodEndDate}
                     modifiers={{
+                      // Pass the filtered days as modifiers
                       present: presentDays,
                       absent: absentDays,
+                      paid: paidDays, // New modifier for paid days
                     }}
+                    // Use modifiersStyles to apply styles based on the modifiers
                     modifiersStyles={modifierStyles}
                     className="text-sm [&_button:focus]:ring-1 [&_button:focus]:ring-offset-1 [&_button]:rounded-full [&_button]:border-0"
                     captionLayout="dropdown"
                     fromYear={periodStartDate.getFullYear()}
                     toYear={periodEndDate.getFullYear()}
+                    // Remove custom components.Day renderer
+                    // components={{ Day: ... }}
                   />
                 ) : (
                   <p className="py-4 text-center italic text-red-600">
@@ -334,17 +456,39 @@ export default function ManagePayslipModal({
                     ></span>{" "}
                     Absent ({absentDays.length})
                   </span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className="inline-block h-3 w-3 rounded-full"
+                      style={{
+                        backgroundColor: modifierStyles.paid.backgroundColor, // Use paid modifier color
+                      }}
+                    ></span>{" "}
+                    Paid/Covered ({paidDays.length}){" "}
+                    {/* Add count for paid days */}
+                  </span>
                 </div>
               </div>
+              <p className="mt-2 text-center text-[0.7rem] italic text-gray-500">
+                Calendar shows attendance within the payslip period (
+                {periodStartDate && periodEndDate
+                  ? formatDateRange(periodStartDate, periodEndDate)
+                  : "Invalid Range"}
+                ). Days covered by a previous payout (
+                {lastReleasedPayslipEndDate
+                  ? `up to ${format(new Date(lastReleasedPayslipEndDate), "PP")}`
+                  : "none"}
+                ) are marked as Paid/Covered.
+              </p>
             </div>
 
             <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
               <h4 className="mb-3 text-center text-base font-semibold text-gray-800 sm:text-left">
                 Commission Breakdown for Period
               </h4>
-              {breakdownItems.length > 0 ? (
+              {/* Display the filtered breakdown items */}
+              {filteredBreakdownItemsForDisplay.length > 0 ? (
                 <ul className="max-h-[250px] space-y-2 overflow-y-auto border-t border-gray-100 pr-1 pt-2">
-                  {breakdownItems.map((item) => (
+                  {filteredBreakdownItemsForDisplay.map((item) => (
                     <li
                       key={item.id}
                       className="rounded-md border border-gray-100 bg-gray-50/50 p-2.5 text-xs shadow-sm"
@@ -365,22 +509,38 @@ export default function ManagePayslipModal({
                         </p>
                         <p className="flex items-center gap-1">
                           <PhilippinePeso size={10} /> Price:{" "}
-                          {formatCurrency(item.servicePrice)} (
-                          {(SALARY_COMMISSION_RATE * 100).toFixed(0)}% rate)
+                          {formatCurrency(item.servicePrice)}
                         </p>
                         <p className="flex items-center gap-1">
-                          <CalendarDays size={10} /> Date:{" "}
-                          {formatDate(item.completedAt)}
+                          <CalendarDays size={10} /> Date Served:{" "}
+                          {format(new Date(item.completedAt!), "PPpp")}
                         </p>
+                        {item.originatingSetTitle && (
+                          <p className="flex items-center gap-1">
+                            <Tag size={10} /> Set: {item.originatingSetTitle}
+                          </p>
+                        )}
                       </div>
                     </li>
                   ))}
                 </ul>
               ) : (
                 <p className="py-4 text-center italic text-gray-500">
-                  No commission details found for this period.
+                  {rawBreakdownItems?.length > 0 &&
+                  commissionFilteringTimestamp &&
+                  isValid(commissionFilteringTimestamp)
+                    ? `No commissions earned after ${format(commissionFilteringTimestamp, "PPpp")}.`
+                    : "No commissions earned yet in this period."}
                 </p>
               )}
+              <p className="mt-2 text-center text-[0.7rem] italic text-gray-500">
+                Commissions included are those completed after{" "}
+                {commissionFilteringTimestamp &&
+                isValid(commissionFilteringTimestamp)
+                  ? format(commissionFilteringTimestamp, "PPpp")
+                  : "the employee's start date"}
+                .
+              </p>
             </div>
           </>
         )}

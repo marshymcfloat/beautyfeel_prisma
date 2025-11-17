@@ -46,24 +46,31 @@ export async function middleware(request: NextRequest) {
 
   // --- Logic for Authenticated Users (token exists) ---
   if (token) {
-    console.log(
-      `[MIDDLEWARE] Token found - ID: ${token.id}, Name: ${token.name}, mustChangePassword: ${token.mustChangePassword}`,
-    );
+    const isDevelopment = process.env.NODE_ENV === "development";
+    
+    if (isDevelopment) {
+      console.log(
+        `[MIDDLEWARE] Token found - ID: ${token.id}, mustChangePassword: ${token.mustChangePassword}`,
+      );
+    }
 
-    // 2. Enforce `mustChangePassword`
+    // 2. Enforce `mustChangePassword` - highest priority
     if (token.mustChangePassword === true) {
       // If user must change password and is NOT on the change-password page
       if (pathname !== "/auth/change-password") {
-        console.log(
-          `[MIDDLEWARE] mustChangePassword is TRUE. Current path: ${pathname}. Redirecting to /auth/change-password.`,
-        );
+        if (isDevelopment) {
+          console.log(
+            `[MIDDLEWARE] mustChangePassword is TRUE. Redirecting to /auth/change-password.`,
+          );
+        }
         const changePasswordUrl = new URL("/auth/change-password", origin);
+        // Preserve callbackUrl if it exists
+        if (search) {
+          changePasswordUrl.search = search;
+        }
         return NextResponse.redirect(changePasswordUrl);
       }
       // User must change password AND IS already on the change-password page, allow it
-      console.log(
-        `[MIDDLEWARE] mustChangePassword is TRUE, already on /auth/change-password. Allowing.`,
-      );
       return NextResponse.next();
     }
 
@@ -71,50 +78,40 @@ export async function middleware(request: NextRequest) {
 
     // 3. If `mustChangePassword` is false, and user tries to access change-password page, redirect them away.
     if (pathname === "/auth/change-password") {
-      console.log(
-        `[MIDDLEWARE] mustChangePassword is FALSE, but user is on /auth/change-password. Redirecting to dashboard.`,
-      );
-      const userDashboardPath = token.id ? `/${token.id}` : "/"; // Default to user's page or root
+      const userDashboardPath = token.id ? `/${token.id}` : "/";
       return NextResponse.redirect(new URL(userDashboardPath, origin));
     }
 
     // 4. If authenticated user (MCP=false) tries to access /login, redirect to dashboard
     if (pathname === "/login") {
-      console.log(
-        `[MIDDLEWARE] Authenticated user (MCP:false) on /login. Redirecting to dashboard.`,
-      );
       const userDashboardPath = token.id ? `/${token.id}` : "/";
       return NextResponse.redirect(new URL(userDashboardPath, origin));
     }
 
-    // 5. Authenticated user (MCP=false), not on /auth/change-password or /login. Allow access.
-    // If '/' is in ALWAYS_ACCESSIBLE_PATHS, an authenticated user can view '/'.
-    // Any further redirection from '/' for authenticated users (like to their dashboard,
-    // as seen in your logs "Session found... redirecting...")
-    // would be handled by client-side logic on the '/' page itself.
-    console.log(
-      `[MIDDLEWARE] Authenticated (MCP:false). Allowing access to: ${pathname}`,
-    );
+    // 5. Authenticated user (MCP=false), allow access to other routes
     return NextResponse.next();
   }
 
   // --- Logic for Unauthenticated Users (no token) ---
-  console.log(`[MIDDLEWARE] No token for path: ${pathname}`);
+  const isDevelopment = process.env.NODE_ENV === "development";
+  
+  if (isDevelopment) {
+    console.log(`[MIDDLEWARE] No token for path: ${pathname}`);
+  }
 
   // 6. Allow access to explicitly public/always accessible paths.
   if (ALWAYS_ACCESSIBLE_PATHS.includes(pathname)) {
-    console.log(
-      `[MIDDLEWARE] No token. Path ${pathname} is in ALWAYS_ACCESSIBLE_PATHS. Allowing.`,
-    );
     return NextResponse.next();
   }
 
   // 7. For all other paths, redirect to login.
   const loginUrl = new URL("/login", origin);
-  loginUrl.searchParams.set("callbackUrl", `${pathname}${search}`); // Preserve original destination
-  console.log(
-    `[MIDDLEWARE] No token. Path ${pathname} is protected. Redirecting to login: ${loginUrl.toString()}`,
-  );
+  // Preserve original destination in callbackUrl
+  const fullPath = `${pathname}${search}`;
+  if (fullPath !== "/login") {
+    loginUrl.searchParams.set("callbackUrl", fullPath);
+  }
+  
   return NextResponse.redirect(loginUrl);
 }
 

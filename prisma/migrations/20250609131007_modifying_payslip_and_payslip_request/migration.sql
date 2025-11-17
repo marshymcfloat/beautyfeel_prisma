@@ -1,0 +1,7 @@
+-- AlterTable
+ALTER TABLE "Payslip" ALTER COLUMN "periodStartDate" SET DATA TYPE TIMESTAMP(3),
+ALTER COLUMN "periodEndDate" SET DATA TYPE TIMESTAMP(3);
+
+-- AlterTable
+ALTER TABLE "PayslipRequest" ALTER COLUMN "periodStartDate" SET DATA TYPE TIMESTAMP(3),
+ALTER COLUMN "periodEndDate" SET DATA TYPE TIMESTAMP(3);

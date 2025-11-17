@@ -51,29 +51,45 @@ export default function LoginPage() {
 
       try {
         const result = await signIn("credentials", {
-          username: inputs.username,
+          username: inputs.username.trim(),
           password: inputs.password,
           redirect: false,
         });
 
         if (result?.ok && !result.error) {
-          window.location.href = callbackUrl;
+          // Clear form on success
+          setInputs({ username: "", password: "" });
+          setErrorMessage(null);
+
+          // Use router.push for better navigation handling
+          // The middleware will handle redirects based on mustChangePassword
+          router.push(callbackUrl);
+          router.refresh(); // Refresh to get updated session
           return;
         } else {
+          // Handle different error types gracefully
           if (result?.error === "CredentialsSignin") {
-            setErrorMessage("Invalid username or password.");
+            setErrorMessage("Invalid username or password. Please try again.");
+          } else if (result?.error === "Configuration") {
+            setErrorMessage(
+              "Server configuration error. Please contact support.",
+            );
           } else {
-            setErrorMessage(result?.error || "Login failed. Please try again.");
+            setErrorMessage(
+              "Login failed. Please check your credentials and try again.",
+            );
           }
         }
       } catch (error) {
+        console.error("[LOGIN_PAGE] Unexpected error:", error);
         setErrorMessage(
           "An unexpected error occurred. Please try again later.",
         );
+      } finally {
+        setIsSubmitting(false);
       }
-      setIsSubmitting(false);
     },
-    [inputs, callbackUrl],
+    [inputs, callbackUrl, router],
   );
 
   return (

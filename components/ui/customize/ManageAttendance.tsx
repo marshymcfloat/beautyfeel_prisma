@@ -40,14 +40,22 @@ const getStartOfTodayTargetTimezoneUtc = () => {
 export default function ManageAttendance({
   viewedAccountId,
   checkerId,
+  initialEmployees,
+  initialBranches,
 }: {
   viewedAccountId: string | undefined;
   checkerId: string;
+  initialEmployees?: EmployeeForAttendance[];
+  initialBranches?: BranchForSelect[];
 }) {
-  const [employees, setEmployees] = useState<EmployeeForAttendance[]>([]);
-  const [branches, setBranches] = useState<BranchForSelect[]>([]);
+  const [employees, setEmployees] = useState<EmployeeForAttendance[]>(
+    initialEmployees || [],
+  );
+  const [branches, setBranches] = useState<BranchForSelect[]>(
+    initialBranches || [],
+  );
   const [selectedBranchId, setSelectedBranchId] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(!initialEmployees || !initialBranches);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const [processingEmployeeIds, setProcessingEmployeeIds] = useState<
@@ -96,8 +104,11 @@ export default function ManageAttendance({
       setIsLoading(false);
       return;
     }
-    loadData(true);
-  }, [checkerId, loadData]);
+    // Only fetch if initial data not provided
+    if (!initialEmployees || !initialBranches) {
+      loadData(true);
+    }
+  }, [checkerId, loadData, initialEmployees, initialBranches]);
 
   const filteredEmployees = useMemo(() => {
     if (!selectedBranchId) return employees;

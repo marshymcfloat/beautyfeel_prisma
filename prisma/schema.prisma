@@ -1,8 +1,7 @@
 generator client {
-  provider        = "prisma-client-js"
-  previewFeatures = ["driverAdapters"]
-  binaryTargets   = ["native", "debian-openssl-1.1.x", "rhel-openssl-1.1.x"]
-  //output          = "../backend/node_modules/.prisma/client"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-1.1.x", "rhel-openssl-1.1.x"]
+  // output          = "../backend/node_modules/.prisma/client"
 }
 
 datasource db {
@@ -78,15 +77,20 @@ enum ExpenseCategory {
   OTHER
 }
 
+// FILE: schema.prisma
+
 model PayslipRequest {
-  id               String               @id @default(cuid())
+  id               String   @id @default(cuid())
   accountId        String
-  account          Account              @relation("AccountRequests", fields: [accountId], references: [id], onDelete: Cascade)
-  requestTimestamp DateTime             @default(now())
-  periodStartDate  DateTime             @db.Date
-  periodEndDate    DateTime             @db.Date
-  status           PayslipRequestStatus @default(PENDING)
-  notes            String?
+  account          Account  @relation("AccountRequests", fields: [accountId], references: [id], onDelete: Cascade)
+  requestTimestamp DateTime @default(now())
+
+  // --- CORRECTED ---
+  periodStartDate DateTime // @db.Date removed
+  periodEndDate   DateTime // @db.Date removed
+
+  status PayslipRequestStatus @default(PENDING)
+  notes  String?
 
   processedById      String?
   processedBy        Account?  @relation("AdminManagedRequests", fields: [processedById], references: [id])
@@ -100,11 +104,14 @@ model PayslipRequest {
 }
 
 model Payslip {
-  id               String        @id @default(uuid())
-  accountId        String
-  account          Account       @relation("EmployeePayslips", fields: [accountId], references: [id])
-  periodStartDate  DateTime      @db.Date
-  periodEndDate    DateTime      @db.Date
+  id        String  @id @default(uuid())
+  accountId String
+  account   Account @relation("EmployeePayslips", fields: [accountId], references: [id])
+
+  // --- CORRECTED ---
+  periodStartDate DateTime // @db.Date removed
+  periodEndDate   DateTime // @db.Date removed
+
   baseSalary       Int
   totalCommissions Int
   totalDeductions  Int           @default(0)
@@ -130,6 +137,7 @@ model RecommendedAppointment {
   originatingTransactionId String?
   originatingTransaction   Transaction? @relation("OriginatingTransaction", fields: [originatingTransactionId], references: [id])
 
+  // Update relation to point to the original AvailedService
   originatingAvailedServiceId String         @unique
   originatingAvailedService   AvailedService @relation("RecommendedByAvailedService", fields: [originatingAvailedServiceId], references: [id])
 
@@ -212,21 +220,21 @@ model Attendance {
 }
 
 model Account {
-  id                 String           @id @default(uuid())
-  username           String           @unique @db.VarChar(20)
+  id                 String               @id @default(uuid())
+  username           String               @unique @db.VarChar(20)
   password           String
   name               String
-  email              String?          @unique @db.VarChar(255)
-  role               Role[]           @default([WORKER])
-  salary             Int              @default(0)
-  dailyRate          Int              @default(350)
+  email              String?              @unique @db.VarChar(255)
+  role               Role[]               @default([WORKER])
+  salary             Int                  @default(0)
+  dailyRate          Int                  @default(350)
   branchId           String?
-  branch             Branch?          @relation(fields: [branchId], references: [id])
-  servicesServed     AvailedService[] @relation("ServedRelation")
-  servicesChecked    AvailedService[] @relation("CheckedRelation")
-  attendances        Attendance[]     @relation("EmployeeAttendance")
-  attendancesChecked Attendance[]     @relation("CheckerAttendance")
-  canRequestPayslip  Boolean          @default(false)
+  branch             Branch?              @relation(fields: [branchId], references: [id])
+  unitsServed        AvailedServiceUnit[] @relation("ServedRelation")
+  unitsChecked       AvailedServiceUnit[] @relation("CheckedRelation")
+  attendances        Attendance[]         @relation("EmployeeAttendance")
+  attendancesChecked Attendance[]         @relation("CheckerAttendance")
+  canRequestPayslip  Boolean              @default(false)
 
   payslips Payslip[] @relation("EmployeePayslips")
 
@@ -246,11 +254,11 @@ model Service {
 
   title            String            @unique
   description      String?
-  price            Int               @default(0)
+  price            Int               @default(0) // This is the base price for a *single unit*
   branchId         String
   totalSales       Int               @default(0)
   branch           Branch            @relation(fields: [branchId], references: [id])
-  AvailedService   AvailedService[]
+  AvailedService   AvailedService[] // Still links to the aggregated service line item
   serviceSets      ServiceSet[]      @relation("ServiceToSet")
   giftCertificates GiftCertificate[] @relation("GCService")
   discountRules    DiscountRule[]    @relation("DiscountedServices")
@@ -306,16 +314,17 @@ model Voucher {
 model Transaction {
   id              String           @id @default(uuid())
   createdAt       DateTime         @default(now())
-  bookedFor       DateTime         @default(now())
+  updatedAt       DateTime?        @updatedAt
+  bookedFor       DateTime?        @default(now())
   customerId      String
   customer        Customer         @relation(fields: [customerId], references: [id])
-  availedServices AvailedService[]
+  availedServices AvailedService[] // This remains the aggregate line item
   voucherId       String?
   voucherUsed     Voucher?         @relation(fields: [voucherId], references: [id])
   discount        Int              @default(0)
   paymentMethod   PaymentMethod?
-  grandTotal      Int
-  status          Status           @default(PENDING)
+  grandTotal      Int // This should be the sum of (AvailedService.price * quantity) for all AvailedServices, minus discount, etc.
+  status          Status           @default(PENDING) // This status should now be derived from the status of all AvailedServiceUnits within its AvailedServices
   branchId        String?
   branch          Branch?          @relation(fields: [branchId], references: [id])
 
@@ -342,34 +351,79 @@ model AvailedService {
   service   Service? @relation(fields: [serviceId], references: [id])
 
   quantity        Int @default(1)
-  price           Int
-  commissionValue Int @default(0)
+  price           Int // Total price for this line item (quantity * unit price)
+  commissionValue Int @default(0) // Total commission for this line item (quantity * unit commission)
 
   originatingSetId    String?
   originatingSetTitle String?
   originatingSet      ServiceSet? @relation(fields: [originatingSetId], references: [id])
 
-  checkedById String?
-  checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
+  // REMOVE these fields - status and responsible parties are now on the unit level
+  // checkedById String?
+  // checkedBy   Account? @relation("CheckedRelation", fields: [checkedById], references: [id])
+  // servedById   String?
+  // servedBy     Account? @relation("ServedRelation", fields: [servedById], references: [id])
+  serviceSetId String? // Seems redundant if originatingSetId/Title exist? Consider removing unless it has a different purpose.
 
-  servedById   String?
-  servedBy     Account? @relation("ServedRelation", fields: [servedById], references: [id])
-  serviceSetId String?
+  // REMOVE these fields - status and completion time are now on the unit level
+  // status      Status    @default(PENDING)
+  // completedAt DateTime?
 
-  status      Status    @default(PENDING)
-  completedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @default(now()) @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
+  // Add relation to the individual units
+  units AvailedServiceUnit[]
+
+  // Recommended Appointment now links to the parent AvailedService record
   recommendedAppointment RecommendedAppointment? @relation("RecommendedByAvailedService")
 
   postTreatmentEmailSentAt DateTime?
 
   @@index([serviceId])
   @@index([transactionId])
+  // REMOVE these indexes if fields are removed
+  // @@index([checkedById])
+  // @@index([servedById])
+  @@index([originatingSetId])
+}
+
+// NEW MODEL: Represents a single unit of an AvailedService line item
+model AvailedServiceUnit {
+  id String @id @default(uuid())
+
+  availedServiceId String // Link back to the parent AvailedService
+  availedService   AvailedService @relation(fields: [availedServiceId], references: [id], onDelete: Cascade) // Use CASCADE delete
+
+  unitIndex Int // 0-based index of the unit within the parent (0 to quantity-1)
+
+  status      Status    @default(PENDING) // Status for this specific unit
+  completedAt DateTime? // Completion timestamp for this specific unit
+
+  checkedById String? // Who checked this specific unit
+  checkedBy   Account?  @relation("CheckedRelation", fields: [checkedById], references: [id])
+  checkedAt   DateTime? // When this specific unit was checked
+
+  servedById String? // Who served this specific unit
+  servedBy   Account?  @relation("ServedRelation", fields: [servedById], references: [id])
+  servedAt   DateTime? // When this specific unit was served
+
+  // Derived unit values (can also be calculated on the fly, but storing might simplify queries)
+  // Alternatively, always divide parent's total_price/total_commission by quantity in queries
+  // Let's keep it simple and rely on calculation for now. If performance is an issue, add these later.
+  // basePrice Int // Calculated as AvailedService.price / AvailedService.quantity
+  // baseCommissionValue Int // Calculated as AvailedService.commissionValue / AvailedService.quantity
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Ensure uniqueness for each unit within its parent service
+  @@unique([availedServiceId, unitIndex])
+  // Indexes for querying by who checked/served units
   @@index([checkedById])
   @@index([servedById])
-  @@index([originatingSetId])
+  @@index([status]) // Index for filtering units by status
+  @@index([availedServiceId]) // Index for fetching all units for a parent service
 }
 
 model GiftCertificate {
@@ -393,11 +447,12 @@ model GiftCertificate {
   usedAt DateTime?
 
   transactions Transaction[]
-  Customer     Customer?     @relation(fields: [customerId], references: [id])
-  customerId   String?
+  Customer     Customer?     @relation(fields: [customerId], references: [id]) // Seems redundant? Customer should be linked via Transaction if used in one. Or is this for GCs owned by a customer? Keep for now if its purpose isn't clear.
+  customerId   String? // Seems redundant with recipientCustomerId? Or is this for the customer who *holds* the GC, regardless of recipient? Keep for now.
 
   @@index([purchaserCustomerId])
   @@index([recipientCustomerId])
+  @@index([customerId]) // Add index for the customer who holds it
 }
 
 model ManualSale {

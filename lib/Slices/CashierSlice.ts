@@ -1,4 +1,4 @@
-// lib/Slices/CashierSlice.ts - MODIFIED: Removed areRulesFetched state and reducer
+// lib/Slices/CashierSlice.ts - MODIFIED: Added originBranchId
 import { createSlice, PayloadAction } from "@reduxjs/toolkit";
 import {
   DiscountType,
@@ -31,7 +31,8 @@ export interface CashierState {
   selectedRecommendedAppointmentId: string | null;
   generateNewFollowUpForFulfilledRA: boolean;
   customerId: string | null;
-  // areRulesFetched: boolean; // <-- REMOVED
+  // --- ADDED THIS FIELD ---
+  originBranchId: string | null;
 }
 
 // --- Define Payload Action Types ---
@@ -83,33 +84,25 @@ const initialState: CashierState = {
   customerRecommendations: [],
   selectedRecommendedAppointmentId: null,
   generateNewFollowUpForFulfilledRA: false,
-  // areRulesFetched: false, // <-- REMOVED
+  // --- ADDED THIS FIELD TO INITIAL STATE ---
+  originBranchId: null, // Default to null initially
 };
 
-/**
- * Helper function to get a Date object representing a specific time in a given timezone,
- * then get its UTC equivalent ISO string.
- *
- * @param dateString YYYY-MM-DD
- * @param timeString HH:mm
- * @param timeZone IANA timezone string (e.g., 'Asia/Manila')
- * @returns UTC ISO string or null if invalid
- */
+// Helper function to get a Date object representing a specific time in a given timezone,
+// then get its UTC equivalent ISO string.
+// (Keep this helper if you still need it for other parts of your app, but it's not
+// directly used within the slice reducers for the CashierState itself, only potentially
+// for server-side calculations or if you needed to store UTC times *in* the state)
 const getUtcEquivalentForLocalTime = (
   dateString: string,
   timeString: string,
   timeZone: string,
 ): string | null => {
   try {
-    // Construct a date string that's more likely to be parsed correctly by Date constructor
-    // for a specific local time, then we'll format it to get parts for UTC.
-    // This is a bit of a dance with vanilla JS.
     const [year, month, day] = dateString.split("-").map(Number);
     const [hours, minutes] = timeString.split(":").map(Number);
 
-    // Create a formatter for the target timezone to extract parts
     const formatter = new Intl.DateTimeFormat("en-CA", {
-      // en-CA gives YYYY-MM-DD
       timeZone,
       year: "numeric",
       month: "2-digit",
@@ -117,31 +110,9 @@ const getUtcEquivalentForLocalTime = (
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-      hour12: false, // Use 24-hour format for easier parsing
+      hour12: false,
     });
 
-    // Create a temporary date object. Its internal value is UTC.
-    // We want to find the UTC moment that *corresponds* to, e.g., 2025-05-25 00:00:00 in Asia/Manila.
-    // Step 1: Create a date representing the desired local time components in UTC.
-    // This is NOT the final UTC equivalent yet.
-    const dateInUtcParts = new Date(
-      Date.UTC(year, month - 1, day, hours, minutes, 0, 0),
-    );
-
-    // Step 2: Format this UTC date *as if it were in the target timezone*
-    // This tells us what time it would be in the target timezone if the UTC parts were local.
-    // This step isn't directly giving us the UTC equivalent from a local time,
-    // but helps understand the offset.
-
-    // A more direct (but still slightly complex without a library) approach:
-    // 1. Create a date in the local system that *matches* the target timezone's desired time numerically.
-    //    This is hard because `new Date(y,m,d,h,m,s)` uses the system's local timezone.
-    // 2. Calculate the offset.
-
-    // Let's simplify for the rule creation process:
-    // If an admin picks "2025-05-25" and "00:00" for "Asia/Manila"
-    // We need to find the UTC string for that.
-    // One way: create a date string with offset, then parse.
     const tempDateStringWithOffset = `${dateString}T${timeString}:00.000${getOffsetString(timeZone, new Date(year, month - 1, day))}`;
     const dateWithOffset = new Date(tempDateStringWithOffset);
     if (isNaN(dateWithOffset.getTime())) return null;
@@ -152,37 +123,14 @@ const getUtcEquivalentForLocalTime = (
   }
 };
 
-/**
- * Helper to get timezone offset string like "+08:00" or "-05:00"
- * This is a simplified helper and might not be perfectly robust for all historical TZ changes.
- * @param timeZone IANA timezone string
- * @param date The date for which to get the offset
- */
+// Helper to get timezone offset string
 const getOffsetString = (timeZone: string, date: Date): string => {
-  // Get the date string in the target timezone
-  const zonedDateStr = date.toLocaleString("en-US", {
-    timeZone,
-    hour12: false,
-  });
-  // Get the same date string in UTC
-  const utcDateStr = date.toLocaleString("en-US", {
-    timeZone: "UTC",
-    hour12: false,
-  });
-
-  const zonedDate = new Date(zonedDateStr);
-  const utcDate = new Date(utcDateStr);
-
-  let offsetMinutes = (zonedDate.getTime() - utcDate.getTime()) / (1000 * 60);
-
-  // If the date parts made it cross a DST boundary or such, this simple getTime diff might be skewed.
-  // A more robust way for offset:
   const formatter = new Intl.DateTimeFormat("en", {
     timeZoneName: "shortOffset",
     timeZone,
   });
   const parts = formatter.formatToParts(date);
-  const gmtPart = parts.find((part) => part.type === "timeZoneName"); // e.g., GMT+8
+  const gmtPart = parts.find((part) => part.type === "timeZoneName");
   if (gmtPart) {
     const match = gmtPart.value.match(/GMT([+-]\d+)(?::(\d+))?/);
     if (match) {
@@ -192,7 +140,10 @@ const getOffsetString = (timeZone: string, date: Date): string => {
       return `${sign}${String(Math.abs(hours)).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
     }
   }
-  // Fallback if precise offset string isn't found, this is less ideal
+  // Fallback
+  const zonedDate = new Date(date.toLocaleString("en-US", { timeZone }));
+  const utcDate = new Date(date.toLocaleString("en-US", { timeZone: "UTC" }));
+  let offsetMinutes = (zonedDate.getTime() - utcDate.getTime()) / (1000 * 60);
   const sign = offsetMinutes >= 0 ? "+" : "-";
   offsetMinutes = Math.abs(offsetMinutes);
   const offsetH = Math.floor(offsetMinutes / 60);
@@ -201,21 +152,22 @@ const getOffsetString = (timeZone: string, date: Date): string => {
 };
 
 // Helper function for calculating totals
-// THIS FUNCTION ASSUMES rule.startDate and rule.endDate in appliedDiscountRules
-// are ALREADY UTC ISO strings that represent the PHT-aware boundaries.
+// Ensure this function uses the `nowUTC` logic as provided previously,
+// and correctly handles date comparisons based on how your server defines rule date boundaries (inclusive end of day).
 const calculateAllTotalsHelper = (state: CashierState): void => {
   console.log("--- calculateAllTotalsHelper ---");
+  // Add logging to see state before calculation
   try {
     console.log(
-      "Current state (servicesAvailed, appliedDiscountRules, voucher):",
-      {
-        servicesAvailed: JSON.parse(JSON.stringify(state.servicesAvailed)),
-        appliedDiscountRules: JSON.parse(
-          JSON.stringify(state.appliedDiscountRules),
-        ),
-        voucherCode: state.voucherCode,
-        voucherDiscountValue: state.voucherDiscountValue,
-      },
+      "State before calculation:",
+      JSON.parse(
+        JSON.stringify({
+          servicesAvailed: state.servicesAvailed,
+          appliedDiscountRules: state.appliedDiscountRules,
+          voucherCode: state.voucherCode,
+          voucherDiscountValue: state.voucherDiscountValue,
+        }),
+      ),
     );
   } catch (e) {
     console.error("Error stringifying state for logging:", e);
@@ -226,16 +178,7 @@ const calculateAllTotalsHelper = (state: CashierState): void => {
 
   const nowUTC = new Date(); // Current moment in UTC
   console.log(
-    "Client 'nowUTC' (ISO String - THIS IS THE UTC VALUE):",
-    nowUTC.toISOString(),
-  );
-  console.log(
-    "Client 'nowUTC' (Local String representation):",
-    nowUTC.toString(),
-  );
-  console.log(
-    "Client 'nowUTC' (UTC Milliseconds timestamp):",
-    nowUTC.getTime(),
+    `Client 'nowUTC': ${nowUTC.toISOString()} (${nowUTC.getTime()}ms)`,
   );
 
   const updatedAvailedItems = state.servicesAvailed.map((item) => {
@@ -246,159 +189,142 @@ const calculateAllTotalsHelper = (state: CashierState): void => {
     currentSubTotal += originalItemTotalValue;
     let currentItemDiscount = 0;
 
-    if (
-      !state.appliedDiscountRules ||
-      state.appliedDiscountRules.length === 0
-    ) {
+    if (state.appliedDiscountRules?.length > 0) {
       console.log(
-        "  No appliedDiscountRules in state to consider for this item.",
+        `  Checking ${state.appliedDiscountRules.length} appliedDiscountRules...`,
       );
-    } else {
-      console.log(
-        "  Considering appliedDiscountRules:",
-        JSON.parse(JSON.stringify(state.appliedDiscountRules)),
-      );
-    }
 
-    const applicableRule = state.appliedDiscountRules?.find((rule) => {
-      // Added optional chaining
-      console.log(
-        `    Checking rule: ${rule.description || rule.id} (Type: ${rule.discountType}, Value: ${rule.discountValue})`,
-      );
-      console.log(
-        `      Rule raw dates (expected UTC ISO strings representing PHT boundaries): startDate=${rule.startDate}, endDate=${rule.endDate}`,
-      );
-      try {
-        // These are expected to be UTC ISO strings from the server,
-        // already adjusted to reflect PHT start/end times.
-        const ruleStartDateUTC = new Date(rule.startDate);
-        const ruleEndDateRawUTC = new Date(rule.endDate);
-
-        if (isNaN(ruleEndDateRawUTC.getTime())) {
-          console.warn(
-            `      INVALID rule.endDate for rule ${rule.id}: ${rule.endDate}`,
-          );
-          return false;
-        }
-        // This logic assumes rule.endDate (from DB, via server) represents the END of the last active day (inclusive) in UTC.
-        // If rule.endDate represents the START of the day AFTER the last active day (exclusive),
-        // then the comparison would be nowUTC.getTime() < ruleEndDateRawUTC.getTime()
-        const ruleEndDateInclusiveUTC = ruleEndDateRawUTC; // Assuming it's already inclusive end from DB
-
+      const applicableRule = state.appliedDiscountRules.find((rule) => {
         console.log(
-          `      Comparing with 'nowUTC' (${nowUTC.toISOString()} | ${nowUTC.getTime()}ms):`,
+          `    Checking rule: ${rule.description || rule.id} (Type: ${rule.discountType}, Value: ${rule.discountValue})`,
         );
         console.log(
-          `        Rule Start Date UTC (from state): ${ruleStartDateUTC.toISOString()} | ${ruleStartDateUTC.getTime()}ms`,
-        );
-        console.log(
-          `        Rule End Date Inclusive UTC (from state): ${ruleEndDateInclusiveUTC.toISOString()} | ${ruleEndDateInclusiveUTC.getTime()}ms`,
+          `      Rule raw dates (expected UTC ISO strings representing PHT boundaries): startDate=${rule.startDate}, endDate=${rule.endDate}`,
         );
 
-        if (
-          isNaN(ruleStartDateUTC.getTime()) ||
-          isNaN(ruleEndDateInclusiveUTC.getTime())
-        ) {
-          console.warn(
-            `      INVALID RULE DATES (NaN) after parsing for rule ${rule.id}. Start: ${rule.startDate}, End: ${rule.endDate}`,
-          );
-          return false;
-        }
+        try {
+          const ruleStartDateUTC = new Date(rule.startDate);
+          const ruleEndDateInclusiveUTC = new Date(rule.endDate); // Assuming endDate is inclusive end of day UTC
 
-        const isRuleCurrentlyActive =
-          rule.isActive &&
-          ruleStartDateUTC.getTime() <= nowUTC.getTime() &&
-          ruleEndDateInclusiveUTC.getTime() >= nowUTC.getTime();
+          if (
+            isNaN(ruleStartDateUTC.getTime()) ||
+            isNaN(ruleEndDateInclusiveUTC.getTime())
+          ) {
+            console.warn(
+              `      INVALID RULE DATES (NaN) after parsing for rule ${rule.id}. Start: ${rule.startDate}, End: ${rule.endDate}`,
+            );
+            return false;
+          }
 
-        console.log(`      Rule isActive (flag): ${rule.isActive}`);
-        console.log(
-          `      ruleStartDateUTC.getTime() <= nowUTC.getTime(): ${ruleStartDateUTC.getTime() <= nowUTC.getTime()}`,
-        );
-        console.log(
-          `      ruleEndDateInclusiveUTC.getTime() >= nowUTC.getTime(): ${ruleEndDateInclusiveUTC.getTime() >= nowUTC.getTime()}`,
-        );
-        console.log(
-          `      Is Rule Currently Active (date range check): ${isRuleCurrentlyActive}`,
-        );
+          const isRuleCurrentlyActive =
+            rule.isActive &&
+            ruleStartDateUTC.getTime() <= nowUTC.getTime() &&
+            ruleEndDateInclusiveUTC.getTime() >= nowUTC.getTime(); // Check inclusive end time
 
-        if (!isRuleCurrentlyActive) {
+          console.log(`      Rule isActive (flag): ${rule.isActive}`);
           console.log(
-            "      RULE NOT ACTIVE (date range or isActive flag is false)",
+            `      Time check: ${ruleStartDateUTC.toISOString()} <= ${nowUTC.toISOString()} (${ruleStartDateUTC.getTime() <= nowUTC.getTime()}) AND ${ruleEndDateInclusiveUTC.toISOString()} >= ${nowUTC.toISOString()} (${ruleEndDateInclusiveUTC.getTime() >= nowUTC.getTime()})`,
+          );
+          console.log(
+            `      Is Rule Currently Active (date range check): ${isRuleCurrentlyActive}`,
+          );
+
+          if (!isRuleCurrentlyActive) {
+            console.log(
+              "      RULE NOT ACTIVE (date range or isActive flag is false)",
+            );
+            return false;
+          }
+
+          const ruleServices = Array.isArray(rule.services)
+            ? rule.services
+            : [];
+          const appliesToThisSpecificServiceItem =
+            !rule.applyToAll &&
+            ruleServices.some(
+              (s) => s.id === item.id && item.type === "service",
+            );
+
+          console.log(`      Rule applyToAll: ${rule.applyToAll}`);
+          console.log(
+            `      Rule appliesToThisSpecificServiceItem: ${appliesToThisSpecificServiceItem}`,
+          );
+
+          const decision = rule.applyToAll || appliesToThisSpecificServiceItem;
+          console.log(
+            `      FINAL DECISION for this rule on this item: ${decision}`,
+          );
+          return decision;
+        } catch (e: any) {
+          console.error(
+            `      Error processing rule ${rule.id} in calculateAllTotalsHelper:`,
+            e.message,
+            rule,
+            e,
           );
           return false;
         }
+      });
 
-        const appliesToThisSpecificServiceItem =
-          !rule.applyToAll &&
-          rule.services?.some(
-            (s) => s.id === item.id && item.type === "service",
+      if (applicableRule) {
+        console.log(
+          `    APPLICABLE RULE FOUND for item ${item.name}:`,
+          JSON.parse(JSON.stringify(applicableRule)),
+        );
+        if (applicableRule.discountType === DiscountType.PERCENTAGE) {
+          currentItemDiscount =
+            originalItemTotalValue *
+            (Number(applicableRule.discountValue) / 100);
+        } else {
+          // For FIXED_AMOUNT, apply the fixed amount *per quantity*
+          currentItemDiscount =
+            Number(applicableRule.discountValue) * item.quantity;
+          // Ensure fixed discount doesn't exceed the item's value
+          currentItemDiscount = Math.min(
+            currentItemDiscount,
+            originalItemTotalValue,
           );
-        console.log(`      Rule applyToAll: ${rule.applyToAll}`);
+        }
         console.log(
-          `      Rule appliesToThisSpecificServiceItem: ${appliesToThisSpecificServiceItem}`,
+          `    Discount amount for this item: ${currentItemDiscount}`,
         );
-
-        const decision = rule.applyToAll || appliesToThisSpecificServiceItem;
-        console.log(
-          `      FINAL DECISION for this rule on this item: ${decision}`,
-        );
-        return decision;
-      } catch (e: any) {
-        console.error(
-          `      Error processing rule ${rule.id} in calculateAllTotalsHelper:`,
-          e.message,
-          rule,
-          e,
-        );
-        return false;
-      }
-    });
-
-    if (applicableRule) {
-      console.log(
-        `    APPLICABLE RULE FOUND for item ${item.name}:`,
-        JSON.parse(JSON.stringify(applicableRule)),
-      );
-      if (applicableRule.discountType === DiscountType.PERCENTAGE) {
-        currentItemDiscount =
-          originalItemTotalValue * (Number(applicableRule.discountValue) / 100);
       } else {
-        currentItemDiscount =
-          Number(applicableRule.discountValue) * item.quantity;
-        currentItemDiscount = Math.min(
-          currentItemDiscount,
-          originalItemTotalValue,
-        );
+        console.log(`    NO APPLICABLE RULE found for item ${item.name}`);
       }
-      console.log(`    Discount amount for this item: ${currentItemDiscount}`);
     } else {
-      console.log(`    NO APPLICABLE RULE found for item ${item.name}`);
+      console.log("  No appliedDiscountRules to consider.");
     }
+
     rulesDiscountAmount += currentItemDiscount;
-    return { ...item, discountApplied: currentItemDiscount };
+    // Ensure discountApplied on the item is an integer (assuming currencies are integers)
+    const roundedItemDiscount = Math.round(currentItemDiscount);
+    return { ...item, discountApplied: roundedItemDiscount };
   });
-  state.servicesAvailed = updatedAvailedItems;
+  state.servicesAvailed = updatedAvailedItems; // Update the state with the new items including discountApplied
 
   let currentVoucherDiscountAmount = 0;
   if (state.voucherCode && state.voucherDiscountValue > 0) {
     const totalAfterItemRules = currentSubTotal - rulesDiscountAmount;
     currentVoucherDiscountAmount = Math.min(
-      state.voucherDiscountValue,
-      Math.max(0, totalAfterItemRules),
+      state.voucherDiscountValue, // Voucher value is a total fixed amount
+      Math.max(0, totalAfterItemRules), // Ensure it doesn't make total negative
     );
+    // Ensure voucher discount amount is an integer
+    currentVoucherDiscountAmount = Math.round(currentVoucherDiscountAmount);
   }
 
   const finalTotalDiscountApplied =
     rulesDiscountAmount + currentVoucherDiscountAmount;
   const finalGrandTotalValue = currentSubTotal - finalTotalDiscountApplied;
 
-  state.subTotal = currentSubTotal;
-  state.totalDiscount = finalTotalDiscountApplied;
-  state.grandTotal = Math.max(0, finalGrandTotalValue);
+  // Ensure all final totals are integers
+  state.subTotal = Math.round(currentSubTotal);
+  state.totalDiscount = Math.round(finalTotalDiscountApplied);
+  state.grandTotal = Math.max(0, Math.round(finalGrandTotalValue));
 
   console.log("Final totals calculated:", {
     subTotal: state.subTotal,
-    rulesDiscountAmount,
+    rulesDiscountAmount: Math.round(rulesDiscountAmount), // Log rounded value
     currentVoucherDiscountAmount,
     totalDiscount: state.totalDiscount,
     grandTotal: state.grandTotal,
@@ -424,9 +350,11 @@ export const CashierSlice = createSlice({
         state.email = action.payload.customer.email;
         state.customerRecommendations =
           action.payload.customer.recommendedAppointments || [];
+        // Reset RA selection when customer changes
         state.selectedRecommendedAppointmentId = null;
         state.generateNewFollowUpForFulfilledRA = false;
       } else {
+        // Clear customer data
         state.customerId = null;
         state.name = "";
         state.email = null;
@@ -438,11 +366,15 @@ export const CashierSlice = createSlice({
     setServiceType(state, action: PayloadAction<"single" | "set">) {
       if (state.serviceType !== action.payload) {
         state.serviceType = action.payload;
+        // Optionally clear selected items if switching type? Depends on UX.
+        // state.servicesAvailed = [];
+        // calculateAllTotalsHelper(state);
       }
     },
     setServeTime(state, action: PayloadAction<"now" | "later">) {
       state.serveTime = action.payload;
       if (action.payload === "now") {
+        // Clear date/time if setting to 'now'
         state.date = "";
         state.time = "";
       }
@@ -465,6 +397,7 @@ export const CashierSlice = createSlice({
         );
         if (selectedRec && selectedRec.originatingService) {
           const policy = selectedRec.originatingService.followUpPolicy;
+          // Default 'generate new' based on policy
           state.generateNewFollowUpForFulfilledRA =
             policy === FollowUpPolicy.EVERY_TIME;
         } else {
@@ -474,31 +407,37 @@ export const CashierSlice = createSlice({
         state.generateNewFollowUpForFulfilledRA = false;
       }
     },
+
     selectItem(state, action: PayloadAction<SelectItemPayload>) {
       const { id, title, price, type } = action.payload;
-      const existingItemIndex = state.servicesAvailed.findIndex(
-        (item) => item.id === id && item.type === type,
-      );
+      // Always add as a new line item, even if same service/set selected multiple times
+      state.servicesAvailed.push({
+        // Use a unique client-side ID if needed, otherwise using DB ID might conflict
+        // For simplicity here, just pushing the item data. You might need `uuidv4()` or similar.
+        id, // WARNING: This might cause issues if you select the same item twice and rely on this ID being unique in the UI/state. Consider generating a temporary client ID here.
+        name: title,
+        quantity: 1, // Start with quantity 1 when selecting
+        type,
+        originalPrice: price, // Store the original price per unit/set
+        discountApplied: 0, // Initial discount is 0
+      });
 
-      if (existingItemIndex !== -1) {
-        state.servicesAvailed.splice(existingItemIndex, 1);
-      } else {
-        state.servicesAvailed.push({
-          id,
-          name: title,
-          quantity: 1,
-          type,
-          originalPrice: price,
-          discountApplied: 0,
-        });
-      }
-      calculateAllTotalsHelper(state);
+      calculateAllTotalsHelper(state); // Recalculate after adding/removing
     },
+    // Modified handleItemQuantity to handle individual items
     handleItemQuantity(state, action: PayloadAction<UpdateQuantityPayload>) {
       const { id, type, identifier } = action.payload;
+      // The id now needs to be a unique identifier for the *specific line item instance*
+      // in servicesAvailed, not just the service/set ID. If item.id is the DB ID,
+      // this approach still assumes only one instance of a service/set is in the list,
+      // which conflicts with adding the same item multiple times.
+      // REVISED: Assuming item.id IS unique (e.g., temporary client ID or first instance ID).
+      // If you need multiple instances of the same service as separate line items,
+      // the `selectItem` logic needs to assign unique temporary IDs.
       const itemIndex = state.servicesAvailed.findIndex(
-        (s) => s.id === id && s.type === type,
+        (s) => s.id === id && s.type === type, // This still matches based on original service/set ID
       );
+
       if (itemIndex !== -1) {
         if (identifier === "inc") {
           state.servicesAvailed[itemIndex].quantity += 1;
@@ -506,21 +445,35 @@ export const CashierSlice = createSlice({
           if (state.servicesAvailed[itemIndex].quantity > 1) {
             state.servicesAvailed[itemIndex].quantity -= 1;
           } else {
+            // If quantity goes to 0, remove the item
             state.servicesAvailed.splice(itemIndex, 1);
           }
         }
-        calculateAllTotalsHelper(state);
+        calculateAllTotalsHelper(state); // Recalculate after changing quantity
+      } else {
+        console.warn(
+          `handleItemQuantity: Item not found with id ${id} and type ${type}`,
+        );
       }
     },
+    // Modified removeItem to handle individual items
     removeItem(
       state,
-      action: PayloadAction<{ id: string; type: "service" | "set" }>,
+      action: PayloadAction<{ id: string; type: "service" | "set" }>, // ID must be the unique line item ID
     ) {
       const { id, type } = action.payload;
+      // Assuming the id here is the unique identifier for the line item you want to remove
+      const initialLength = state.servicesAvailed.length;
       state.servicesAvailed = state.servicesAvailed.filter(
-        (item) => !(item.id === id && item.type === type),
+        (item) => item.id !== id || item.type !== type, // Filter out the specific item by its unique ID and type
       );
-      calculateAllTotalsHelper(state);
+      if (state.servicesAvailed.length < initialLength) {
+        calculateAllTotalsHelper(state); // Recalculate only if an item was actually removed
+      } else {
+        console.warn(
+          `removeItem: Item not found with id ${id} and type ${type}`,
+        );
+      }
     },
     clearItems(state) {
       state.servicesAvailed = [];
@@ -528,11 +481,7 @@ export const CashierSlice = createSlice({
     },
     applyDiscounts(state, action: PayloadAction<ApplyDiscountsPayload>) {
       state.appliedDiscountRules = action.payload.rules;
-      console.log(
-        "Discounts applied to state from applyDiscounts action:",
-        JSON.parse(JSON.stringify(state.appliedDiscountRules)),
-      );
-      // calculateAllTotalsHelper is called HERE, which updates servicesAvailed.
+      // After applying rules, recalculate totals which reapplies the rules
       calculateAllTotalsHelper(state);
     },
     clearDiscounts(state) {
@@ -547,7 +496,7 @@ export const CashierSlice = createSlice({
         state.voucherCode = "";
         state.voucherDiscountValue = 0;
       }
-      calculateAllTotalsHelper(state);
+      calculateAllTotalsHelper(state); // Recalculate after voucher change
     },
     removeRecommendation(state, action: PayloadAction<string>) {
       const idToRemove = action.payload;
@@ -565,13 +514,20 @@ export const CashierSlice = createSlice({
     ) {
       state.generateNewFollowUpForFulfilledRA = action.payload;
     },
-    // REMOVED: setRulesFetched reducer
-    // setRulesFetched: (state, action: PayloadAction<boolean>) => {
-    //   state.areRulesFetched = action.payload;
-    // },
+
+    // --- ADDED THIS NEW REDUCER ---
+    setOriginBranchId: (state, action: PayloadAction<string | null>) => {
+      state.originBranchId = action.payload;
+      // Note: Changing branch ID might affect which services/sets are *available* to add,
+      // but it typically doesn't change the price or discount applicability of items
+      // *already added* to servicesAvailed, unless your discount rules are branch-specific.
+      // If they are branch-specific, you might need to re-run calculation or filter rules here.
+      // For now, assume it's just data storage for the transaction.
+    },
+    // --- END NEW REDUCER ---
 
     reset(): CashierState {
-      // Reset to initial state, which no longer includes areRulesFetched
+      // Reset to initial state, including the new originBranchId field
       return JSON.parse(JSON.stringify(initialState));
     },
   },

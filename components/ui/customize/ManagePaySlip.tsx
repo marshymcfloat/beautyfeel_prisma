@@ -1,3 +1,4 @@
+// File: components/ui/ManagePayslips.tsx
 "use client";
 
 import React, { useState, useCallback, useEffect, useTransition } from "react";
@@ -20,11 +21,11 @@ import {
 
 import {
   format,
-  startOfDay,
-  addDays,
-  isBefore,
-  isValid,
-  isEqual,
+  startOfDay, // <-- Need startOfDay
+  addDays, // <-- Need addDays
+  isBefore, // <-- Need isBefore
+  isValid, // <-- Need isValid
+  isEqual, // <-- Need isEqual
 } from "date-fns";
 import {
   PayslipData,
@@ -54,11 +55,14 @@ import {
   invalidateCache,
   CacheKey,
 } from "@/lib/cache";
+// Make sure prisma is imported/available if needed directly here, though handleOpenModal might call server actions that use it.
+// Based on the structure, handleOpenModal will call other server actions, so prisma import might not be needed here.
 
 const PAYSLIPS_LIST_CACHE_KEY: CacheKey = "payslips_ManagePayslips";
 const ACCOUNTS_LIST_CACHE_KEY: CacheKey = "accounts_ManagePayslips";
 const REQUESTS_LIST_CACHE_KEY: CacheKey = "requests_ManagePayslips";
 
+// Helper functions (Keeping them as they were provided)
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
@@ -119,12 +123,20 @@ export default function ManagePayslips() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [isReleasing, startReleaseTransition] = useTransition();
+
+  // State variables to hold the raw data fetched for the modal
   const [modalAttendance, setModalAttendance] = useState<AttendanceRecord[]>(
     [],
   );
   const [modalBreakdown, setModalBreakdown] = useState<SalaryBreakdownItem[]>(
     [],
   );
+  // NEW: State variables for the last released payslip details for modal filtering
+  const [modalLastReleasedPayslipEndDate, setModalLastReleasedPayslipEndDate] =
+    useState<Date | null>(null);
+  const [modalLastReleasedTimestamp, setModalLastReleasedTimestamp] =
+    useState<Date | null>(null);
+
   const [isLoadingModalData, setIsLoadingModalData] = useState(false);
   const [modalDataError, setModalDataError] = useState<string | null>(null);
 
@@ -172,7 +184,7 @@ export default function ManagePayslips() {
         if (cached) {
           setPayslips(cached);
           setIsLoadingList(false);
-          return;
+          return cached; // Return cached data for use in release handler
         }
       }
       try {
@@ -181,68 +193,78 @@ export default function ManagePayslips() {
         });
         setPayslips(data);
         setCachedData(PAYSLIPS_LIST_CACHE_KEY, data, cacheParams);
+        return data; // Return fetched data for use in release handler
       } catch (error: any) {
         setListError(error.message || "Could not load payslips.");
         setPayslips([]);
+        return []; // Return empty array on error
       } finally {
         setIsLoadingList(false);
       }
     },
-    [],
+    [getPayslips], // Added dependency
   );
 
-  const loadAccounts = useCallback(async (forceRefresh = false) => {
-    setIsLoadingAccounts(true);
-    setAccountsError(null);
-    if (!forceRefresh) {
-      const cached = getCachedData<BasicAccountInfo[]>(ACCOUNTS_LIST_CACHE_KEY);
-      if (cached) {
-        setAccounts(cached);
+  const loadAccounts = useCallback(
+    async (forceRefresh = false) => {
+      setIsLoadingAccounts(true);
+      setAccountsError(null);
+      if (!forceRefresh) {
+        const cached = getCachedData<BasicAccountInfo[]>(
+          ACCOUNTS_LIST_CACHE_KEY,
+        );
+        if (cached) {
+          setAccounts(cached);
+          setIsLoadingAccounts(false);
+          return;
+        }
+      }
+      try {
+        const data = await getAllAccountsWithBasicInfo();
+        setAccounts(data);
+        setCachedData(ACCOUNTS_LIST_CACHE_KEY, data);
+      } catch (error: any) {
+        setAccountsError(error.message || "Could not load accounts.");
+        setAccounts([]);
+      } finally {
         setIsLoadingAccounts(false);
-        return;
       }
-    }
-    try {
-      const data = await getAllAccountsWithBasicInfo();
-      setAccounts(data);
-      setCachedData(ACCOUNTS_LIST_CACHE_KEY, data);
-    } catch (error: any) {
-      setAccountsError(error.message || "Could not load accounts.");
-      setAccounts([]);
-    } finally {
-      setIsLoadingAccounts(false);
-    }
-  }, []);
+    },
+    [getAllAccountsWithBasicInfo],
+  ); // Added dependency
 
-  const loadPayslipRequests = useCallback(async (forceRefresh = false) => {
-    setIsLoadingRequests(true);
-    setRequestsError(null);
-    setRequestProcessingError(null);
-    setRequestProcessingSuccess(null);
-    const cacheParams = { status: PayslipRequestStatus.PENDING };
+  const loadPayslipRequests = useCallback(
+    async (forceRefresh = false) => {
+      setIsLoadingRequests(true);
+      setRequestsError(null);
+      setRequestProcessingError(null);
+      setRequestProcessingSuccess(null);
+      const cacheParams = { status: PayslipRequestStatus.PENDING };
 
-    if (!forceRefresh) {
-      const cached = getCachedData<PayslipRequestData[]>(
-        REQUESTS_LIST_CACHE_KEY,
-        cacheParams,
-      );
-      if (cached) {
-        setRequests(cached);
+      if (!forceRefresh) {
+        const cached = getCachedData<PayslipRequestData[]>(
+          REQUESTS_LIST_CACHE_KEY,
+          cacheParams,
+        );
+        if (cached) {
+          setRequests(cached);
+          setIsLoadingRequests(false);
+          return;
+        }
+      }
+      try {
+        const data = await getPayslipRequests(PayslipRequestStatus.PENDING);
+        setRequests(data);
+        setCachedData(REQUESTS_LIST_CACHE_KEY, data, cacheParams);
+      } catch (error: any) {
+        setRequestsError(error.message || "Could not load pending requests.");
+        setRequests([]);
+      } finally {
         setIsLoadingRequests(false);
-        return;
       }
-    }
-    try {
-      const data = await getPayslipRequests(PayslipRequestStatus.PENDING);
-      setRequests(data);
-      setCachedData(REQUESTS_LIST_CACHE_KEY, data, cacheParams);
-    } catch (error: any) {
-      setRequestsError(error.message || "Could not load pending requests.");
-      setRequests([]);
-    } finally {
-      setIsLoadingRequests(false);
-    }
-  }, []);
+    },
+    [getPayslipRequests],
+  ); // Added dependency
 
   useEffect(() => {
     loadAccounts();
@@ -250,6 +272,7 @@ export default function ManagePayslips() {
   }, [loadAccounts, loadPayslipRequests]);
 
   useEffect(() => {
+    // When filterStatus changes or on initial mount, load payslips
     loadPayslips(filterStatus);
   }, [filterStatus, loadPayslips]);
 
@@ -264,105 +287,114 @@ export default function ManagePayslips() {
     loadPayslipRequests(true);
   };
 
-  const handleOpenModal = useCallback(async (payslipSummary: PayslipData) => {
-    const summaryPeriodStartDate = new Date(payslipSummary.periodStartDate);
-    const summaryPeriodEndDate = new Date(payslipSummary.periodEndDate);
+  const handleOpenModal = useCallback(
+    async (payslipSummary: PayslipData) => {
+      const summaryPeriodStartDate = new Date(payslipSummary.periodStartDate);
+      const summaryPeriodEndDate = new Date(payslipSummary.periodEndDate);
 
-    if (!isValid(summaryPeriodStartDate) || !isValid(summaryPeriodEndDate)) {
-      console.error(
-        "handleOpenModal: Invalid period dates in payslipSummary",
-        payslipSummary,
-      );
-      setModalDataError("Invalid payslip period dates.");
+      if (!isValid(summaryPeriodStartDate) || !isValid(summaryPeriodEndDate)) {
+        console.error(
+          "handleOpenModal: Invalid period dates in payslipSummary",
+          payslipSummary,
+        );
+        setModalDataError("Invalid payslip period dates.");
+        setIsModalOpen(true);
+        setSelectedPayslip(payslipSummary);
+        setModalAttendance([]); // Ensure old data is cleared
+        setModalBreakdown([]);
+        setModalLastReleasedPayslipEndDate(null); // Ensure old data is cleared
+        setModalLastReleasedTimestamp(null); // Ensure old data is cleared
+        setIsLoadingModalData(false);
+        return;
+      }
+
+      setIsLoadingModalData(true);
       setIsModalOpen(true);
       setSelectedPayslip(payslipSummary);
-      setIsLoadingModalData(false);
-      return;
-    }
+      setReleaseError(null);
+      setModalDataError(null);
+      setModalAttendance([]);
+      setModalBreakdown([]);
+      setModalLastReleasedPayslipEndDate(null); // Ensure old data is cleared
+      setModalLastReleasedTimestamp(null); // Ensure old data is cleared
 
-    setIsLoadingModalData(true);
-    setIsModalOpen(true);
-    setSelectedPayslip(payslipSummary);
-    setReleaseError(null);
-    setModalDataError(null);
-    setModalAttendance([]);
-    setModalBreakdown([]);
+      try {
+        const releasedPayslipsForEmployee = await getPayslips({
+          employeeId: payslipSummary.employeeId,
+          status: PayslipStatus.RELEASED,
+        });
 
-    try {
-      let trueAttendanceStartDate = summaryPeriodStartDate;
-
-      const allUserReleasedPayslips = await getPayslips({
-        status: PayslipStatus.RELEASED,
-        employeeId: payslipSummary.employeeId,
-      });
-
-      const previousPayslipsBeforeThisOne = allUserReleasedPayslips
-        .filter((p) => {
-          const pEndDate = new Date(p.periodEndDate);
-          return (
-            isValid(pEndDate) && isBefore(pEndDate, summaryPeriodStartDate)
-          );
-        })
-        .sort(
+        // Find the latest released payslip
+        const lastReleasedPayslip = releasedPayslipsForEmployee.sort(
           (a, b) =>
-            new Date(b.periodEndDate).getTime() -
-            new Date(a.periodEndDate).getTime(),
+            new Date(b.releasedDate!).getTime() -
+            new Date(a.releasedDate!).getTime(),
+        )[0]; // Get the first item after sorting descending
+
+        const lastReleasedPayslipEndDate = lastReleasedPayslip?.periodEndDate
+          ? new Date(lastReleasedPayslip.periodEndDate)
+          : null;
+        const lastReleasedTimestamp = lastReleasedPayslip?.releasedDate
+          ? new Date(lastReleasedPayslip.releasedDate)
+          : null;
+
+        setModalLastReleasedPayslipEndDate(
+          lastReleasedPayslipEndDate && isValid(lastReleasedPayslipEndDate)
+            ? lastReleasedPayslipEndDate
+            : null,
+        );
+        setModalLastReleasedTimestamp(
+          lastReleasedTimestamp && isValid(lastReleasedTimestamp)
+            ? lastReleasedTimestamp
+            : null,
         );
 
-      if (previousPayslipsBeforeThisOne.length > 0) {
-        const lastTrulyFinishedPeriodEndDate = new Date(
-          previousPayslipsBeforeThisOne[0].periodEndDate,
+        // Fetch raw attendance and breakdown data for the *nominal period* of the payslip.
+        // The modal component will then use lastReleasedPayslipEndDate/Timestamp to FILTER this raw data for DISPLAY.
+        const rawAttendanceData = await getAttendanceForPeriod(
+          payslipSummary.employeeId,
+          summaryPeriodStartDate,
+          summaryPeriodEndDate,
         );
-        if (isValid(lastTrulyFinishedPeriodEndDate)) {
-          trueAttendanceStartDate = startOfDay(
-            addDays(lastTrulyFinishedPeriodEndDate, 1),
-          );
-        }
+        setModalAttendance(rawAttendanceData);
+
+        // Note: getCommissionBreakdownForPeriod *already* filters by the absolute last released timestamp internally.
+        // We call it with the nominal period dates, but its internal logic ensures we only get commissions after the last payout.
+        // The modal will *also* filter this data by the passed lastReleasedTimestamp for display consistency,
+        // although the data returned by this action should ideally already adhere to that.
+        const rawBreakdownData = await getCommissionBreakdownForPeriod(
+          payslipSummary.employeeId,
+          summaryPeriodStartDate, // This date is actually ignored *inside* the server action, replaced by the true cutoff
+          summaryPeriodEndDate,
+        );
+        setModalBreakdown(rawBreakdownData);
+      } catch (error: any) {
+        console.error(
+          "[ManagePayslips handleOpenModal] Error loading modal data:",
+          error,
+        );
+        setModalDataError(error.message || "Could not load details for modal.");
+        // Clear potentially incomplete data
+        setModalAttendance([]);
+        setModalBreakdown([]);
+        setModalLastReleasedPayslipEndDate(null);
+        setModalLastReleasedTimestamp(null);
+      } finally {
+        setIsLoadingModalData(false);
       }
-      console.log(
-        `[ManagePayslips handleOpenModal] Payslip ${payslipSummary.id} (Nominal Period: ${format(summaryPeriodStartDate, "PP")} - ${format(summaryPeriodEndDate, "PP")}). True attendance start for this payslip: ${format(trueAttendanceStartDate, "PP")}`,
-      );
-
-      const rawAttendanceData = await getAttendanceForPeriod(
-        payslipSummary.employeeId,
-        summaryPeriodStartDate,
-        summaryPeriodEndDate,
-      );
-
-      const filteredAttendanceData = rawAttendanceData.filter((attRec) => {
-        const attDate = startOfDay(new Date(attRec.date));
-        return (
-          isValid(attDate) &&
-          !isBefore(attDate, trueAttendanceStartDate) &&
-          (isBefore(attDate, summaryPeriodEndDate) ||
-            isEqual(attDate, summaryPeriodEndDate))
-        );
-      });
-      setModalAttendance(filteredAttendanceData);
-
-      const breakdownData = await getCommissionBreakdownForPeriod(
-        payslipSummary.employeeId,
-        summaryPeriodStartDate,
-        summaryPeriodEndDate,
-      );
-      setModalBreakdown(breakdownData);
-    } catch (error: any) {
-      console.error(
-        "[ManagePayslips handleOpenModal] Error loading modal data:",
-        error,
-      );
-      setModalDataError(error.message || "Could not load details for modal.");
-    } finally {
-      setIsLoadingModalData(false);
-    }
-  }, []);
+    },
+    [getPayslips, getAttendanceForPeriod, getCommissionBreakdownForPeriod], // Added server action dependencies
+  );
 
   const handleCloseModal = useCallback(() => {
     setIsModalOpen(false);
+    // Clear state after closing animation is likely done
     setTimeout(() => {
       setSelectedPayslip(null);
       setModalAttendance([]);
       setModalBreakdown([]);
+      setModalLastReleasedPayslipEndDate(null);
+      setModalLastReleasedTimestamp(null);
       setModalDataError(null);
       setIsLoadingModalData(false);
       setReleaseError(null);
@@ -379,15 +411,55 @@ export default function ManagePayslips() {
       startReleaseTransition(async () => {
         try {
           await releaseSalary(payslipId, adminId);
+          // Invalidate cache for both ManagePayslips list and potentially the individual payslip
           invalidateCache(PAYSLIPS_LIST_CACHE_KEY);
-          await loadPayslips(filterStatus, true);
-          handleCloseModal();
+          // No specific cache key for a single payslip needed with current structure,
+          // as we refetch the list and find it.
+
+          // After releasing, refresh the list.
+          // We pass `true` to force a server re-fetch.
+          const updatedPayslipsList = await loadPayslips(filterStatus, true);
+
+          // If the modal is still open and it was the payslip we just released:
+          if (isModalOpen && selectedPayslip?.id === payslipId) {
+            // Find the updated payslip object in the newly loaded list
+            const updatedPayslip = updatedPayslipsList.find(
+              (p) => p.id === payslipId,
+            );
+
+            // Re-open/update the modal with the found updated data
+            if (updatedPayslip) {
+              // Call handleOpenModal again with the updated payslip data
+              // This will re-fetch the modal-specific attendance/breakdown data
+              // and update the status/releasedDate in the modal header.
+              await handleOpenModal(updatedPayslip);
+            } else {
+              // If for some reason the released payslip isn't found in the new list
+              // (e.g., filter changed, or list fetch failed), just close the modal.
+              handleCloseModal();
+              // Optionally show an alert/error that the specific payslip couldn't be reloaded
+            }
+          } else {
+            // If the modal was not open for this payslip, just ensure list is refreshed
+            handleCloseModal(); // Close modal just in case (doesn't hurt if already closed)
+          }
         } catch (error: any) {
           setReleaseError(error.message || "Failed to release salary.");
+          // Re-load payslips list even on error to show potential status changes/failures
+          loadPayslips(filterStatus, true);
         }
       });
     },
-    [loadPayslips, filterStatus, handleCloseModal, adminId],
+    [
+      loadPayslips,
+      filterStatus,
+      handleCloseModal,
+      adminId,
+      isModalOpen,
+      selectedPayslip,
+      handleOpenModal,
+      releaseSalary, // Added dependency
+    ],
   );
 
   const handleToggleCanRequestPayslip = useCallback(
@@ -415,18 +487,20 @@ export default function ManagePayslips() {
           if (result.success) {
             setPermissionUpdateSuccess(result.message || "Permission updated.");
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
+            // Re-fetch accounts list after successful update
+            loadAccounts(true);
           } else {
             setPermissionUpdateError(
               result.error || result.message || "Failed to update permission.",
             );
-            setAccounts(originalAccounts);
+            setAccounts(originalAccounts); // Revert on failure
           }
         } catch (error: any) {
           setPermissionUpdateError(
             error.message ||
               "An unexpected error occurred during permission update.",
           );
-          setAccounts(originalAccounts);
+          setAccounts(originalAccounts); // Revert on failure
         } finally {
           setUpdatingAccountId(null);
           setTimeout(() => {
@@ -436,7 +510,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts],
+    [accounts, updateAccountCanRequestPayslip, loadAccounts], // Added loadAccounts dependency
   );
 
   const handleToggleAllPermissions = useCallback(
@@ -461,18 +535,20 @@ export default function ManagePayslips() {
                 `All permissions set to ${newStatus ? "Enabled" : "Disabled"}.`,
             );
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
+            // Re-fetch accounts list after successful update
+            loadAccounts(true);
           } else {
             setPermissionUpdateError(
               result.error || "Failed to update all permissions.",
             );
-            setAccounts(originalAccounts);
+            setAccounts(originalAccounts); // Revert on failure
           }
         } catch (error: any) {
           setPermissionUpdateError(
             error.message ||
               "An unexpected error occurred while toggling all permissions.",
           );
-          setAccounts(originalAccounts);
+          setAccounts(originalAccounts); // Revert on failure
         } finally {
           setTimeout(() => {
             setPermissionUpdateSuccess(null);
@@ -481,7 +557,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [accounts],
+    [accounts, toggleAllCanRequestPayslipAction, loadAccounts], // Added loadAccounts dependency
   );
 
   const isSpecificAccountUpdating = (accountId: string) =>
@@ -503,9 +579,11 @@ export default function ManagePayslips() {
             setRequestProcessingSuccess(
               result.message || "Request approved and payslip generated.",
             );
-            invalidateCache([REQUESTS_LIST_CACHE_KEY, PAYSLIPS_LIST_CACHE_KEY]);
+            // Invalidate and reload requests and pending payslips list
+            invalidateCache(REQUESTS_LIST_CACHE_KEY);
+            invalidateCache(PAYSLIPS_LIST_CACHE_KEY);
             await loadPayslipRequests(true);
-            await loadPayslips(PayslipStatus.PENDING, true);
+            await loadPayslips(PayslipStatus.PENDING, true); // Refresh pending list specifically
           } else {
             throw new Error(
               result.error || "Failed to approve request and generate payslip.",
@@ -515,6 +593,8 @@ export default function ManagePayslips() {
           setRequestProcessingError(
             error.message || "Could not approve request.",
           );
+          // Still reload requests list even on error
+          loadPayslipRequests(true);
         } finally {
           setProcessingRequestId(null);
           setTimeout(() => {
@@ -524,7 +604,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [adminId, loadPayslipRequests, loadPayslips],
+    [adminId, loadPayslipRequests, loadPayslips, approvePayslipRequest], // Added server action dependencies
   );
 
   const handleRejectRequest = useCallback(
@@ -549,7 +629,7 @@ export default function ManagePayslips() {
               result.message || "Request rejected successfully.",
             );
             invalidateCache(REQUESTS_LIST_CACHE_KEY);
-            await loadPayslipRequests(true);
+            await loadPayslipRequests(true); // Refresh requests list
           } else {
             throw new Error(result.error || "Failed to reject request.");
           }
@@ -557,6 +637,8 @@ export default function ManagePayslips() {
           setRequestProcessingError(
             error.message || "Could not reject request.",
           );
+          // Still reload requests list even on error
+          loadPayslipRequests(true);
         } finally {
           setProcessingRequestId(null);
           setTimeout(() => {
@@ -566,7 +648,7 @@ export default function ManagePayslips() {
         }
       });
     },
-    [adminId, loadPayslipRequests],
+    [adminId, loadPayslipRequests, rejectPayslipRequest], // Added server action dependencies
   );
 
   const thStyleBase =
@@ -580,7 +662,7 @@ export default function ManagePayslips() {
 
   return (
     <div className="space-y-8 p-1 md:p-4">
-      {}
+      {/* Header */}
       <div className="flex flex-col items-start justify-between gap-2 border-b border-gray-200 pb-3 sm:flex-row sm:items-center">
         <h1 className="text-xl font-semibold text-gray-900">Manage Payslips</h1>
         <Button
@@ -596,7 +678,7 @@ export default function ManagePayslips() {
         </Button>
       </div>
 
-      {}
+      {/* Pending Requests Section */}
       <section className="space-y-3">
         <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
           Pending Payslip Requests
@@ -752,7 +834,7 @@ export default function ManagePayslips() {
         )}
       </section>
 
-      {}
+      {/* Generated Payslips Section */}
       <section className="space-y-3 border-t border-gray-300 pt-6 sm:pt-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
@@ -925,7 +1007,7 @@ export default function ManagePayslips() {
         )}
       </section>
 
-      {}
+      {/* Employee Permissions Section */}
       <section className="space-y-3 border-t border-gray-300 pt-6 sm:pt-8">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
@@ -1094,6 +1176,7 @@ export default function ManagePayslips() {
         )}
       </section>
 
+      {/* Manage Payslip Modal */}
       {selectedPayslip && isModalOpen && (
         <ManagePayslipModal
           isOpen={isModalOpen}
@@ -1101,6 +1184,9 @@ export default function ManagePayslips() {
           payslipData={selectedPayslip}
           attendanceRecords={modalAttendance}
           breakdownItems={modalBreakdown}
+          // Pass the last released dates/timestamps for filtering the display
+          lastReleasedPayslipEndDate={modalLastReleasedPayslipEndDate}
+          lastReleasedTimestamp={modalLastReleasedTimestamp}
           isModalDataLoading={isLoadingModalData}
           modalDataError={modalDataError}
           onReleaseSalary={handleReleaseSalary}

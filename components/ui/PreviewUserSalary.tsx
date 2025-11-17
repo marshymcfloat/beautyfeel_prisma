@@ -1,17 +1,12 @@
+// File: components/ui/PreviewUserSalary.tsx
 "use client";
 
 import React from "react";
 import Button from "../Buttons/Button";
 import { Eye, History, Loader2, RefreshCcw } from "lucide-react";
 
-type PreviewUserSalaryProps = {
-  salary: number | null | undefined;
-  onOpenDetails: () => void;
-  onOpenHistory: () => void;
-  isLoading: boolean;
-  onRefresh: () => void;
-};
-
+// Helper function (remains the same)
+// IMPORTANT: Assumes the input 'value' is an integer representing cents.
 const formatCurrency = (value: number | null | undefined): string => {
   if (
     value == null ||
@@ -20,14 +15,27 @@ const formatCurrency = (value: number | null | undefined): string => {
     !isFinite(value)
   )
     value = 0;
-  return value.toLocaleString("en-PH", {
+  const formattedValue = value; // Divide by 100 to display in major currency unit
+  return formattedValue.toLocaleString("en-PH", {
     style: "currency",
     currency: "PHP",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 };
 
+type PreviewUserSalaryProps = {
+  // Now accepts the pre-calculated estimated gross pay
+  estimatedGrossPay: number | null | undefined;
+
+  onOpenDetails: () => void; // Opens the detailed modal
+  onOpenHistory: () => void; // Opens payslip history modal
+  isLoading: boolean; // Loading state from parent (AccountDashboardPage)
+  onRefresh: () => void; // Function to trigger data refresh in parent
+};
+
 export default function PreviewUserSalary({
-  salary,
+  estimatedGrossPay, // Use the passed calculated value
   onOpenDetails,
   onOpenHistory,
   isLoading,
@@ -37,8 +45,9 @@ export default function PreviewUserSalary({
     <div className="flex min-h-[170px] flex-col justify-between rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm">
       <div>
         <div className="mb-1 flex items-center justify-between">
+          {/* Display "Current Estimated Gross Pay" */}
           <h3 className="flex items-center text-base font-semibold text-gray-800">
-            Your Current Salary
+            Current Est. Gross Pay
           </h3>
           <button
             onClick={onRefresh}
@@ -54,24 +63,39 @@ export default function PreviewUserSalary({
             )}
           </button>
         </div>
+        {/* Display the calculated value */}
         {isLoading ? (
           <div className="flex h-[40px] items-center justify-center py-3">
             <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
           </div>
         ) : (
           <p className="h-[40px] text-xl font-bold text-customDarkPink sm:text-2xl">
-            {formatCurrency(salary)}
+            {formatCurrency(estimatedGrossPay)}
           </p>
         )}
+        {/* Removed the period note here, as the full details are in the modal */}
       </div>
       <div className="mt-3 flex flex-col space-y-2 sm:flex-row sm:space-x-2 sm:space-y-0">
-        <Button size="sm" onClick={onOpenDetails} disabled={isLoading}>
+        {/* Button to open the detailed modal */}
+        <Button
+          size="sm"
+          onClick={onOpenDetails}
+          type="button"
+          disabled={isLoading}
+        >
           <Eye size={14} className="mr-1.5" />
-          View Current Details
+          View Full Breakdown
         </Button>
-        <Button size="sm" onClick={onOpenHistory} disabled={isLoading} invert>
+        {/* Button to open history modal */}
+        <Button
+          size="sm"
+          type="button"
+          onClick={onOpenHistory}
+          disabled={isLoading}
+          invert
+        >
           <History size={14} className="mr-1.5" />
-          View History
+          View Payslip History
         </Button>
       </div>
     </div>

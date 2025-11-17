@@ -17,14 +17,22 @@ const {
   endOfDay,
   differenceInDays,
   isEqual,
+  format,
+  isValid,
 } = require("date-fns");
+// Assuming date-fns-tz is used for timezones if needed beyond basic date-fns
+// const { utcToZonedTime, zonedTimeToUtc } = require('date-fns-tz');
+
 require("dotenv").config({ path: "../.env" });
 
 const PORT = process.env.PORT || 9000;
 const allowedOrigins = (
   process.env.CORS_ORIGIN || "http://localhost:3000"
 ).split(",");
-const COMPLETION_DELAY = 3 * 60 * 1000;
+const COMPLETION_DELAY = parseInt(
+  process.env.COMPLETION_DELAY_MS || "180000",
+  10,
+); // Default to 3 minutes
 
 const resendKey = process.env.RESEND_API_KEY;
 const resend = resendKey ? new Resend(resendKey) : null;
@@ -41,14 +49,15 @@ const LOGO_URL_SERVER =
 const PHILIPPINES_TIMEZONE = process.env.TIMEZONE || "Asia/Manila";
 
 const FOLLOW_UP_REMINDER_WINDOWS_DAYS = [7, 3, 2, 1, 0, -1, -7, -14];
-const FOLLOW_UP_REMINDER_FIELDS = {
+// Corrected FOLLOW_UP_REMINDER_FIELDS based on schema
+const FOLLOW_UP_REMINDER_FIELDS_CORRECTED = {
   7: "reminder7DaySentAt",
   3: "reminder3DaySentAt",
   2: "reminder2DaySentAt",
   1: "reminder1DaySentAt",
   0: "reminderTodaySentAt",
   "-1": "reminder1DayAfterSentAt",
-  "-7": "reminder7DayAfterSentAt",
+  "-7": "reminder7DayAfterSentAt", // Corrected field name
   "-14": "reminder14DayAfterSentAt",
 };
 
@@ -74,6 +83,23 @@ const CRON_ITEM_PROCESSING_DELAY = parseInt(
 );
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE || "Asia/Manila";
 
+// --- Email Retry Configuration ---
+const MAX_EMAIL_RETRIES = parseInt(process.env.MAX_EMAIL_RETRIES || "3", 10); // Max attempts after the initial one
+const BASE_EMAIL_RETRY_DELAY_MS = parseInt(
+  process.env.BASE_EMAIL_RETRY_DELAY_MS || "1000",
+  10,
+); // Base delay in milliseconds (1 second)
+const EMAIL_RETRY_JITTER_MS = parseInt(
+  process.env.EMAIL_RETRY_JITTER_MS || "500",
+  10,
+); // Max random jitter to add to delay
+
+// Assuming SALARY_COMMISSION_RATE is defined globally or imported elsewhere
+// For the socket server, you might need to define it here or load it from config
+const SALARY_COMMISSION_RATE = parseFloat(
+  process.env.SALARY_COMMISSION_RATE || "0.1",
+); // Example: 10% default rate
+
 const prisma = new PrismaClient({
   transactionOptions: {
     maxWait: 10000,
@@ -93,21 +119,131 @@ const io = new Server(httpServer, {
     },
     methods: ["GET", "POST", "PATCH", "PUT"],
   },
+  // Connection configuration for better reliability
+  pingTimeout: 60000, // 60 seconds - time to wait for pong response
+  pingInterval: 25000, // 25 seconds - interval between pings
+  transports: ["websocket", "polling"], // Prefer websocket, fallback to polling
+  allowEIO3: true, // Allow Engine.IO v3 clients for compatibility
 });
 
+// Store timers using transactionId
 const transactionCompletionTimers = new Map();
+// Store total commissions per AvailedService during core transaction
+const availedServiceTotalCommissions = new Map();
+// Store salary updates per Account during core transaction
+const salaryUpdates = new Map();
+// Store any RA processing error to report later
+let raProcessingError = null;
+
+// --- Connection Management & Tracking ---
+// Track active connections per accountId
+const activeConnections = new Map(); // accountId -> Set of socketIds
+// Track socketId to accountId mapping for cleanup
+const socketToAccountMap = new Map(); // socketId -> accountId
+// Track transactionId to socketIds for room management
+const transactionRooms = new Map(); // transactionId -> Set of socketIds
+
+// --- Rate Limiting ---
+const RATE_LIMIT_WINDOW_MS = 60000; // 1 minute
+const RATE_LIMIT_MAX_EVENTS = 30; // Max events per window
+const socketEventCounts = new Map(); // socketId -> { count: number, resetAt: number }
+
+/**
+ * Check if socket has exceeded rate limit
+ * @param {string} socketId
+ * @returns {boolean} true if rate limit exceeded
+ */
+function checkRateLimit(socketId) {
+  const now = Date.now();
+  const record = socketEventCounts.get(socketId);
+
+  if (!record || now > record.resetAt) {
+    // Reset or create new record
+    socketEventCounts.set(socketId, {
+      count: 1,
+      resetAt: now + RATE_LIMIT_WINDOW_MS,
+    });
+    return false;
+  }
+
+  record.count++;
+  if (record.count > RATE_LIMIT_MAX_EVENTS) {
+    return true; // Rate limit exceeded
+  }
+
+  return false;
+}
+
+/**
+ * Clean up rate limit records for a socket
+ * @param {string} socketId
+ */
+function cleanupRateLimit(socketId) {
+  socketEventCounts.delete(socketId);
+}
+
+/**
+ * Validate accountId exists in database
+ * @param {string} accountId
+ * @returns {Promise<boolean>}
+ */
+async function validateAccountId(accountId) {
+  try {
+    const account = await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { id: true },
+    });
+    return !!account;
+  } catch (error) {
+    console.error(
+      `[Socket Auth] Error validating accountId ${accountId}:`,
+      error,
+    );
+    return false;
+  }
+}
+
+/**
+ * Clean up resources for a socket connection
+ * @param {string} socketId
+ */
+function cleanupSocketResources(socketId) {
+  const accountId = socketToAccountMap.get(socketId);
+
+  // Remove from active connections
+  if (accountId) {
+    const accountSockets = activeConnections.get(accountId);
+    if (accountSockets) {
+      accountSockets.delete(socketId);
+      if (accountSockets.size === 0) {
+        activeConnections.delete(accountId);
+      }
+    }
+  }
+
+  // Remove from socket mapping
+  socketToAccountMap.delete(socketId);
+
+  // Clean up rate limiting
+  cleanupRateLimit(socketId);
+
+  // Note: Transaction completion timers are transaction-specific, not socket-specific
+  // They will be cleaned up when transactions complete or are cancelled
+}
 
 function calculateNextRecommendedDate(baseDate, daysToAdd) {
-  const date = new Date(baseDate); // baseDate should be UTC
+  const date = new Date(baseDate); // baseDate should be UTC Date object
   if (daysToAdd && parseInt(daysToAdd, 10) > 0) {
     date.setUTCDate(date.getUTCDate() + parseInt(daysToAdd, 10));
   } else {
+    // Fallback logic should probably be handled earlier or use a default from schema
+    // Let's use service's default recommended days or a hardcoded default like 7
     console.warn(
-      `[calculateNextRecommendedDate] Invalid daysToAdd (${daysToAdd}), defaulting to 7 days.`,
+      `[calculateNextRecommendedDate] Invalid daysToAdd (${daysToAdd}), falling back to 7 days.`,
     );
-    date.setUTCDate(date.getUTCDate() + 7);
+    date.setUTCDate(date.getUTCDate() + 7); // Default fallback
   }
-  // Optionally set to start of day UTC or a specific time UTC
+  // Optionally set to start of day UTC or a specific time UTC for consistency
   // date.setUTCHours(0, 0, 0, 0);
   return date;
 }
@@ -132,6 +268,69 @@ function formatInstructionsToHtml(instructionsText) {
 }
 
 /**
+ * Sends a custom HTML email using Resend.
+ * Now uses the retry logic.
+ * @param {string} toEmail - The recipient's email address.
+ * @param {string} customerName - The customer's name (for potential use in the body/text).
+ * @param {string} subject - The email subject.
+ * @param {string} bodyContentHtml - The HTML content for the main body block.
+ * @returns {Promise<boolean>} True if successful after retries, false otherwise.
+ */
+async function sendCustomHtmlEmail(
+  toEmail,
+  customerName, // Included for completeness if needed
+  subject,
+  bodyContentHtml,
+) {
+  if (!toEmail || typeof toEmail !== "string" || !toEmail.includes("@")) {
+    console.warn(
+      `[Email Sender] Invalid or missing recipient email address: "${toEmail}". Skipping custom email.`,
+    );
+    return false;
+  }
+  if (!resend) {
+    console.warn(
+      `[Email Sender] Resend instance not initialized. Skipping custom email to ${toEmail}.`,
+    );
+    return false;
+  }
+
+  try {
+    const fullHtmlBody = generateMasterEmailHtml(
+      subject,
+      bodyContentHtml,
+      LOGO_URL_SERVER,
+    );
+
+    // Simple HTML to text conversion
+    const plainTextBody = bodyContentHtml
+      .replace(/<p>.*?<\/p>/gi, "\n\n")
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(div|ul|ol|li)>/gi, "\n\n")
+      .replace(/<[^>]*>/g, "")
+      .replace(/\n\s*\n/g, "\n\n")
+      .trim();
+
+    const emailOptions = {
+      from: SENDER_EMAIL_SERVER,
+      to: [toEmail],
+      subject: subject,
+      html: fullHtmlBody,
+      text: plainTextBody,
+    };
+
+    // Use the retry helper
+    return attemptSendEmailWithRetry(emailOptions, toEmail, subject);
+  } catch (error) {
+    console.error(
+      `[Email Sender] Exception during custom HTML email preparation for ${toEmail}:`,
+      error,
+    );
+    return false; // Return false if there's an error *before* attempting send
+  }
+}
+
+/**
  * Generates the full HTML structure for an email, wrapping the provided body content.
  * Assumes LOGO_URL_SERVER is available in scope.
  * @param {string} subjectLine - The final subject line for the <title> tag and email client.
@@ -141,7 +340,7 @@ function formatInstructionsToHtml(instructionsText) {
  */
 function generateMasterEmailHtml(subjectLine, bodyContentHtml, logoUrl) {
   return `
-  <!DOCTYPE html PUBLIC "-
+  <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
   <html xmlns="http://www.w3.org/1999/xhtml">
   <head>
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
@@ -220,98 +419,85 @@ function generateMasterEmailHtml(subjectLine, bodyContentHtml, logoUrl) {
 }
 
 /**
- * Sends an email using a pre-generated subject and HTML body, wrapped in the master email shell.
- * Assumes generateMasterEmailHtml is defined BEFORE this function.
- * Assumes resend and SENDER_EMAIL_SERVER are available in scope.
- *
- * @param {string} toEmail - The recipient's email address.
- * @param {string} customerName - The customer's name, used for the plain text greeting and potentially other general uses.
- * @param {string} subject - The final subject line for the email.
- * @param {string} bodyContentHtml - The HTML content block for the main area (service-specific content).
- * @returns {Promise<boolean>} True if the email sending attempt was made (even if Resend returned an error), false if prerequisites failed.
+ * Attempts to send an email via Resend with retry logic (exponential backoff with jitter).
+ * @param {object} emailOptions - The options object for resend.emails.send ({ from, to, subject, html, text }).
+ * @param {string} recipientEmail - The recipient's email address (for logging).
+ * @param {string} subject - The email subject (for logging).
+ * @returns {Promise<boolean>} True if sending was successful after any number of attempts, false otherwise.
  */
-async function sendCustomHtmlEmail(
-  toEmail,
-  customerName,
+async function attemptSendEmailWithRetry(
+  emailOptions,
+  recipientEmail,
   subject,
-  bodyContentHtml,
 ) {
   if (!resend) {
     console.warn(
-      `[Email Sender] Resend instance not initialized. Skipping email for ${toEmail}.`,
-    );
-    return false;
-  }
-  if (!toEmail || !toEmail.includes("@")) {
-    console.warn(
-      `[Email Sender] Invalid or missing recipient email address: "${toEmail}". Skipping email.`,
-    );
-    return false;
-  }
-  if (!subject || !bodyContentHtml) {
-    console.warn(
-      `[Email Sender] Missing subject or body content for email to ${toEmail}. Skipping email.`,
+      `[Email Sender] Resend instance not initialized. Skipping email to ${recipientEmail}.`,
     );
     return false;
   }
 
-  try {
-    const fullHtmlBody = generateMasterEmailHtml(
-      subject,
-      bodyContentHtml,
-      LOGO_URL_SERVER,
-    );
-
-    const plainTextBody = bodyContentHtml
-
-      .replace(/<p>Hi .*?,<\/p>/i, `Hi ${customerName || "Customer"},\n\n`)
-      .replace(/<br\s*\/?>/gi, "\n")
-      .replace(/<[^>]*>/g, "")
-      .replace(/\n\s*\n/g, "\n\n")
-      .trim();
-
-    console.log(
-      `[Email Sender] Attempting to send custom email to ${toEmail} with subject: "${subject}"`,
-    );
-    const { data, error: emailSendError } = await resend.emails.send({
-      from: SENDER_EMAIL_SERVER,
-      to: [toEmail],
-      subject: subject,
-      html: fullHtmlBody,
-      text: plainTextBody,
-    });
-
-    if (emailSendError) {
-      console.error(
-        `[Email Sender] Failed to send custom email to ${toEmail}:`,
-        emailSendError,
-      );
-      return false;
-    } else {
+  let attempts = 0;
+  // Total attempts will be 1 (initial) + MAX_EMAIL_RETRIES
+  while (attempts <= MAX_EMAIL_RETRIES) {
+    if (attempts > 0) {
+      // Calculate delay with exponential backoff and jitter
+      // Delay = Base * (2^(attempts-1)) + random jitter
+      const delay =
+        BASE_EMAIL_RETRY_DELAY_MS * Math.pow(2, attempts - 1) +
+        Math.random() * EMAIL_RETRY_JITTER_MS;
       console.log(
-        `[Email Sender] Custom email sent successfully to ${toEmail}. Email ID: ${data?.id}`,
+        `[Email Sender] Retrying send to ${recipientEmail} (Attempt ${attempts}/${MAX_EMAIL_RETRIES}). Waiting ${delay.toFixed(0)}ms...`,
       );
-      return true;
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
-  } catch (error) {
-    console.error(
-      `[Email Sender] Exception occurred while sending custom email to ${toEmail}:`,
-      error,
-    );
-    return false;
+
+    try {
+      const { data, error: emailSendError } =
+        await resend.emails.send(emailOptions);
+
+      if (emailSendError) {
+        console.warn(
+          `[Email Sender] Attempt ${attempts}/${MAX_EMAIL_RETRIES} failed for ${recipientEmail}: ${emailSendError.message || emailSendError}`,
+        );
+        // Continue loop if retries remain
+      } else {
+        console.log(
+          `[Email Sender] Attempt ${attempts}/${MAX_EMAIL_RETRIES} successful for ${recipientEmail}. Email ID: ${data?.id}`,
+        );
+        return true; // Success!
+      }
+    } catch (error) {
+      // Catch unexpected exceptions during the send process itself
+      console.error(
+        `[Email Sender] Attempt ${attempts}/${MAX_EMAIL_RETRIES} caught exception for ${recipientEmail}:`,
+        error,
+      );
+      // Continue loop if retries remain
+    }
+
+    attempts++;
   }
+
+  // If loop finishes, max retries were reached without success
+  console.error(
+    `[Email Sender] Failed to send email to ${recipientEmail} after ${MAX_EMAIL_RETRIES + 1} attempts. Giving up.`,
+  );
+  return false;
 }
 
 /**
  * Sends an email using a template fetched from the database.
  * Assumes generateMasterEmailHtml and resend/SENDER_EMAIL_SERVER are available.
  * This is used for cron-based reminders (follow-up, booking).
+ * NOW USES RETRY LOGIC via attemptSendEmailWithRetry.
+ *
  * @param {string} templateName - The name of the email template in the database.
  * @param {string} toEmail - The recipient's email address.
  * @param {string} customerName - The customer's name, used for the plain text greeting and potentially other general uses.
  * @param {string} dynamicBodyHtml - The dynamically generated HTML content for the body (with placeholders already replaced).
  * @param {string} processedSubject - The final subject line for the email (with placeholders already replaced).
- * @returns {Promise<boolean>} True if the email sending attempt was made (even if Resend returned an error), false if prerequisites failed.
+ * @returns {Promise<boolean>} True if the email sending attempt was successful after retries, false otherwise.
  */
 async function sendEmailFromTemplate(
   templateName,
@@ -320,20 +506,16 @@ async function sendEmailFromTemplate(
   dynamicBodyHtml,
   processedSubject,
 ) {
-  if (!resend) {
+  if (!toEmail || typeof toEmail !== "string" || !toEmail.includes("@")) {
+    // Added type check
     console.warn(
-      `[Email Sender] Resend instance not initialized. Skipping email for ${toEmail}.`,
-    );
-    return false;
-  }
-  if (!toEmail || !toEmail.includes("@")) {
-    console.warn(
-      `[Email Sender] Invalid or missing recipient email address: "${toEmail}". Skipping email.`,
+      `[Email Sender] Invalid or missing recipient email address: "${toEmail}". Skipping template email (${templateName}).`,
     );
     return false;
   }
 
   try {
+    // Fetch template inside here, as it's specific to this function
     const emailTemplate = await prisma.emailTemplate.findUnique({
       where: { name: templateName },
     });
@@ -345,48 +527,44 @@ async function sendEmailFromTemplate(
       return false;
     }
 
+    // Use the provided processedSubject and dynamicBodyHtml
+    const subject =
+      processedSubject ||
+      emailTemplate.subject ||
+      `Templated Email: ${templateName}`; // Fallback subject
+    const bodyContentHtml = dynamicBodyHtml; // Already processed
+
     const fullHtmlBody = generateMasterEmailHtml(
-      processedSubject,
-      dynamicBodyHtml,
+      subject,
+      bodyContentHtml,
       LOGO_URL_SERVER,
     );
 
-    const plainTextBody = dynamicBodyHtml
+    // Simple HTML to text conversion - might need a more robust library for complex HTML
+    const plainTextBody = bodyContentHtml
       .replace(/<p>Hi .*?,<\/p>/i, `Hi ${customerName || "Customer"},\n\n`)
       .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/<\/(div|p|h[1-6]|ul|ol|li)>/gi, "\n\n") // Add newline after block elements
       .replace(/<[^>]*>/g, "")
       .replace(/\n\s*\n/g, "\n\n")
       .trim();
 
-    console.log(
-      `[Email Sender] Attempting to send "${templateName}" email to ${toEmail} with subject: "${processedSubject}"`,
-    );
-    const { data, error: emailSendError } = await resend.emails.send({
+    const emailOptions = {
       from: SENDER_EMAIL_SERVER,
       to: [toEmail],
-      subject: processedSubject,
+      subject: subject,
       html: fullHtmlBody,
       text: plainTextBody,
-    });
+    };
 
-    if (emailSendError) {
-      console.error(
-        `[Email Sender] Failed to send "${templateName}" email to ${toEmail}:`,
-        emailSendError,
-      );
-      return false;
-    } else {
-      console.log(
-        `[Email Sender] "${templateName}" email sent successfully to ${toEmail}. Email ID: ${data?.id}`,
-      );
-      return true;
-    }
+    // Use the retry helper
+    return attemptSendEmailWithRetry(emailOptions, toEmail, subject);
   } catch (error) {
     console.error(
-      `[Email Sender] Exception occurred while sending "${templateName}" email to ${toEmail}:`,
+      `[Email Sender] Exception during template email (${templateName}) preparation for ${toEmail}:`,
       error,
     );
-    return false;
+    return false; // Return false if there's an error *before* attempting send
   }
 }
 
@@ -400,6 +578,12 @@ function cancelCompletionTimer(transactionId) {
   }
 }
 
+/**
+ * Checks if a transaction is ready for auto-completion based on the status of its units.
+ * If all units are DONE, it starts or keeps the completion timer active.
+ * Otherwise, it cancels any active timer.
+ * @param {string} transactionId
+ */
 async function checkAndManageCompletionTimer(transactionId) {
   console.log(
     `[Socket TXN Complete Timer ${transactionId}] Checking status for auto-completion...`,
@@ -407,14 +591,24 @@ async function checkAndManageCompletionTimer(transactionId) {
   try {
     const transaction = await prisma.transaction.findUnique({
       where: { id: transactionId },
-
       select: {
         id: true,
         status: true,
-        availedServices: { select: { status: true } },
+        availedServices: {
+          select: {
+            id: true,
+            units: {
+              select: {
+                id: true,
+                status: true,
+              },
+            },
+          },
+        },
       },
     });
 
+    // Check if the transaction is pending and exists
     if (!transaction || transaction.status !== Status.PENDING) {
       cancelCompletionTimer(transactionId);
       console.log(
@@ -423,25 +617,31 @@ async function checkAndManageCompletionTimer(transactionId) {
       return;
     }
 
-    const allDone =
-      transaction.availedServices.length > 0 &&
-      transaction.availedServices.every((as) => as.status === Status.DONE);
+    // Check if ALL units across ALL availed services are Status.DONE
+    const allUnitsDone =
+      transaction.availedServices.length > 0 && // Ensure there's at least one AS
+      transaction.availedServices.every(
+        (as) =>
+          as.units.length > 0 && // Ensure this AS has units
+          as.units.every((unit) => unit.status === Status.DONE), // Check if all units in this AS are DONE
+      );
 
-    if (allDone) {
+    if (allUnitsDone) {
       if (!transactionCompletionTimers.has(transactionId)) {
         console.log(
-          `[Socket TXN Complete Timer ${transactionId}] All services DONE. Starting auto-completion timer.`,
+          `[Socket TXN Complete Timer ${transactionId}] All units DONE. Starting auto-completion timer.`,
         );
         startCompletionTimer(transactionId);
       } else {
         console.log(
-          `[Socket TXN Complete Timer ${transactionId}] All services DONE. Timer already active.`,
+          `[Socket TXN Complete Timer ${transactionId}] All units DONE. Timer already active.`,
         );
       }
     } else {
+      // If not all units are DONE, make sure the timer is cancelled
       cancelCompletionTimer(transactionId);
       console.log(
-        `[Socket TXN Complete Timer ${transactionId}] Not all services DONE. Timer cancelled/not needed.`,
+        `[Socket TXN Complete Timer ${transactionId}] Not all units DONE. Timer cancelled/not needed.`,
       );
     }
   } catch (error) {
@@ -449,11 +649,14 @@ async function checkAndManageCompletionTimer(transactionId) {
       `[Socket TXN Complete Timer ${transactionId}] Error in checkAndManageCompletionTimer:`,
       error,
     );
+    // Keep timer state as is on error, or cancel defensively?
+    // Cancelling might be safer to avoid stuck timers on transient errors.
     cancelCompletionTimer(transactionId);
   }
 }
 
 function startCompletionTimer(transactionId) {
+  // Cancel any existing timer for this transaction before starting a new one
   cancelCompletionTimer(transactionId);
 
   console.log(
@@ -464,146 +667,231 @@ function startCompletionTimer(transactionId) {
       `[Socket TXN Complete Timer ${transactionId}] Timer finished. Attempting auto-completion...`,
     );
 
+    // Remove the timer from the map BEFORE calling the completion function
     transactionCompletionTimers.delete(transactionId);
+
+    // Call the main completion processing function
     await completeTransactionAndCalculateSalary(transactionId);
   }, COMPLETION_DELAY);
 
+  // Store the new timer ID
   transactionCompletionTimers.set(transactionId, timerId);
 }
 
+/**
+ * Handles the core financial transaction logic (marking transaction done,
+ * calculating and assigning unit/availed service commissions, updating account salaries)
+ * and then triggers post-transaction operations (RA creation, emails, broadcast).
+ * Runs only if the transaction is in a state ready for completion (all units DONE).
+ * @param {string} transactionId
+ */
 async function completeTransactionAndCalculateSalary(transactionId) {
   console.log(
     `[Socket TXN Complete ${transactionId}] START Processing. Phase 1: Core Financials.`,
   );
 
-  let coreTransactionCommitDetails = null;
-  let customerDataForPostOps = null; // To store { id, name, email }
-  let availedServicesDataForPostOps = []; // To store [{ id, service: { id, title, ...raFields } }]
-  let transactionBookedForDate = null;
+  // Clear maps for THIS transaction completion cycle
+  availedServiceTotalCommissions.clear();
+  salaryUpdates.clear();
+  raProcessingError = null; // Clear previous error state
 
-  // --- PHASE 1: Core Financial Transaction ---
+  let coreTransactionCommitDetails = null;
+
   try {
     coreTransactionCommitDetails = await prisma.$transaction(
       async (tx) => {
-        // Step 1: Fetch transaction data needed for this phase
+        // Step 1: Fetch transaction data needed for this phase AND for post-transaction phases
         const transactionDataForCoreOps = await tx.transaction.findUnique({
           where: { id: transactionId },
           select: {
+            // Use select for the top level
             id: true,
             status: true,
             grandTotal: true,
             discount: true,
             bookedFor: true,
-            customerId: true,
-            // Customer data for post-op RA creation & emails (can't avoid fetching some of it here)
             customer: { select: { id: true, name: true, email: true } },
+
+            // === FIX APPLIED HERE (if needed based on your schema) ===
+            // Ensure 'updatedAt' is selected here if it exists in your schema
+            // If your Prisma Client validation error persists here, the 'updatedAt' field
+            // might not be correctly recognized by THIS running server process.
+            // Double-check schema, re-generate client, and ensure server restart.
+            createdAt: true, // Add Transaction createdAt
+            updatedAt: true, // Add Transaction updatedAt (if it exists in your schema)
+            customerId: true, // Needed for customer relation
+            voucherId: true, // Needed for voucher relation
+            giftCertificateId: true, // Needed for GC relation
+            branchId: true, // Needed for branch relation
+
             availedServices: {
               select: {
-                id: true, // For RA linking
-                servedById: true,
-                status: true,
-                price: true,
-                commissionValue: true, // To check if update needed
-                // Service details needed for salary AND for RA decision later
+                // Use SELECT here to list scalar fields AND relations
+                // List all scalar fields you need from AvailedService
+                id: true,
+                transactionId: true,
+                serviceId: true,
+                quantity: true,
+                price: true, // Total price for this AS line
+                commissionValue: true, // Existing AS commission value (will be overwritten)
+                originatingSetId: true,
+                originatingSetTitle: true,
+                serviceSetId: true, // Include if relevant
+                createdAt: true,
+                updatedAt: true,
+                postTreatmentEmailSentAt: true,
+
+                // Now list the relations you need using include or select nested within this select
+                units: {
+                  // Include units relation
+                  select: {
+                    // Use select for units to control fields
+                    id: true,
+                    status: true,
+                    servedById: true,
+                    servedBy: { select: { id: true, role: true } }, // Select fields from servedBy
+                    checkedById: true,
+                    completedAt: true,
+                    // Add other unit scalar fields needed if any (like unitIndex, checkedAt, servedAt)
+                    unitIndex: true, // Add unitIndex for sorting/display
+                    checkedAt: true, // Add checkedAt
+                    servedAt: true, // Add servedAt
+                    availedServiceId: true, // Add scalar AS ID
+                  },
+                  orderBy: { unitIndex: "asc" },
+                },
                 service: {
+                  // Include service relation
                   select: {
                     id: true,
                     title: true,
+                    price: true, // Need service base price for commission calculation base
                     recommendFollowUp: true,
                     recommendedFollowUpDays: true,
                     followUpPolicy: true,
+                    sendPostTreatmentEmail: true,
+                    postTreatmentEmailSubject: true,
+                    postTreatmentInstructions: true,
                   },
                 },
-                servedBy: { select: { id: true, role: true } }, // For salary
-                postTreatmentEmailSentAt: true, // For email logic later
-                // Also include fields if service itself has email/instructions for post-treatment
-                // e.g., service: { select { ..., sendPostTreatmentEmail, postTreatmentInstructions }}
+                originatingSet: { select: { id: true, title: true } }, // Select fields from originatingSet
+                // serviceSet: { select: { /* ... */ } }, // Include if needed
+                // recommendedAppointment: { select: { /* ... */ } }, // Include if needed
               },
+              orderBy: { createdAt: "asc" },
             },
-            // Include voucherUsed if needed for broadcast
+            // Relations needed at the Transaction level itself
             voucherUsed: { select: { code: true, value: true } },
+            branch: { select: { id: true, title: true, code: true } },
+            giftCertificateUsed: { select: { id: true, code: true } }, // Select fields from giftCertificateUsed
+
+            bookingReminderSentAt: true, // Include if relevant
+            // originatingRecommendations: { select: { ... } }, // Include if needed for post-ops
+            // attendedAppointment: { select: { ... } }, // Include if needed for post-ops
           },
         });
 
-        if (!transactionDataForCoreOps) {
-          console.warn(
-            `[Socket TXN Complete ${transactionId}] CoreTX: TXN not found. Aborting.`,
-          );
-          throw new Error("Transaction not found for core processing."); // Will cause rollback
-        }
-
-        const allServicesDone =
-          transactionDataForCoreOps.availedServices.length > 0 &&
-          transactionDataForCoreOps.availedServices.every(
-            (as) => as.status === Status.DONE,
-          );
-
+        // --- Check if already DONE ---
+        // This prevents attempting to complete a transaction multiple times
         if (
-          transactionDataForCoreOps.status !== Status.PENDING ||
-          !allServicesDone
+          !transactionDataForCoreOps ||
+          transactionDataForCoreOps.status === Status.DONE
         ) {
-          console.warn(
-            `[Socket TXN Complete ${transactionId}] CoreTX: Final state check FAILED. Status: ${transactionDataForCoreOps.status}, AllDone: ${allServicesDone}. Aborting.`,
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Transaction already DONE or not found. Aborting completion process.`,
           );
-          throw new Error("Transaction state not valid for completion."); // Will cause rollback
+          return null; // Indicate that no completion happened
         }
 
-        // Prepare data for post-transaction operations
-        customerDataForPostOps = transactionDataForCoreOps.customer;
-        availedServicesDataForPostOps =
-          transactionDataForCoreOps.availedServices.map((as) => ({
-            id: as.id,
-            service: as.service, // Contains service details for RA
-          }));
-        transactionBookedForDate =
-          transactionDataForCoreOps.bookedFor || new Date();
+        // ... (rest of the commission calculation logic - it relies on the structure fetched above) ...
 
-        // Step 2: Salary Calculation Logic
-        const salaryUpdates = new Map();
-        const availedServiceCommissionUpdates = [];
-        const originalSumOfServicePrices =
+        // Calculate discount factor based on original sum of AS prices vs final grandTotal
+        // This assumes commission is based on the *discounted* price contribution of the service
+        // Use the total price stored on the AS item as the base for the discount factor calculation for that item.
+        const originalSumOfAvailedServicePrices =
           transactionDataForCoreOps.availedServices.reduce(
-            (sum, service) => sum + (service.price || 0),
+            (sum, as) => sum + (as.price || 0),
             0,
           );
-        const discountFactor =
-          originalSumOfServicePrices > 0
-            ? transactionDataForCoreOps.grandTotal / originalSumOfServicePrices
-            : 1;
-        console.log(
-          `[Socket TXN Complete ${transactionId}] CoreTX: Discount Factor: ${discountFactor.toFixed(4)}`,
-        );
+
+        // IMPORTANT: The discount is applied transaction-wide. Need to distribute it proportionally
+        // across AvailedService items based on their contribution to the *original* total.
+        // Then, commissions are calculated per unit based on the *discounted* unit price.
+        const totalTransactionDiscount =
+          originalSumOfAvailedServicePrices > 0
+            ? originalSumOfAvailedServicePrices -
+              transactionDataForCoreOps.grandTotal
+            : 0;
 
         for (const availedSvc of transactionDataForCoreOps.availedServices) {
-          if (
-            availedSvc.servedById &&
-            availedSvc.status === Status.DONE &&
-            availedSvc.servedBy
-          ) {
-            const effectivePrice = (availedSvc.price || 0) * discountFactor;
-            let commissionRate = 0.1; // Default
-            if (availedSvc.servedBy.role.includes(Role.MASSEUSE))
-              commissionRate = 0.5;
-            // Add other role-based rates if necessary
+          let totalCommissionForAS = 0;
+          const serviceBaseUnitPrice = availedSvc.service?.price ?? 0; // Base price from the Service model for a *single unit*
+          const availedServiceOriginalPrice = availedSvc.price ?? 0; // The pre-discount total price for THIS AS line item (should be serviceBaseUnitPrice * quantity)
 
-            const calculatedCommission = Math.max(
-              0,
-              Math.floor(effectivePrice * commissionRate),
-            );
-            salaryUpdates.set(
-              availedSvc.servedById,
-              (salaryUpdates.get(availedSvc.servedById) || 0) +
-                calculatedCommission,
-            );
+          // Calculate the portion of the transaction discount applicable to this specific AvailedService line item
+          const asDiscountContribution =
+            originalSumOfAvailedServicePrices > 0
+              ? (availedServiceOriginalPrice /
+                  originalSumOfAvailedServicePrices) *
+                totalTransactionDiscount
+              : 0;
 
-            // Only add to update list if commission actually changed
-            if (availedSvc.commissionValue !== calculatedCommission) {
-              availedServiceCommissionUpdates.push({
-                id: availedSvc.id,
-                commissionValue: calculatedCommission,
-              });
+          // The effective total price for this AvailedService line item *after* its proportional discount
+          const availedServiceEffectivePrice =
+            availedServiceOriginalPrice - asDiscountContribution;
+
+          // The effective price *per unit* for commission calculation
+          const effectiveUnitPriceForCommission =
+            availedSvc.quantity > 0
+              ? availedServiceEffectivePrice / availedSvc.quantity
+              : 0;
+
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: AS ${availedSvc.id} (${availedSvc.service?.title}): Orig Price=${availedServiceOriginalPrice}, Discount Contribution=${asDiscountContribution.toFixed(2)}, Effective Price=${availedServiceEffectivePrice.toFixed(2)}, Effective Unit Price=${effectiveUnitPriceForCommission.toFixed(2)}`,
+          );
+
+          for (const unit of availedSvc.units) {
+            // Only calculate commission for units marked as DONE and served by someone
+            if (
+              unit.status === Status.DONE &&
+              unit.servedById &&
+              unit.servedBy
+            ) {
+              let commissionRate = SALARY_COMMISSION_RATE; // Default global rate
+              if (unit.servedBy.role.some((role) => role === Role.MASSEUSE)) {
+                // Check if ANY role is MASSEUSE
+                commissionRate = 0.5; // Masseuse rate (50%)
+              }
+              // Add other role-based rates if necessary
+
+              const calculatedUnitCommission = Math.max(
+                0,
+                Math.floor(effectiveUnitPriceForCommission * commissionRate), // Calculate per unit commission based on effective unit price
+              );
+
+              // Add unit commission to the server's salary update map
+              salaryUpdates.set(
+                unit.servedById,
+                (salaryUpdates.get(unit.servedById) || 0) +
+                  calculatedUnitCommission,
+              );
+
+              // Accumulate total commission for the parent AvailedService item
+              totalCommissionForAS += calculatedUnitCommission;
+              console.log(
+                `[Socket TXN Complete ${transactionId}] CoreTX: Unit ${unit.id}: ServedBy=${unit.servedById}, Role=${unit.servedBy.role.join(",")}, Rate=${commissionRate}, EffectiveUnit=${effectiveUnitPriceForCommission.toFixed(2)}, Unit Commission=${calculatedUnitCommission}`,
+              );
             }
           }
+          // Store the calculated total commission for this AvailedService item
+          // This will be used to update the AvailedService.commissionValue field
+          availedServiceTotalCommissions.set(
+            availedSvc.id,
+            totalCommissionForAS,
+          );
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: Calculated total commission for AS ${availedSvc.id}: ${totalCommissionForAS}`,
+          );
         }
 
         // Step 3: Update Transaction Status
@@ -615,18 +903,27 @@ async function completeTransactionAndCalculateSalary(transactionId) {
           `[Socket TXN Complete ${transactionId}] CoreTX: TXN status set to DONE.`,
         );
 
-        // Step 4: Update AvailedService Commissions (if changed)
+        // Step 4: Update AvailedService CommissionValue fields
+        // Iterate through the calculated total commissions for each AS and update
+        const availedServiceCommissionUpdates = Array.from(
+          availedServiceTotalCommissions.entries(),
+        ).map(([asId, totalCommission]) => {
+          // Always update the commissionValue on the AS based on the sum of unit commissions
+          // This makes the AS commissionValue a derived field from its units
+          return tx.availedService.update({
+            where: { id: asId },
+            data: { commissionValue: totalCommission },
+          });
+        });
+
         if (availedServiceCommissionUpdates.length > 0) {
-          await Promise.all(
-            availedServiceCommissionUpdates.map((upd) =>
-              tx.availedService.update({
-                where: { id: upd.id },
-                data: { commissionValue: upd.commissionValue },
-              }),
-            ),
-          );
+          await Promise.all(availedServiceCommissionUpdates);
           console.log(
             `[Socket TXN Complete ${transactionId}] CoreTX: Updated ${availedServiceCommissionUpdates.length} AS commission values.`,
+          );
+        } else {
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: No AS commission values to update.`,
           );
         }
 
@@ -643,62 +940,148 @@ async function completeTransactionAndCalculateSalary(transactionId) {
           console.log(
             `[Socket TXN Complete ${transactionId}] CoreTX: Applied salary increments for ${salaryUpdates.size} accounts.`,
           );
+        } else {
+          console.log(
+            `[Socket TXN Complete ${transactionId}] CoreTX: No salary increments needed.`,
+          );
         }
 
-        // Return the fetched data (or a subset) to be used for broadcasting and post-treatment emails
-        // This object will be `coreTransactionCommitDetails` outside the $transaction
-        return transactionDataForCoreOps;
+        // Step 6: Return the fetched data (or a subset) for broadcasting and post-treatment emails.
+        // This second fetch ensures we have the latest state after updates within the transaction
+        const dataForPostOps = await tx.transaction.findUnique({
+          where: { id: transactionId },
+          select: {
+            id: true,
+            status: true, // Should be DONE now
+            bookedFor: true,
+            grandTotal: true,
+            discount: true,
+            customer: { select: { id: true, name: true, email: true } },
+            createdAt: true,
+            updatedAt: true, // Include if it exists in your schema
+            customerId: true,
+            voucherId: true,
+            giftCertificateId: true,
+            branchId: true,
+
+            availedServices: {
+              select: {
+                id: true,
+                quantity: true,
+                price: true,
+                commissionValue: true, // This should now be the updated value
+                originatingSetId: true,
+                originatingSetTitle: true,
+                serviceSetId: true,
+                createdAt: true,
+                updatedAt: true,
+                postTreatmentEmailSentAt: true,
+                service: {
+                  select: {
+                    id: true,
+                    title: true,
+                    price: true,
+                    recommendFollowUp: true,
+                    recommendedFollowUpDays: true,
+                    followUpPolicy: true,
+                    sendPostTreatmentEmail: true,
+                    postTreatmentEmailSubject: true,
+                    postTreatmentInstructions: true,
+                  },
+                },
+                units: {
+                  select: {
+                    // Select fields for units
+                    id: true,
+                    status: true,
+                    completedAt: true,
+                    unitIndex: true,
+                    checkedAt: true, // Include checkedAt
+                    servedAt: true, // Include servedAt
+                    availedServiceId: true, // Include scalar AS ID for relation reference
+                    checkedBy: { select: { id: true, name: true } },
+                    servedBy: { select: { id: true, name: true } },
+                  },
+                  orderBy: { unitIndex: "asc" },
+                },
+              },
+              orderBy: { createdAt: "asc" },
+            },
+            voucherUsed: { select: { code: true, value: true } },
+            branch: { select: { id: true, title: true, code: true } },
+            giftCertificateUsed: { select: { id: true, code: true } },
+
+            bookingReminderSentAt: true,
+          },
+        });
+
+        return dataForPostOps; // Return the updated transaction data
       },
       {
-        maxWait: 10000, // How long the client waits for the transaction to be acquired
-        timeout: 15000, // Max execution time (Accelerate's limit)
+        maxWait: 10000,
+        timeout: 15000,
       },
-    ); // End of prisma.$transaction for Core Financials
+    );
+
+    // If coreTransactionCommitDetails is null, it means the transaction was already DONE
+    if (!coreTransactionCommitDetails) {
+      console.log(
+        `[Socket TXN Complete ${transactionId}] Core transaction skipped because TXN was already DONE.`,
+      );
+      return; // Exit early
+    }
 
     console.log(
       `[Socket TXN Complete ${transactionId}] Phase 1: Core Financials COMMITTED successfully.`,
     );
   } catch (error) {
     console.error(
-      `[Socket TXN Complete ${transactionId}] Phase 1: CRITICAL error during CORE financial transaction:`,
+      `[Socket TXN Complete ${transactionId}] Phase 1: CRITICAL error during CORE financial transaction for ${transactionId}:`,
       error,
     );
     io.emit("transactionCompletionFailed", {
       transactionId,
-      message: `Core financial processing failed: ${error.message}`,
+      message: `Transaction completion failed during core processing: ${error.message || "An unexpected error occurred."}`,
     });
-    return; // Stop further processing
+    // Ensure maps are cleared on error before exiting
+    availedServiceTotalCommissions.clear();
+    salaryUpdates.clear();
+    raProcessingError = error; // Store the error
+    return;
   }
 
+  // --- Data Check for Post-Transaction Phases ---
+  // coreTransactionCommitDetails should NOT be null here due to the check inside the transaction
+  const customerForPostOps = coreTransactionCommitDetails.customer;
+  const availedServicesForPostOps =
+    coreTransactionCommitDetails.availedServices;
+  const transactionBookedForDate =
+    coreTransactionCommitDetails.bookedFor || new Date(); // Use bookedFor or now
+
   // --- PHASE 2: RecommendedAppointment Creation (Post-Core-Transaction) ---
-  // This runs only if Phase 1 succeeded.
-  let raProcessingError = null;
-  if (
-    coreTransactionCommitDetails &&
-    customerDataForPostOps &&
-    availedServicesDataForPostOps.length > 0
-  ) {
+  if (customerForPostOps && availedServicesForPostOps) {
     console.log(
       `[Socket TXN Complete ${transactionId}] Phase 2: START RecommendedAppointment Creation.`,
     );
     try {
-      for (const availedSvcData of availedServicesDataForPostOps) {
-        const serviceDef = availedSvcData.service; // serviceDef now comes from the prepared data
+      for (const availedSvcData of availedServicesForPostOps) {
+        const serviceDef = availedSvcData.service;
 
         if (
           serviceDef &&
           serviceDef.recommendFollowUp &&
           serviceDef.followUpPolicy !== FollowUpPolicy.NONE &&
-          serviceDef.recommendedFollowUpDays
+          serviceDef.recommendedFollowUpDays !== null &&
+          serviceDef.recommendedFollowUpDays !== undefined
         ) {
           let shouldCreateNewRA = false;
 
-          // Check if an RA for this service type was *just fulfilled* by THIS transaction
-          // This query is now outside the main 'tx' block, using 'prisma.'
           const fulfilledRA = await prisma.recommendedAppointment.findFirst({
             where: {
               attendedTransactionId: transactionId,
               originatingServiceId: serviceDef.id,
+              status: RecommendedAppointmentStatus.ATTENDED,
+              originatingAvailedServiceId: availedSvcData.id, // Link to the specific AS that fulfilled
             },
             select: {
               id: true,
@@ -711,19 +1094,20 @@ async function completeTransactionAndCalculateSalary(transactionId) {
 
           if (fulfilledRA) {
             if (!fulfilledRA.suppressNextFollowUpGeneration) {
+              const fulfilledRaPolicy =
+                fulfilledRA.originatingService?.followUpPolicy;
+
               if (
-                fulfilledRA.originatingService?.followUpPolicy ===
-                  FollowUpPolicy.EVERY_TIME ||
-                fulfilledRA.originatingService?.followUpPolicy ===
-                  FollowUpPolicy.ONCE
+                fulfilledRaPolicy === FollowUpPolicy.EVERY_TIME ||
+                fulfilledRaPolicy === FollowUpPolicy.ONCE
               ) {
                 shouldCreateNewRA = true;
                 console.log(
-                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA. Fulfilled RA (${fulfilledRA.id} - ${fulfilledRA.originatingService?.title}) allows it.`,
+                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA. Fulfilled RA (${fulfilledRA.id} - ${fulfilledRA.originatingService?.title}) policy (${fulfilledRaPolicy}) allows it.`,
                 );
               } else {
                 console.log(
-                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating. Fulfilled RA (${fulfilledRA.id}) policy ${fulfilledRA.originatingService?.followUpPolicy} does not permit new (e.g. after NONE or if ONCE was already the fulfillment).`,
+                  `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating. Fulfilled RA policy ${fulfilledRaPolicy} does not permit new after fulfilling an existing RA.`,
                 );
               }
             } else {
@@ -732,23 +1116,30 @@ async function completeTransactionAndCalculateSalary(transactionId) {
               );
             }
           } else {
-            shouldCreateNewRA = true;
-            console.log(
-              `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA (standard availment, policy: ${serviceDef.followUpPolicy}).`,
-            );
+            // If this AS did NOT fulfill an existing RA, create a new one based on its own service definition policy
+            if (serviceDef.followUpPolicy !== FollowUpPolicy.NONE) {
+              shouldCreateNewRA = true;
+              console.log(
+                `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): Will generate new RA (standard availment, policy: ${serviceDef.followUpPolicy}).`,
+              );
+            } else {
+              console.log(
+                `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating. Service policy ${serviceDef.followUpPolicy} does not recommend follow-up.`,
+              );
+            }
           }
 
           if (shouldCreateNewRA) {
             const nextRecommendedDate = calculateNextRecommendedDate(
-              transactionBookedForDate,
+              transactionBookedForDate, // Base the next RA date on the transaction's bookedFor date
               serviceDef.recommendedFollowUpDays,
             );
             await prisma.recommendedAppointment.create({
               data: {
-                customerId: customerDataForPostOps.id,
+                customerId: customerForPostOps.id,
                 recommendedDate: nextRecommendedDate,
                 originatingTransactionId: transactionId,
-                originatingAvailedServiceId: availedSvcData.id,
+                originatingAvailedServiceId: availedSvcData.id, // Link new RA to the AS that created it
                 originatingServiceId: serviceDef.id,
                 status: RecommendedAppointmentStatus.RECOMMENDED,
               },
@@ -757,36 +1148,44 @@ async function completeTransactionAndCalculateSalary(transactionId) {
               `[RA Create - PostTX ${transactionId}] CREATED new RA for service ${serviceDef.title} (AS_ID: ${availedSvcData.id}). Date: ${nextRecommendedDate.toISOString()}`,
             );
           }
+        } else if (serviceDef) {
+          console.log(
+            `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id} (${serviceDef.title}): NOT generating RA. Conditions: recommend=${serviceDef.recommendFollowUp}, policy=${serviceDef.followUpPolicy}, days=${serviceDef.recommendedFollowUpDays}.`,
+          );
+        } else {
+          console.log(
+            `[RA Create - PostTX ${transactionId}] AS ${availedSvcData.id}: NOT generating RA. Service relation not found.`,
+          );
         }
       }
       console.log(
         `[Socket TXN Complete ${transactionId}] Phase 2: RecommendedAppointment Creation FINISHED.`,
       );
     } catch (error) {
-      raProcessingError = error;
+      raProcessingError = error; // Store the error
       console.error(
-        `[Socket TXN Complete ${transactionId}] Phase 2: Error during RecommendedAppointment creation:`,
+        `[Socket TXN Complete ${transactionId}] Phase 2: Error during RecommendedAppointment creation for ${transactionId}:`,
         error,
       );
-      // Decide on error handling: log, notify admin. Financials are already committed.
     }
+  } else {
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 2 Skipped: Missing required data (customer, availedServices) from core transaction for ${transactionId}.`,
+    );
   }
 
   // --- PHASE 3: Update Customer's nextAppointment (Post-RA-Creation) ---
-  if (
-    coreTransactionCommitDetails &&
-    customerDataForPostOps &&
-    !raProcessingError
-  ) {
-    // Proceed if RA creation didn't throw a blocking error
+  if (customerForPostOps) {
     console.log(
       `[Socket TXN Complete ${transactionId}] Phase 3: START Customer NextAppointment Update.`,
     );
     try {
+      const customerId = customerForPostOps.id;
+      // Find the earliest RECOMMENDED or SCHEDULED RA date that is today or in the future
       const customerWithRAs = await prisma.customer.findUnique({
-        where: { id: customerDataForPostOps.id },
+        where: { id: customerId },
         select: {
-          nextAppointment: true,
+          nextAppointment: true, // Current value
           recommendedAppointments: {
             where: {
               status: {
@@ -795,10 +1194,11 @@ async function completeTransactionAndCalculateSalary(transactionId) {
                   RecommendedAppointmentStatus.SCHEDULED,
                 ],
               },
+              // Filter for RAs recommended from the start of today UTC onwards
               recommendedDate: { gte: startOfDay(new Date()) },
             },
             orderBy: { recommendedDate: "asc" },
-            take: 1,
+            take: 1, // Get only the earliest one
             select: { recommendedDate: true },
           },
         },
@@ -809,70 +1209,90 @@ async function completeTransactionAndCalculateSalary(transactionId) {
           customerWithRAs.recommendedAppointments[0]?.recommendedDate || null;
         const currentNextAppt = customerWithRAs.nextAppointment || null;
         let needsUpdate = false;
+
+        // Compare dates by their start of day to avoid time component issues
+        const newDateStart = newEarliestRADate
+          ? startOfDay(newEarliestRADate)
+          : null;
+        const currentDateStart = currentNextAppt
+          ? startOfDay(currentNextAppt)
+          : null;
+
+        // Check if the new date is different from the current date (considering nulls)
         if (
-          (newEarliestRADate === null && currentNextAppt !== null) ||
-          (newEarliestRADate !== null && currentNextAppt === null) ||
-          (newEarliestRADate !== null &&
-            currentNextAppt !== null &&
-            !isEqual(
-              startOfDay(newEarliestRADate),
-              startOfDay(currentNextAppt),
-            ))
+          (newDateStart === null && currentDateStart !== null) || // If current is not null but new is null
+          (newDateStart !== null && currentDateStart === null) || // If current is null but new is not null
+          (newDateStart !== null &&
+            currentDateStart !== null &&
+            !isEqual(newDateStart, currentDateStart)) // If both are not null but the dates are different
         ) {
           needsUpdate = true;
         }
 
         if (needsUpdate) {
           await prisma.customer.update({
-            where: { id: customerDataForPostOps.id },
-            data: { nextAppointment: newEarliestRADate },
+            where: { id: customerId },
+            data: { nextAppointment: newEarliestRADate }, // Update to the new earliest date (or null if none)
           });
           console.log(
-            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerDataForPostOps.id} nextAppointment set to ${newEarliestRADate?.toISOString() || "null"}.`,
+            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerId} nextAppointment set to ${newEarliestRADate?.toISOString() || "null"}.`,
           );
         } else {
           console.log(
-            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerDataForPostOps.id} nextAppointment did not require update.`,
+            `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerId} nextAppointment did not require update (Current: ${currentDateStart?.toISOString() || "null"}, New Earliest: ${newDateStart?.toISOString() || "null"}).`,
           );
         }
+      } else {
+        console.log(
+          `[Socket TXN Complete ${transactionId}] Phase 3: Customer ${customerId} not found for nextAppointment update.`,
+        );
       }
       console.log(
         `[Socket TXN Complete ${transactionId}] Phase 3: Customer NextAppointment Update FINISHED.`,
       );
     } catch (error) {
       console.error(
-        `[Socket TXN Complete ${transactionId}] Phase 3: Error updating customer nextAppointment:`,
+        `[Socket TXN Complete ${transactionId}] Phase 3: Error updating customer nextAppointment for ${transactionId}:`,
         error,
       );
     }
+  } else {
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 3 Skipped: Missing customer data from core transaction for ${transactionId}.`,
+    );
   }
 
   // --- PHASE 4: Post-Treatment Email Logic & Broadcasting ---
-  // This uses `coreTransactionCommitDetails` which contains the full transaction details from the end of Phase 1.
-  if (coreTransactionCommitDetails) {
+  if (
+    coreTransactionCommitDetails &&
+    coreTransactionCommitDetails.customer &&
+    coreTransactionCommitDetails.availedServices
+  ) {
     console.log(
       `[Socket TXN Complete ${transactionId}] Phase 4: START Post-Treatment Emails and Broadcast.`,
     );
-    // Post-Treatment Email Logic (ensure `coreTransactionCommitDetails` has the necessary service fields)
-    if (coreTransactionCommitDetails.customer?.email) {
-      const customer = coreTransactionCommitDetails.customer;
-      for (const as of coreTransactionCommitDetails.availedServices) {
-        // Ensure 'as.service' has 'sendPostTreatmentEmail' and 'postTreatmentInstructions' selected in Phase 1 fetch
+
+    const customer = coreTransactionCommitDetails.customer;
+    const availedServices = coreTransactionCommitDetails.availedServices;
+
+    if (customer.email) {
+      for (const as of availedServices) {
+        // Check if the service relation exists and has the necessary properties
         if (
           as.service &&
           as.service.sendPostTreatmentEmail &&
           as.service.postTreatmentInstructions &&
-          as.postTreatmentEmailSentAt === null
+          as.postTreatmentEmailSentAt === null // Only send if not already sent for this AS
         ) {
           const subject =
             as.service.postTreatmentEmailSubject ||
             `Post-Treatment Care for ${as.service.title}`;
           const instructionsHtml = formatInstructionsToHtml(
             as.service.postTreatmentInstructions,
-          ); // Ensure formatInstructionsToHtml is defined
+          );
           const bodyContentHtml = `
                <p>Hi ${customer.name || "there"},</p>
-               <p>Thank you! Here are care instructions for your service${coreTransactionCommitDetails.availedServices.length > 1 ? " (" + as.service.title + ")" : ""}:</p>
+               <p>Thank you for your recent visit${availedServices.length > 1 ? "" : " and service"}! Here are care instructions for your service${availedServices.length > 1 ? " (" + as.service.title + ")" : ""}:</p>
                <div class="instructions-block"> ${instructionsHtml} </div>
                <p style="margin-top: 15px;">We look forward to seeing you again!</p>`;
 
@@ -884,7 +1304,7 @@ async function completeTransactionAndCalculateSalary(transactionId) {
             customer.name,
             subject,
             bodyContentHtml,
-          ); // Ensure sendCustomHtmlEmail is defined
+          );
 
           if (emailSentSuccessfully) {
             try {
@@ -902,32 +1322,912 @@ async function completeTransactionAndCalculateSalary(transactionId) {
               );
             }
           }
+          // Add a small delay between emails if sending multiple for one transaction
           await new Promise((r) =>
             setTimeout(r, CRON_ITEM_PROCESSING_DELAY || 100),
-          ); // Ensure CRON_ITEM_PROCESSING_DELAY is defined
+          );
+        } else if (as.service) {
+          // Log why email was skipped if service exists
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Phase 4: Skipping post-treatment email for AS ${as.id} (${as.service.title}). Conditions: serviceFetched=${!!as.service}, sendEmail=${as.service.sendPostTreatmentEmail}, instructionsPresent=${!!as.service.postTreatmentInstructions}, alreadySent=${!!as.postTreatmentEmailSentAt}.`,
+          );
+        } else {
+          // Log if service relation was missing
+          console.log(
+            `[Socket TXN Complete ${transactionId}] Phase 4: Skipping post-treatment email for AS ${as.id}. Service relation not found.`,
+          );
         }
       }
     } else {
       console.log(
-        `[Socket TXN Complete ${transactionId}] Phase 4: No customer email for post-treatment messages.`,
+        `[Socket TXN Complete ${transactionId}] Phase 4: No customer email available for post-treatment messages.`,
       );
     }
 
-    io.emit("transactionCompleted", coreTransactionCommitDetails); // Broadcast the result of the core transaction
-    console.log(
-      `[Socket TXN Complete ${transactionId}] Phase 4: FINISHED. Transaction processed (RA creation attempted: ${raProcessingError ? "Failed" : "Succeeded/Skipped"}). Broadcasted.`,
+    // *** BROADCASTING ***
+    // Broadcast the *latest* transaction data fetched after all updates
+    // Use transaction room for efficient broadcasting
+    const transactionRoom = `transaction:${transactionId}`;
+    io.to(transactionRoom).emit(
+      "transactionCompleted",
+      coreTransactionCommitDetails,
     );
-  } else if (!coreTransactionCommitDetails) {
-    // This case should have been caught by the return after Phase 1 error
+    // Also broadcast to all for dashboard updates (if needed)
+    io.emit("transactionCompleted", coreTransactionCommitDetails);
+    console.log(
+      `[Socket TXN Complete ${transactionId}] Phase 4: FINISHED. Transaction processed (RA creation attempted: ${raProcessingError ? "Failed" : "Succeeded/Skipped"}). Broadcasted to transaction room and all clients.`,
+    );
+  } else {
     console.error(
-      `[Socket TXN Complete ${transactionId}] Reached Phase 4 without coreTransactionCommitDetails. This indicates a logic flaw.`,
+      `[Socket TXN Complete ${transactionId}] Reached Phase 4 without required data. This indicates a logic flaw for ${transactionId}.`,
     );
     io.emit("transactionCompletionFailed", {
       transactionId,
-      message: "Internal server error after core processing.",
+      message: "Internal server error during post-processing.",
     });
   }
 }
+
+// --- Socket Event Handlers (Refactored for AvailedServiceUnit) ---
+
+io.on("connection", async (socket) => {
+  const clientId = socket.id;
+
+  // Extract and validate accountId from query
+  const accountIdFromQuery =
+    socket.handshake.query &&
+    typeof socket.handshake.query.accountId === "string" &&
+    socket.handshake.query.accountId !== "undefined" &&
+    socket.handshake.query.accountId !== "null"
+      ? socket.handshake.query.accountId.trim()
+      : null;
+
+  // Validate accountId exists
+  if (!accountIdFromQuery) {
+    console.warn(
+      `[Socket ${clientId}] Connection rejected: Missing or invalid accountId in query`,
+    );
+    socket.emit("connectionError", {
+      message: "Invalid connection: Missing account identifier.",
+    });
+    socket.disconnect(true);
+    return;
+  }
+
+  // Validate account exists in database
+  const accountExists = await validateAccountId(accountIdFromQuery);
+  if (!accountExists) {
+    console.warn(
+      `[Socket ${clientId}] Connection rejected: Account ${accountIdFromQuery} not found`,
+    );
+    socket.emit("connectionError", {
+      message: "Invalid connection: Account not found.",
+    });
+    socket.disconnect(true);
+    return;
+  }
+
+  // Store validated accountId on socket for later use
+  socket.data.authenticatedAccountId = accountIdFromQuery;
+
+  // Track connection
+  if (!activeConnections.has(accountIdFromQuery)) {
+    activeConnections.set(accountIdFromQuery, new Set());
+  }
+  activeConnections.get(accountIdFromQuery).add(clientId);
+  socketToAccountMap.set(clientId, accountIdFromQuery);
+
+  console.log(
+    `[Socket ${clientId}] Client connected: Account=${accountIdFromQuery}, IP=${socket.handshake.address}, Total connections for account: ${activeConnections.get(accountIdFromQuery).size}`,
+  );
+
+  // Emit connection success
+  socket.emit("connected", {
+    accountId: accountIdFromQuery,
+    socketId: clientId,
+  });
+
+  socket.on(
+    "checkUnit",
+    async ({ unitId, availedServiceId, transactionId, accountId }) => {
+      // Rate limiting check
+      if (checkRateLimit(clientId)) {
+        console.warn(`[Socket ${clientId}] Rate limit exceeded for checkUnit`);
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Rate limit exceeded. Please slow down.",
+        });
+        return;
+      }
+
+      console.log(
+        `[Socket ${clientId}] RX checkUnit: UNIT_ID=${unitId}, AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
+      );
+
+      // Validate required fields
+      if (!unitId || !availedServiceId || !transactionId || !accountId) {
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Invalid request data provided for checkUnit.",
+        });
+        return;
+      }
+
+      if (accountId !== socket.data.authenticatedAccountId) {
+        console.warn(
+          `[Socket ${clientId}] Security: accountId mismatch. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Unauthorized: Account ID mismatch.",
+        });
+        return;
+      }
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const unitToUpdate = await tx.availedServiceUnit.findUnique({
+            where: { id: unitId },
+            include: {
+              availedService: {
+                select: { transactionId: true, id: true },
+              },
+              checkedBy: { select: { id: true, name: true } },
+              servedBy: { select: { id: true, name: true } },
+            },
+          });
+
+          if (!unitToUpdate) {
+            throw new Error("Unit not found.");
+          }
+          if (
+            unitToUpdate.availedServiceId !== availedServiceId ||
+            unitToUpdate.availedService?.transactionId !== transactionId
+          ) {
+            throw new Error(
+              "Data mismatch: Unit does not belong to the provided service or transaction.",
+            );
+          }
+
+          const parentTxn = await tx.transaction.findUnique({
+            where: { id: transactionId },
+            select: { status: true },
+          });
+
+          if (!parentTxn || parentTxn.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot check unit: Transaction status is ${parentTxn?.status || "not found"}.`,
+            );
+          }
+
+          if (unitToUpdate.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot check unit: Unit status is ${unitToUpdate.status}.`,
+            );
+          }
+          if (unitToUpdate.checkedById) {
+            if (unitToUpdate.checkedById === accountId)
+              throw new Error("Unit is already checked by you.");
+            throw new Error(
+              `Unit is already checked by ${unitToUpdate.checkedBy?.name || "someone else"}.`,
+            );
+          }
+          if (unitToUpdate.servedById) {
+            throw new Error(
+              `Cannot check unit: Unit is already served by ${unitToUpdate.servedBy?.name || "someone else"}.`,
+            );
+          }
+
+          await tx.availedServiceUnit.update({
+            where: { id: unitId },
+            data: {
+              checkedById: accountId,
+              checkedAt: new Date(),
+            },
+          });
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId}: Marked as checked by ${accountId}.`,
+          );
+
+          // --- MODIFICATION START ---
+          // Refetch the parent AvailedService WITH its units,
+          // ensuring unit includes the parent AvailedService and its TransactionId for client state sync
+          return tx.availedService.findUnique({
+            where: { id: availedServiceId },
+            include: {
+              units: {
+                include: {
+                  availedService: {
+                    // <-- ADDED THIS INCLUDE
+                    select: {
+                      id: true,
+                      transactionId: true,
+                    },
+                  },
+                  checkedBy: { select: { id: true, name: true } },
+                  servedBy: { select: { id: true, name: true } },
+                },
+                orderBy: { unitIndex: "asc" },
+              },
+              service: { select: { id: true, title: true, price: true } },
+              originatingSet: { select: { id: true, title: true } },
+              // Include parent Transaction ID directly in the AS object for easier client use
+              transaction: { select: { id: true } },
+            },
+          });
+          // --- MODIFICATION END ---
+        });
+
+        if (result) {
+          // Attach transactionId directly to the AS result if not already included by the query above
+          // This redundancy helps ensure the client receives the transactionId along with the AS data
+          const availedServiceToSend = {
+            ...result,
+            transactionId: result.transaction?.id || transactionId, // Use fetched if available, fallback to payload
+          };
+          // Remove the nested transaction object if added by include
+          delete availedServiceToSend.transaction;
+
+          // Join socket to transaction room for efficient broadcasting
+          const transactionRoom = `transaction:${transactionId}`;
+          socket.join(transactionRoom);
+          if (!transactionRooms.has(transactionId)) {
+            transactionRooms.set(transactionId, new Set());
+          }
+          transactionRooms.get(transactionId).add(clientId);
+
+          // Broadcast to transaction room instead of all clients
+          io.to(transactionRoom).emit(
+            "availedServiceUpdated",
+            availedServiceToSend,
+          );
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId} checked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+          );
+          // Check timer unconditionally now. The function itself handles the status check.
+          checkAndManageCompletionTimer(transactionId);
+        }
+      } catch (error) {
+        console.error(
+          `[Socket ${clientId}] checkUnit ERROR for ${unitId}:`,
+          error,
+        );
+        let userMsg = "Server error checking unit.";
+
+        if (error.message.includes("Unit not found"))
+          userMsg = "Unit not found.";
+        else if (error.message.includes("Data mismatch"))
+          userMsg = "Data mismatch: Unit does not belong to the transaction.";
+        else if (error.message.includes("Transaction status is"))
+          userMsg = error.message;
+        else if (error.message.includes("Cannot check unit:"))
+          userMsg = error.message;
+        else if (error.code === "P2025")
+          userMsg =
+            "Could not check unit due to a data mismatch. Please refresh.";
+        else userMsg = `An unexpected error occurred: ${error.message}`;
+
+        socket.emit("unitActionError", {
+          unitId, // Include unitId in error payload
+          message: userMsg,
+        });
+      }
+    },
+  );
+
+  socket.on(
+    "uncheckUnit",
+    async ({ unitId, availedServiceId, transactionId, accountId }) => {
+      // Rate limiting check
+      if (checkRateLimit(clientId)) {
+        console.warn(
+          `[Socket ${clientId}] Rate limit exceeded for uncheckUnit`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Rate limit exceeded. Please slow down.",
+        });
+        return;
+      }
+
+      console.log(
+        `[Socket ${clientId}] RX uncheckUnit: UNIT_ID=${unitId}, AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
+      );
+
+      // Validate required fields
+      if (!unitId || !availedServiceId || !transactionId || !accountId) {
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Invalid request data provided for uncheckUnit.",
+        });
+        return;
+      }
+
+      // Validate accountId matches authenticated account
+      if (accountId !== socket.data.authenticatedAccountId) {
+        console.warn(
+          `[Socket ${clientId}] Security: accountId mismatch. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Unauthorized: Account ID mismatch.",
+        });
+        return;
+      }
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const unitToUpdate = await tx.availedServiceUnit.findUnique({
+            where: { id: unitId },
+            include: {
+              availedService: {
+                select: { transactionId: true, id: true },
+              },
+              checkedBy: { select: { id: true, name: true } },
+              servedBy: { select: { id: true, name: true } },
+            },
+          });
+
+          if (!unitToUpdate) {
+            throw new Error("Unit not found.");
+          }
+          if (
+            unitToUpdate.availedServiceId !== availedServiceId ||
+            unitToUpdate.availedService?.transactionId !== transactionId
+          ) {
+            throw new Error(
+              "Data mismatch: Unit does not belong to the provided service or transaction.",
+            );
+          }
+
+          const parentTxn = await tx.transaction.findUnique({
+            where: { id: transactionId },
+            select: { status: true },
+          });
+
+          if (!parentTxn || parentTxn.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot uncheck unit: Transaction status is ${parentTxn?.status || "not found"}.`,
+            );
+          }
+
+          if (unitToUpdate.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot uncheck unit: Unit status is ${unitToUpdate.status}.`,
+            );
+          }
+          if (unitToUpdate.checkedById !== accountId) {
+            if (!unitToUpdate.checkedById)
+              throw new Error("Unit is not currently checked.");
+            throw new Error(
+              `Cannot uncheck unit: Unit is checked by ${unitToUpdate.checkedBy?.name || "someone else"}.`,
+            );
+          }
+          if (unitToUpdate.servedById) {
+            throw new Error(
+              `Cannot uncheck unit: Unit is already served by ${unitToUpdate.servedBy?.name || "someone else"}.`,
+            );
+          }
+
+          await tx.availedServiceUnit.update({
+            where: { id: unitId },
+            data: {
+              checkedById: null,
+              checkedAt: null,
+            },
+          });
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId}: Marked as unchecked by ${accountId}.`,
+          );
+
+          // --- MODIFICATION START ---
+          // Refetch the parent AvailedService WITH its units,
+          // ensuring unit includes the parent AvailedService and its TransactionId for client state sync
+          return tx.availedService.findUnique({
+            where: { id: availedServiceId },
+            include: {
+              units: {
+                include: {
+                  availedService: {
+                    // <-- ADDED THIS INCLUDE
+                    select: {
+                      id: true,
+                      transactionId: true,
+                    },
+                  },
+                  checkedBy: { select: { id: true, name: true } },
+                  servedBy: { select: { id: true, name: true } },
+                },
+                orderBy: { unitIndex: "asc" },
+              },
+              service: { select: { id: true, title: true, price: true } },
+              originatingSet: { select: { id: true, title: true } },
+              // Include parent Transaction ID directly in the AS object for easier client use
+              transaction: { select: { id: true } },
+            },
+          });
+          // --- MODIFICATION END ---
+        });
+
+        if (result) {
+          // Attach transactionId directly to the AS result if not already included by the query above
+          const availedServiceToSend = {
+            ...result,
+            transactionId: result.transaction?.id || transactionId, // Use fetched if available, fallback to payload
+          };
+          // Remove the nested transaction object if added by include
+          delete availedServiceToSend.transaction;
+
+          // Broadcast to transaction room
+          const transactionRoom = `transaction:${transactionId}`;
+          socket.join(transactionRoom);
+          if (!transactionRooms.has(transactionId)) {
+            transactionRooms.set(transactionId, new Set());
+          }
+          transactionRooms.get(transactionId).add(clientId);
+
+          io.to(transactionRoom).emit(
+            "availedServiceUpdated",
+            availedServiceToSend,
+          );
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId} unchecked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+          );
+          // Check timer unconditionally now.
+          checkAndManageCompletionTimer(transactionId);
+        }
+      } catch (error) {
+        console.error(
+          `[Socket ${clientId}] uncheckUnit ERROR for ${unitId}:`,
+          error,
+        );
+        let userMsg = "Could not uncheck unit.";
+
+        if (error.message.includes("Unit not found"))
+          userMsg = "Unit not found.";
+        else if (error.message.includes("Data mismatch"))
+          userMsg = "Data mismatch: Unit does not belong to the transaction.";
+        else if (error.message.includes("Transaction status is"))
+          userMsg = error.message;
+        else if (error.message.includes("Cannot uncheck unit:"))
+          userMsg = error.message;
+        else if (error.code === "P2025")
+          userMsg =
+            "Could not uncheck unit due to a data mismatch. Please refresh.";
+        else userMsg = `An unexpected error occurred: ${error.message}`;
+
+        socket.emit("unitActionError", {
+          unitId, // Include unitId in error payload
+          message: userMsg,
+        });
+      }
+    },
+  );
+
+  socket.on(
+    "markUnitServed",
+    async ({ unitId, availedServiceId, transactionId, accountId }) => {
+      // Rate limiting check
+      if (checkRateLimit(clientId)) {
+        console.warn(
+          `[Socket ${clientId}] Rate limit exceeded for markUnitServed`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Rate limit exceeded. Please slow down.",
+        });
+        return;
+      }
+
+      console.log(
+        `[Socket ${clientId}] RX markUnitServed: UNIT_ID=${unitId}, AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
+      );
+
+      // Validate required fields
+      if (!unitId || !availedServiceId || !transactionId || !accountId) {
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Invalid request data provided for markUnitServed.",
+        });
+        return;
+      }
+
+      // Validate accountId matches authenticated account
+      if (accountId !== socket.data.authenticatedAccountId) {
+        console.warn(
+          `[Socket ${clientId}] Security: accountId mismatch. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Unauthorized: Account ID mismatch.",
+        });
+        return;
+      }
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const unitToUpdate = await tx.availedServiceUnit.findUnique({
+            where: { id: unitId },
+            include: {
+              availedService: {
+                select: { transactionId: true, id: true },
+              },
+              checkedBy: { select: { id: true, name: true } },
+              servedBy: { select: { id: true, name: true } },
+            },
+          });
+
+          if (!unitToUpdate) {
+            throw new Error("Unit not found.");
+          }
+          if (
+            unitToUpdate.availedServiceId !== availedServiceId ||
+            unitToUpdate.availedService?.transactionId !== transactionId
+          ) {
+            throw new Error(
+              "Data mismatch: Unit does not belong to the provided service or transaction.",
+            );
+          }
+
+          const parentTxn = await tx.transaction.findUnique({
+            where: { id: transactionId },
+            select: { status: true },
+          });
+
+          if (!parentTxn || parentTxn.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot mark unit served: Transaction status is ${parentTxn?.status || "not found"}.`,
+            );
+          }
+
+          if (unitToUpdate.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot mark unit served: Unit status is ${unitToUpdate.status}. Only PENDING units can be marked as served.`,
+            );
+          }
+
+          // Optional: Add backend check that unit is checked by this account?
+          // The client already checks this for UI, but backend should be robust.
+          // if (unitToUpdate.checkedById !== accountId) {
+          //   throw new Error(`Cannot mark unit served: Unit is not checked by you.`);
+          // }
+
+          if (unitToUpdate.servedById) {
+            if (unitToUpdate.servedById === accountId)
+              throw new Error("Unit is already served by you.");
+            throw new Error(
+              `Cannot mark unit served: Unit is already served by ${unitToUpdate.servedBy?.name || "someone else"}.`,
+            );
+          }
+
+          await tx.availedServiceUnit.update({
+            where: { id: unitId },
+            data: {
+              servedById: accountId,
+              status: Status.DONE,
+              completedAt: new Date(),
+              servedAt: new Date(), // Set servedAt here
+            },
+          });
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId}: Marked as served by ${accountId}.`,
+          );
+
+          // --- MODIFICATION START ---
+          // Refetch the parent AvailedService WITH its units,
+          // ensuring unit includes the parent AvailedService and its TransactionId for client state sync
+          return tx.availedService.findUnique({
+            where: { id: availedServiceId },
+            include: {
+              units: {
+                include: {
+                  availedService: {
+                    // <-- ADDED THIS INCLUDE
+                    select: {
+                      id: true,
+                      transactionId: true,
+                    },
+                  },
+                  checkedBy: { select: { id: true, name: true } },
+                  servedBy: { select: { id: true, name: true } },
+                },
+                orderBy: { unitIndex: "asc" },
+              },
+              service: { select: { id: true, title: true, price: true } },
+              originatingSet: { select: { id: true, title: true } },
+              // Include parent Transaction ID directly in the AS object for easier client use
+              transaction: { select: { id: true } },
+            },
+          });
+          // --- MODIFICATION END ---
+        });
+
+        if (result) {
+          // Attach transactionId directly to the AS result if not already included by the query above
+          const availedServiceToSend = {
+            ...result,
+            transactionId: result.transaction?.id || transactionId, // Use fetched if available, fallback to payload
+          };
+          // Remove the nested transaction object if added by include
+          delete availedServiceToSend.transaction;
+
+          // Broadcast to transaction room
+          const transactionRoom = `transaction:${transactionId}`;
+          socket.join(transactionRoom);
+          if (!transactionRooms.has(transactionId)) {
+            transactionRooms.set(transactionId, new Set());
+          }
+          transactionRooms.get(transactionId).add(clientId);
+
+          io.to(transactionRoom).emit(
+            "availedServiceUpdated",
+            availedServiceToSend,
+          );
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId} MARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+          );
+          // Check timer unconditionally now.
+          checkAndManageCompletionTimer(transactionId);
+        }
+      } catch (error) {
+        console.error(
+          `[Socket ${clientId}] markUnitServed ERROR for ${unitId}:`,
+          error,
+        );
+        let userMsg = "Could not mark unit as served.";
+
+        if (error.message.includes("Unit not found"))
+          userMsg = "Unit not found.";
+        else if (error.message.includes("Data mismatch"))
+          userMsg = "Data mismatch: Unit does not belong to the transaction.";
+        else if (error.message.includes("Transaction status is"))
+          userMsg = error.message;
+        else if (error.message.includes("Cannot mark unit served:"))
+          userMsg = error.message;
+        else if (error.code === "P2025")
+          userMsg =
+            "Could not mark unit due to a data mismatch. Please refresh.";
+        else userMsg = `An unexpected error occurred: ${error.message}`;
+
+        socket.emit("unitActionError", {
+          unitId, // Include unitId in error payload
+          message: userMsg,
+        });
+      }
+    },
+  );
+
+  socket.on(
+    "unmarkUnitServed",
+    async ({ unitId, availedServiceId, transactionId, accountId }) => {
+      // Rate limiting check
+      if (checkRateLimit(clientId)) {
+        console.warn(
+          `[Socket ${clientId}] Rate limit exceeded for unmarkUnitServed`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Rate limit exceeded. Please slow down.",
+        });
+        return;
+      }
+
+      console.log(
+        `[Socket ${clientId}] RX unmarkUnitServed: UNIT_ID=${unitId}, AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
+      );
+
+      // Validate required fields
+      if (!unitId || !availedServiceId || !transactionId || !accountId) {
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Invalid request data provided for unmarkUnitServed.",
+        });
+        return;
+      }
+
+      // Validate accountId matches authenticated account
+      if (accountId !== socket.data.authenticatedAccountId) {
+        console.warn(
+          `[Socket ${clientId}] Security: accountId mismatch. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
+        );
+        socket.emit("unitActionError", {
+          unitId,
+          message: "Unauthorized: Account ID mismatch.",
+        });
+        return;
+      }
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          const unitToUpdate = await tx.availedServiceUnit.findUnique({
+            where: { id: unitId },
+            include: {
+              availedService: {
+                select: { transactionId: true, id: true },
+              },
+              checkedBy: { select: { id: true, name: true } },
+              servedBy: { select: { id: true, name: true } },
+            },
+          });
+
+          if (!unitToUpdate) {
+            throw new Error("Unit not found.");
+          }
+          if (
+            unitToUpdate.availedServiceId !== availedServiceId ||
+            unitToUpdate.availedService?.transactionId !== transactionId
+          ) {
+            throw new Error(
+              "Data mismatch: Unit does not belong to the provided service or transaction.",
+            );
+          }
+
+          const parentTxn = await tx.transaction.findUnique({
+            where: { id: transactionId },
+            select: { status: true },
+          });
+
+          if (!parentTxn || parentTxn.status !== Status.PENDING) {
+            throw new Error(
+              `Cannot unmark unit served: Transaction status is ${parentTxn?.status || "not found"}.`,
+            );
+          }
+
+          if (unitToUpdate.status !== Status.DONE) {
+            throw new Error(
+              `Cannot unmark unit served: Unit status is ${unitToUpdate.status}.`,
+            );
+          }
+          if (unitToUpdate.servedById !== accountId) {
+            if (!unitToUpdate.servedById)
+              throw new Error("Unit is not currently marked as served.");
+            throw new Error(
+              `Cannot unmark unit served: Unit is served by ${unitToUpdate.servedBy?.name || "someone else"}.`,
+            );
+          }
+
+          // Note: When unmarking served, the unit status goes back to PENDING
+          // This unit might still be 'checked' by someone (the servedById might also be the checkedById)
+          // The unmarking served action should *not* automatically uncheck it.
+          // So, we only reset servedById, servedAt, status, and completedAt.
+          await tx.availedServiceUnit.update({
+            where: { id: unitId },
+            data: {
+              servedById: null,
+              status: Status.PENDING, // Status changes back to PENDING
+              completedAt: null, // Clear completedAt
+              servedAt: null, // Clear servedAt
+            },
+          });
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId}: Marked as unserved by ${accountId}.`,
+          );
+
+          // --- MODIFICATION START ---
+          // Refetch the parent AvailedService WITH its units,
+          // ensuring unit includes the parent AvailedService and its TransactionId for client state sync
+          return tx.availedService.findUnique({
+            where: { id: availedServiceId },
+            include: {
+              units: {
+                include: {
+                  availedService: {
+                    // <-- ADDED THIS INCLUDE
+                    select: {
+                      id: true,
+                      transactionId: true,
+                    },
+                  },
+                  checkedBy: { select: { id: true, name: true } },
+                  servedBy: { select: { id: true, name: true } },
+                },
+                orderBy: { unitIndex: "asc" },
+              },
+              service: { select: { id: true, title: true, price: true } },
+              originatingSet: { select: { id: true, title: true } },
+              // Include parent Transaction ID directly in the AS object for easier client use
+              transaction: { select: { id: true } },
+            },
+          });
+          // --- MODIFICATION END ---
+        });
+
+        if (result) {
+          // Attach transactionId directly to the AS result if not already included by the query above
+          const availedServiceToSend = {
+            ...result,
+            transactionId: result.transaction?.id || transactionId, // Use fetched if available, fallback to payload
+          };
+          // Remove the nested transaction object if added by include
+          delete availedServiceToSend.transaction;
+
+          // Broadcast to transaction room
+          const transactionRoom = `transaction:${transactionId}`;
+          socket.join(transactionRoom);
+          if (!transactionRooms.has(transactionId)) {
+            transactionRooms.set(transactionId, new Set());
+          }
+          transactionRooms.get(transactionId).add(clientId);
+
+          io.to(transactionRoom).emit(
+            "availedServiceUpdated",
+            availedServiceToSend,
+          );
+          console.log(
+            `[Socket ${clientId}] Unit ${unitId} UNMARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+          );
+          // Check timer unconditionally now.
+          checkAndManageCompletionTimer(transactionId);
+        }
+      } catch (error) {
+        console.error(
+          `[Socket ${clientId}] unmarkUnitServed ERROR for ${unitId}:`,
+          error,
+        );
+        let userMsg = "Could not unmark unit as served.";
+
+        if (error.message.includes("Unit not found"))
+          userMsg = "Unit not found.";
+        else if (error.message.includes("Data mismatch"))
+          userMsg = "Data mismatch: Unit does not belong to the transaction.";
+        else if (error.message.includes("Transaction status is"))
+          userMsg = error.message;
+        else if (error.message.includes("Cannot unmark unit served:"))
+          userMsg = error.message;
+        else if (error.code === "P2025")
+          userMsg =
+            "Could not unmark unit due to a data mismatch. Please refresh.";
+        else userMsg = `An unexpected error occurred: ${error.message}`;
+
+        socket.emit("unitActionError", {
+          unitId, // Include unitId in error payload
+          message: userMsg,
+        });
+      }
+    },
+  );
+
+  socket.on("disconnect", (reason) => {
+    const accountId = socket.data.authenticatedAccountId || "unknown";
+    console.log(
+      `[Socket ${clientId}] Client disconnected: Account=${accountId}, IP=${socket.handshake.address}, Reason=${reason}`,
+    );
+
+    // Clean up socket resources
+    cleanupSocketResources(clientId);
+
+    // Leave all rooms (Socket.IO handles this automatically, but we clean up our tracking)
+    const rooms = Array.from(socket.rooms);
+    rooms.forEach((room) => {
+      if (room.startsWith("transaction:")) {
+        const transactionId = room.replace("transaction:", "");
+        const roomSockets = transactionRooms.get(transactionId);
+        if (roomSockets) {
+          roomSockets.delete(clientId);
+          if (roomSockets.size === 0) {
+            transactionRooms.delete(transactionId);
+          }
+        }
+      }
+    });
+  });
+
+  socket.on("connect_error", (err) => {
+    console.error(`[Socket ${clientId}] Connection error: ${err.message}`);
+  });
+
+  // Add a general listener for unhandled errors from the server
+  socket.on("error", (err) => {
+    console.error(`[Socket ${clientId}] Unhandled error:`, err);
+    socket.emit("generalError", {
+      message: "A server error occurred. Please try again.",
+    });
+  });
+
+  // Handle ping/pong for connection health (Socket.IO handles this, but we can monitor)
+  socket.on("ping", () => {
+    // Socket.IO automatically handles ping/pong, but we can log if needed
+    // This is mainly for monitoring connection health
+  });
+});
+
+// --- CRON JOBs ---
 
 async function checkAndSendFollowUpReminders() {
   if (!resend) {
@@ -941,11 +2241,21 @@ async function checkAndSendFollowUpReminders() {
   );
 
   const now = new Date();
+  const todayStartUTC = startOfDay(now); // Start of today in UTC
 
-  const todayStartUTC = startOfDay(now);
-
+  // Get the target dates for the current check window (start of day UTC for each target date)
   const targetDatesForQuery = FOLLOW_UP_REMINDER_WINDOWS_DAYS.map((days) =>
     startOfDay(addDays(todayStartUTC, days)),
+  );
+
+  // Map the target dates to a format suitable for the Prisma 'OR' query condition on `recommendedDate`
+  const recommendedDateConditions = targetDatesForQuery.map(
+    (localStartOfDayUTC) => ({
+      recommendedDate: {
+        gte: localStartOfDayUTC,
+        lt: addDays(localStartOfDayUTC, 1), // Check for RAs whose recommendedDate falls within this specific 24hr UTC window
+      },
+    }),
   );
 
   try {
@@ -957,30 +2267,38 @@ async function checkAndSendFollowUpReminders() {
             RecommendedAppointmentStatus.SCHEDULED,
           ],
         },
-
-        customer: { email: { not: null, contains: "@" } },
-
-        suppressNextFollowUpGeneration: false,
-
-        OR: targetDatesForQuery.map((localStartOfDay) => ({
-          recommendedDate: {
-            gte: localStartOfDay,
-
-            lt: addDays(localStartOfDay, 1),
+        customer: { email: { not: null, contains: "@" } }, // Ensure the customer has a valid email
+        suppressNextFollowUpGeneration: false, // Do not send reminders if suppression is enabled
+        // Filter RAs whose recommendedDate falls into one of the target date windows
+        OR: recommendedDateConditions,
+        // Add condition that the originatingAvailedService is linked to a non-cancelled transaction
+        originatingAvailedService: {
+          transaction: {
+            status: { not: Status.CANCELLED },
           },
-        })),
+        },
       },
-
+      // *** UPDATED SELECT ***
       select: {
         id: true,
-        recommendedDate: true,
-        customer: { select: { id: true, name: true, email: true } },
+        recommendedDate: true, // Needed to calculate daysAway
+        customer: { select: { id: true, name: true, email: true } }, // Customer details for email
 
-        ...Object.values(FOLLOW_UP_REMINDER_FIELDS).reduce((obj, fieldName) => {
-          obj[fieldName] = true;
-          return obj;
-        }, {}),
+        // Select all reminder sent fields based on the CORRECTED fields map
+        ...Object.values(FOLLOW_UP_REMINDER_FIELDS_CORRECTED).reduce(
+          (obj, fieldName) => {
+            obj[fieldName] = true;
+            return obj;
+          },
+          {},
+        ),
+
+        // Include originatingService to check its policy if needed (already done in creation logic, but useful for double check or logging)
+        originatingService: {
+          select: { id: true, title: true, followUpPolicy: true },
+        },
       },
+      orderBy: { recommendedDate: "asc" }, // Process RAs in date order
     });
 
     console.log(
@@ -988,6 +2306,7 @@ async function checkAndSendFollowUpReminders() {
     );
 
     for (const ra of rAsToConsider) {
+      // Calculate the number of days between the recommended date (start of day UTC) and today (start of day UTC)
       const raRecommendedDateStartUTC = startOfDay(
         new Date(ra.recommendedDate),
       );
@@ -996,20 +2315,29 @@ async function checkAndSendFollowUpReminders() {
         todayStartUTC,
       );
 
-      const reminderFieldToUpdateKey = String(daysAway);
+      const reminderFieldToUpdateKey = String(daysAway); // e.g., "7", "0", "-1"
+      // *** Use the CORRECTED fields map ***
       const reminderFieldToUpdate =
-        FOLLOW_UP_REMINDER_FIELDS[reminderFieldToUpdateKey];
+        FOLLOW_UP_REMINDER_FIELDS_CORRECTED[reminderFieldToUpdateKey];
 
+      // Check if a reminder field exists for this number of days AND that field is currently null (meaning it hasn't been sent)
       if (reminderFieldToUpdate && ra[reminderFieldToUpdate] === null) {
-        const customerName = ra.customer.name || "Valued Customer";
+        // Double-check the policy from the fetched RA data before sending, in case service changed
+        if (ra.originatingService?.followUpPolicy === FollowUpPolicy.NONE) {
+          console.log(
+            `[Cron FollowUp] Skipping RA ${ra.id} (${ra.originatingService?.title}): Service policy is now NONE.`,
+          );
+          continue; // Skip this RA
+        }
 
-        const recommendedDateForDisplay = new Date(ra.recommendedDate);
+        const customerName = ra.customer.name || "Valued Customer";
+        const recommendedDateForDisplay = new Date(ra.recommendedDate); // Use the fetched Date object
 
         const dateOptionsIntl = {
           year: "numeric",
           month: "long",
           day: "numeric",
-          timeZone: PHILIPPINES_TIMEZONE,
+          timeZone: PHILIPPINES_TIMEZONE, // Explicitly format in the target timezone for display
         };
         const formattedRecDate = new Intl.DateTimeFormat(
           "en-US",
@@ -1018,7 +2346,7 @@ async function checkAndSendFollowUpReminders() {
 
         const daysAwayPhrase =
           DAYS_AWAY_PHRASE[reminderFieldToUpdateKey] ||
-          `${Math.abs(daysAway)} days ${daysAway >= 0 ? "from now" : "ago"}`;
+          `${Math.abs(daysAway)} day${Math.abs(daysAway) !== 1 ? "s" : ""} ${daysAway >= 0 ? "from now" : "ago"}`;
 
         let introMessage, timeAdverbAndDate, actionMessage;
         if (daysAway > 0) {
@@ -1034,6 +2362,7 @@ async function checkAndSendFollowUpReminders() {
           actionMessage =
             "We look forward to seeing you! If you can't make it, please let us know.";
         } else {
+          // daysAway < 0
           introMessage =
             "We noticed your recommended follow-up date has passed.";
           timeAdverbAndDate = `was ${daysAwayPhrase}, on ${formattedRecDate}`;
@@ -1041,6 +2370,7 @@ async function checkAndSendFollowUpReminders() {
             "It's not too late to get back on track! Contact us to schedule your next visit.";
         }
 
+        // Fetch the Follow-up Reminder email template
         const followUpTemplate = await prisma.emailTemplate.findUnique({
           where: { name: "Follow-up Reminder" },
         });
@@ -1049,9 +2379,10 @@ async function checkAndSendFollowUpReminders() {
           console.warn(
             `[Cron FollowUp] Template "Follow-up Reminder" not found or inactive for RA ${ra.id}. Skipping email.`,
           );
-          continue;
+          continue; // Skip to the next RA
         }
 
+        // Replace placeholders in the template body
         let processedContentBodyHtml = followUpTemplate.body;
         processedContentBodyHtml = processedContentBodyHtml.replace(
           /{{customerName}}/g,
@@ -1070,7 +2401,9 @@ async function checkAndSendFollowUpReminders() {
           actionMessage,
         );
 
-        let processedSubject = followUpTemplate.subject;
+        // Replace placeholders in the template subject
+        let processedSubject =
+          followUpTemplate.subject || "Your Recommended Appointment Reminder";
         processedSubject = processedSubject.replace(
           /{{daysAwayPhrase}}/g,
           daysAwayPhrase,
@@ -1084,19 +2417,21 @@ async function checkAndSendFollowUpReminders() {
           `[Cron FollowUp] Preparing to send ${daysAway}-day reminder for RA ${ra.id} to ${ra.customer.email}`,
         );
 
+        // Send the email using the template sender, which now uses the retry helper
         const emailSentSuccessfully = await sendEmailFromTemplate(
-          "Follow-up Reminder",
+          "Follow-up Reminder", // Template name for logging
           ra.customer.email,
           customerName,
           processedContentBodyHtml,
           processedSubject,
         );
 
+        // If email sending was attempted and successful, update the RA record
         if (emailSentSuccessfully) {
           try {
             await prisma.recommendedAppointment.update({
               where: { id: ra.id },
-              data: { [reminderFieldToUpdate]: new Date() },
+              data: { [reminderFieldToUpdate]: new Date() }, // Update the specific reminder field
             });
             console.log(
               `[Cron FollowUp] Marked ${reminderFieldToUpdate} for RA ${ra.id}.`,
@@ -1109,27 +2444,34 @@ async function checkAndSendFollowUpReminders() {
           }
         }
 
+        // Add a small delay between processing items to avoid overwhelming resources
         await new Promise((r) => setTimeout(r, CRON_ITEM_PROCESSING_DELAY));
       } else if (reminderFieldToUpdate) {
+        // Log if the reminder was skipped because the field was already set
         console.log(
-          `[Cron FollowUp] Skipping ${daysAway}-day reminder for RA ${ra.id}: ${reminderFieldToUpdate} already set at ${ra[reminderFieldToUpdate]}.`,
+          `[Cron FollowUp] Skipping ${daysAway}-day reminder for RA ${ra.id}: ${reminderFieldToUpdate} already set.`,
         );
       } else {
+        // Log if there's no configured reminder window for this specific 'daysAway' value
         console.warn(
           `[Cron FollowUp] No reminder field configured for ${daysAway} days away. Skipping RA ${ra.id}.`,
         );
       }
     }
 
+    // --- Cleanup: Mark old RAs as MISSED ---
+    // Find the furthest past reminder day configured (e.g., -14). Anything older than this window + 1 day should be MISSED.
     const furthestPastReminderDay = Math.min(
       0,
       ...FOLLOW_UP_REMINDER_WINDOWS_DAYS.filter((d) => d < 0),
     );
 
+    // Calculate the cutoff date (start of day UTC before the furthest past window)
     const missedCutoffDate = startOfDay(
       addDays(todayStartUTC, furthestPastReminderDay - 1),
     );
 
+    // Update RAs that are still RECOMMENDED or SCHEDULED but are older than the cutoff
     const updatedMissedCountResult =
       await prisma.recommendedAppointment.updateMany({
         where: {
@@ -1139,10 +2481,10 @@ async function checkAndSendFollowUpReminders() {
               RecommendedAppointmentStatus.SCHEDULED,
             ],
           },
-          recommendedDate: { lt: missedCutoffDate },
-          suppressNextFollowUpGeneration: false,
+          recommendedDate: { lt: missedCutoffDate }, // Where recommended date is before the cutoff
+          suppressNextFollowUpGeneration: false, // Don't mark suppressed RAs as missed in this automated process
         },
-        data: { status: RecommendedAppointmentStatus.MISSED },
+        data: { status: RecommendedAppointmentStatus.MISSED }, // Set status to MISSED
       });
 
     if (updatedMissedCountResult.count > 0) {
@@ -1169,23 +2511,31 @@ async function checkAndSendBookingReminders() {
     return;
   }
   console.log(
-    `[Cron BookingReminder] Starting check for 1-hour booking reminders...`,
+    `[Cron BookingReminder] Cycle START. Current UTC: ${new Date().toISOString()}`,
   );
 
   const nowUTC = new Date();
-
+  // Window: 50 to 65 minutes from now (adjust window based on how cron schedule is set)
+  // If cron is every 15 min, checking 50-65min ensures we hit the ~60 min mark.
   const reminderWindowStartUTC = new Date(nowUTC.getTime() + 50 * 60 * 1000);
   const reminderWindowEndUTC = new Date(nowUTC.getTime() + 65 * 60 * 1000);
 
-  try {
-    const transactionsToRemind = await prisma.transaction.findMany({
-      where: {
-        status: Status.PENDING,
-        bookedFor: { gte: reminderWindowStartUTC, lte: reminderWindowEndUTC },
-        bookingReminderSentAt: null,
-        customer: { email: { not: null, contains: "@" } },
-      },
+  console.log(
+    `[Cron BookingReminder] Reminder Window UTC: ${reminderWindowStartUTC.toISOString()} to ${reminderWindowEndUTC.toISOString()}`,
+  );
 
+  try {
+    const transactionsToConsider = await prisma.transaction.findMany({
+      where: {
+        status: Status.PENDING, // Only remind for PENDING transactions
+        bookedFor: {
+          gte: reminderWindowStartUTC, // bookedFor is within the time window
+          lte: reminderWindowEndUTC,
+          not: null, // bookedFor must not be null
+        },
+        bookingReminderSentAt: null, // Only remind if the reminder hasn't been sent yet
+        customer: { email: { not: null, contains: "@" } }, // Ensure the customer has a valid email
+      },
       include: {
         customer: { select: { name: true, email: true } },
         availedServices: {
@@ -1198,26 +2548,37 @@ async function checkAndSendBookingReminders() {
     });
 
     console.log(
-      `[Cron BookingReminder] Found ${transactionsToRemind.length} bookings for reminder in the next hour window.`,
+      `[Cron BookingReminder] Found ${transactionsToConsider.length} transactions needing 1-hour reminder.`,
     );
 
-    for (const txn of transactionsToRemind) {
-      if (!txn.customer?.email) {
-        console.warn(
-          `[Cron BookingReminder] Skipping reminder for TXN ${txn.id}: Customer or email missing.`,
+    for (const txn of transactionsToConsider) {
+      // Double-check status and email before sending (redundant due to query, but safe)
+      if (
+        txn.status !== Status.PENDING ||
+        !txn.customer?.email ||
+        txn.bookingReminderSentAt !== null
+      ) {
+        console.log(
+          `[Cron BookingReminder] SKIPPING TXN_ID: ${txn.id} - State changed since query or no email.`,
         );
         continue;
       }
 
+      console.log(
+        `[Cron BookingReminder] PREPARING email for TXN_ID: ${txn.id} to ${txn.customer.email}`,
+      );
+
       const customerName = txn.customer.name || "Valued Customer";
-      const bookingDateTimeForDisplay = new Date(txn.bookedFor);
+      // txn.bookedFor is a Date object from Prisma client
+      const bookingDateTimeForDisplay = txn.bookedFor;
 
       const timeOptionsIntl = {
         hour: "numeric",
         minute: "2-digit",
         hour12: true,
-        timeZone: PHILIPPINES_TIMEZONE,
+        timeZone: PHILIPPINES_TIMEZONE, // Use the target timezone for display formatting
       };
+      // Use the Date object directly
       const formattedBookedTime = new Intl.DateTimeFormat(
         "en-US",
         timeOptionsIntl,
@@ -1230,7 +2591,7 @@ async function checkAndSendBookingReminders() {
             as.service?.title ||
             "your scheduled service",
         )
-        .filter(Boolean)
+        .filter(Boolean) // Remove any null/undefined/empty strings
         .join(", ");
 
       const bookingReminderTemplate = await prisma.emailTemplate.findUnique({
@@ -1239,11 +2600,12 @@ async function checkAndSendBookingReminders() {
 
       if (!bookingReminderTemplate || !bookingReminderTemplate.isActive) {
         console.warn(
-          `[Cron BookingReminder] Template "Booking Reminder (1-Hour)" not found or inactive for TXN ${txn.id}. Skipping email.`,
+          `[Cron BookingReminder] Template "Booking Reminder (1-Hour)" not found or inactive for TXN ${txn.id}. SKIPPING email.`,
         );
         continue;
       }
 
+      // Replace placeholders in the template body
       let processedContentBodyHtml = bookingReminderTemplate.body;
       processedContentBodyHtml = processedContentBodyHtml.replace(
         /{{customerName}}/g,
@@ -1258,14 +2620,16 @@ async function checkAndSendBookingReminders() {
         formattedBookedTime,
       );
 
-      let processedSubject = bookingReminderTemplate.subject;
+      // Replace placeholders in the template subject
+      let processedSubject =
+        bookingReminderTemplate.subject || "Your Upcoming Appointment Reminder";
+      // Add any subject placeholder replacements if your template uses them
+      // Example: processedSubject = processedSubject.replace(/{{customerName}}/g, customerName);
 
-      console.log(
-        `[Cron BookingReminder] Preparing to send 1-hour reminder for TXN ${txn.id} to ${txn.customer.email}`,
-      );
-
+      // Presuming sendEmailFromTemplate is defined and handles the actual sending via Resend
+      // and returns true on success, false on failure.
       const emailSentSuccessfully = await sendEmailFromTemplate(
-        "Booking Reminder (1-Hour)",
+        "Booking Reminder (1-Hour)", // Template name for logging
         txn.customer.email,
         customerName,
         processedContentBodyHtml,
@@ -1273,32 +2637,44 @@ async function checkAndSendBookingReminders() {
       );
 
       if (emailSentSuccessfully) {
+        console.log(
+          `[Cron BookingReminder] SUCCESS sending email for TXN_ID: ${txn.id}. Updating DB...`,
+        );
         try {
           await prisma.transaction.update({
             where: { id: txn.id },
-            data: { bookingReminderSentAt: new Date() },
+            data: { bookingReminderSentAt: new Date() }, // Mark reminder sent
           });
           console.log(
-            `[Cron BookingReminder] Marked bookingReminderSentAt for TXN ${txn.id}.`,
+            `[Cron BookingReminder] DB_UPDATE_SUCCESS: Marked bookingReminderSentAt for TXN_ID: ${txn.id}.`,
           );
         } catch (dbUpdateError) {
           console.error(
-            `[Cron BookingReminder] Failed to update TXN ${txn.id} after email send:`,
+            `[Cron BookingReminder] DB_UPDATE_ERROR: Failed to mark bookingReminderSentAt for TXN_ID: ${txn.id}:`,
             dbUpdateError,
           );
         }
+      } else {
+        console.log(
+          `[Cron BookingReminder] FAILED sending email attempt for TXN_ID: ${txn.id}. (sendEmailFromTemplate returned false)`,
+        );
       }
 
-      await new Promise((r) => setTimeout(r, CRON_ITEM_PROCESSING_DELAY));
+      // Add a small delay between processing items if you have many emails to send
+      await new Promise((r) =>
+        setTimeout(r, CRON_ITEM_PROCESSING_DELAY || 100),
+      );
     }
   } catch (e) {
     console.error(
-      `[Cron BookingReminder] Error during booking reminder check:`,
+      `[Cron BookingReminder] CRITICAL ERROR during booking reminder check:`,
       e,
     );
   }
-  console.log(`[Cron BookingReminder] 1-hour booking reminder check finished.`);
+  console.log(`[Cron BookingReminder] Cycle END.`);
 }
+
+// --- Socket Server Startup ---
 
 if (resend) {
   cron.schedule(FOLLOW_UP_CRON_SCHEDULE, checkAndSendFollowUpReminders, {
@@ -1326,465 +2702,18 @@ app.get("/", (req, res) =>
   res.status(200).send("BeautyFeel Socket Server is Running"),
 );
 
-io.on("connection", (socket) => {
-  const clientId = socket.id;
-
-  const connectedAccountId =
-    socket.handshake.query &&
-    typeof socket.handshake.query.accountId === "string" &&
-    socket.handshake.query.accountId !== "undefined" &&
-    socket.handshake.query.accountId !== "null"
-      ? socket.handshake.query.accountId
-      : "N/A_SocketUser";
-
-  console.log(
-    `Client connected: ${clientId}, Account: ${connectedAccountId}, IP: ${socket.handshake.address}`,
-  );
-
-  socket.on(
-    "checkService",
-    async ({ availedServiceId, transactionId, accountId }) => {
-      console.log(
-        `[Socket ${clientId}] RX checkService: AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
-      );
-      if (!availedServiceId || !transactionId || !accountId) {
-        socket.emit("serviceCheckError", {
-          availedServiceId,
-          message: "Invalid request data provided for checkService.",
-        });
-        return;
-      }
-      try {
-        const updatedAS = await prisma.$transaction(async (tx) => {
-          const as = await tx.availedService.findUnique({
-            where: { id: availedServiceId },
-            select: {
-              id: true,
-              status: true,
-              checkedById: true,
-              servedById: true,
-              checkedBy: { select: { id: true, name: true } },
-              transaction: { select: { id: true, status: true } },
-            },
-          });
-
-          if (!as) {
-            throw new Error("Service item not found.");
-          }
-
-          if (as.transaction?.status !== Status.PENDING) {
-            throw new Error(
-              `Cannot check: Transaction status is ${as.transaction?.status}.`,
-            );
-          }
-
-          if (as.status !== Status.PENDING) {
-            throw new Error(`Cannot check: Service status is ${as.status}.`);
-          }
-
-          if (as.servedById) {
-            throw new Error(`Cannot check: Service already marked as served.`);
-          }
-
-          if (as.checkedById && as.checkedById !== accountId) {
-            throw new Error(
-              `Already checked by ${as.checkedBy?.name || "another user"}.`,
-            );
-          }
-
-          if (as.checkedById === accountId) {
-            console.log(
-              `[Socket ${clientId}] AS ${availedServiceId} already checked by ${accountId}. No DB update needed.`,
-            );
-
-            return await tx.availedService.findUnique({
-              where: { id: availedServiceId },
-              include: {
-                service: { select: { id: true, title: true } },
-                checkedBy: { select: { id: true, name: true } },
-                servedBy: { select: { id: true, name: true } },
-              },
-            });
-          }
-
-          return tx.availedService.update({
-            where: {
-              id: availedServiceId,
-              status: Status.PENDING,
-              servedById: null,
-              checkedById: null,
-            },
-            data: { checkedById: accountId },
-            include: {
-              service: { select: { id: true, title: true } },
-              checkedBy: { select: { id: true, name: true } },
-              servedBy: { select: { id: true, name: true } },
-            },
-          });
-        });
-
-        if (updatedAS) {
-          io.emit("availedServiceUpdated", updatedAS);
-          console.log(
-            `[Socket ${clientId}] AvailedService ${availedServiceId} checked by ${accountId}. Broadcasting update.`,
-          );
-        }
-      } catch (error) {
-        console.error(
-          `[Socket ${clientId}] checkService ERROR for ${availedServiceId}:`,
-          error,
-        );
-        let userMsg = "Server error checking service.";
-
-        if (error.message.includes("Service item not found."))
-          userMsg = "Service not found.";
-        else if (error.message.includes("Cannot check:"))
-          userMsg = error.message;
-        else if (error.message.includes("Already checked by"))
-          userMsg = error.message;
-        else if (error.code === "P2025")
-          userMsg =
-            "Could not check service due to a data mismatch. Please refresh.";
-        else userMsg = `An unexpected error occurred: ${error.message}`;
-
-        socket.emit("serviceCheckError", {
-          availedServiceId,
-          message: userMsg,
-        });
-      }
-    },
-  );
-
-  socket.on(
-    "uncheckService",
-    async ({ availedServiceId, transactionId, accountId }) => {
-      console.log(
-        `[Socket ${clientId}] RX uncheckService: AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
-      );
-      if (!availedServiceId || !transactionId || !accountId) {
-        socket.emit("serviceUncheckError", {
-          availedServiceId,
-          message: "Invalid request data provided for uncheckService.",
-        });
-        return;
-      }
-      try {
-        const updatedAS = await prisma.$transaction(async (tx) => {
-          const as = await tx.availedService.findUnique({
-            where: { id: availedServiceId },
-            select: {
-              id: true,
-              status: true,
-              checkedById: true,
-              servedById: true,
-              checkedBy: { select: { id: true, name: true } },
-              servedBy: { select: { id: true, name: true } },
-              transaction: { select: { id: true, status: true } },
-            },
-          });
-
-          if (!as) {
-            throw new Error("Service item not found.");
-          }
-
-          if (as.transaction?.status !== Status.PENDING) {
-            throw new Error(
-              `Cannot uncheck: Transaction status is ${as.transaction?.status}.`,
-            );
-          }
-
-          if (as.status !== Status.PENDING) {
-            throw new Error(`Cannot uncheck: Service status is ${as.status}.`);
-          }
-
-          if (as.checkedById !== accountId) {
-            const checkerName = as.checkedBy?.name || "another user";
-            throw new Error(
-              `Cannot uncheck: Checked by ${as.checkedById ? checkerName : "nobody"}.`,
-            );
-          }
-
-          if (as.servedById) {
-            throw new Error(
-              `Cannot uncheck: Already served by ${as.servedBy?.name || "another user"}.`,
-            );
-          }
-
-          return tx.availedService.update({
-            where: {
-              id: availedServiceId,
-              status: Status.PENDING,
-              servedById: null,
-              checkedById: accountId,
-            },
-            data: { checkedById: null },
-            include: {
-              service: { select: { id: true, title: true } },
-              checkedBy: { select: { id: true, name: true } },
-              servedBy: { select: { id: true, name: true } },
-            },
-          });
-        });
-
-        if (updatedAS) {
-          io.emit("availedServiceUpdated", updatedAS);
-          console.log(
-            `[Socket ${clientId}] AvailedService ${availedServiceId} unchecked by ${accountId}. Broadcasting update.`,
-          );
-
-          checkAndManageCompletionTimer(transactionId);
-        }
-      } catch (error) {
-        console.error(
-          `[Socket ${clientId}] uncheckService ERROR for ${availedServiceId}:`,
-          error,
-        );
-        let userMsg = "Server error unchecking service.";
-
-        if (error.message.includes("Service item not found."))
-          userMsg = "Service not found.";
-        else if (error.message.includes("Cannot uncheck:"))
-          userMsg = error.message;
-        else if (error.message.includes("Cannot uncheck: Checked by"))
-          userMsg = error.message;
-        else if (error.message.includes("Cannot uncheck: Already served by"))
-          userMsg = error.message;
-        else if (error.code === "P2025")
-          userMsg =
-            "Could not uncheck service due to a data mismatch. Please refresh.";
-        else userMsg = `An unexpected error occurred: ${error.message}`;
-
-        socket.emit("serviceUncheckError", {
-          availedServiceId,
-          message: userMsg,
-        });
-      }
-    },
-  );
-
-  socket.on(
-    "markServiceServed",
-    async ({ availedServiceId, transactionId, accountId }) => {
-      console.log(
-        `[Socket ${clientId}] RX markServiceServed: AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
-      );
-      if (!availedServiceId || !transactionId || !accountId) {
-        socket.emit("serviceMarkServedError", {
-          availedServiceId,
-          message: "Invalid request data provided for markServiceServed.",
-        });
-        return;
-      }
-      try {
-        const updatedAS = await prisma.$transaction(async (tx) => {
-          const as = await tx.availedService.findUnique({
-            where: { id: availedServiceId },
-            select: {
-              id: true,
-              status: true,
-              checkedById: true,
-              servedById: true,
-              servedBy: { select: { id: true, name: true } },
-              transaction: { select: { id: true, status: true } },
-            },
-          });
-
-          if (!as) throw new Error("Service item not found.");
-
-          if (as.transaction?.status !== Status.PENDING) {
-            throw new Error(
-              `Cannot mark served: Transaction status is ${as.transaction?.status}.`,
-            );
-          }
-
-          if (as.status !== Status.PENDING)
-            throw new Error(
-              `Cannot mark served: Service status is ${as.status}.`,
-            );
-
-          if (as.servedById)
-            throw new Error(
-              `Cannot mark served: Already served by ${as.servedBy?.name || "another user"}.`,
-            );
-
-          return tx.availedService.update({
-            where: {
-              id: availedServiceId,
-              status: Status.PENDING,
-              servedById: null,
-            },
-            data: {
-              servedById: accountId,
-              status: Status.DONE,
-              completedAt: new Date(),
-            },
-            include: {
-              service: { select: { id: true, title: true } },
-              checkedBy: { select: { id: true, name: true } },
-              servedBy: { select: { id: true, name: true } },
-            },
-          });
-        });
-
-        if (updatedAS) {
-          io.emit("availedServiceUpdated", updatedAS);
-          console.log(
-            `[Socket ${clientId}] AvailedService ${availedServiceId} MARKED as served by ${accountId}. Broadcasting update.`,
-          );
-
-          checkAndManageCompletionTimer(transactionId);
-        }
-      } catch (error) {
-        console.error(
-          `[Socket ${clientId}] markServiceServed ERROR for ${availedServiceId}:`,
-          error,
-        );
-        let userMsg = "Could not mark service as served.";
-
-        if (error.message.includes("Service item not found."))
-          userMsg = "Service not found.";
-        else if (error.message.includes("Cannot mark served:"))
-          userMsg = error.message;
-        else if (
-          error.message.includes("Cannot mark served: Already served by")
-        )
-          userMsg = error.message;
-        else if (
-          error.message.includes(
-            "Cannot mark served: Service must be checked first",
-          )
-        )
-          userMsg = error.message;
-        else if (error.code === "P2025")
-          userMsg =
-            "Could not mark service due to a data mismatch. Please refresh.";
-        else userMsg = `An unexpected error occurred: ${error.message}`;
-
-        socket.emit("serviceMarkServedError", {
-          availedServiceId,
-          message: userMsg,
-        });
-      }
-    },
-  );
-
-  socket.on(
-    "unmarkServiceServed",
-    async ({ availedServiceId, transactionId, accountId }) => {
-      console.log(
-        `[Socket ${clientId}] RX unmarkServiceServed: AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
-      );
-      if (!availedServiceId || !transactionId || !accountId) {
-        socket.emit("serviceUnmarkServedError", {
-          availedServiceId,
-          message: "Invalid request data provided for unmarkServiceServed.",
-        });
-        return;
-      }
-      try {
-        const updatedAS = await prisma.$transaction(async (tx) => {
-          const as = await tx.availedService.findUnique({
-            where: { id: availedServiceId },
-            select: {
-              id: true,
-              status: true,
-              checkedById: true,
-              servedById: true,
-              servedBy: { select: { id: true, name: true } },
-              transaction: { select: { id: true, status: true } },
-            },
-          });
-
-          if (!as) throw new Error("Service item not found.");
-
-          if (as.transaction?.status !== Status.PENDING) {
-            throw new Error(
-              `Cannot unmark served: Transaction status is ${as.transaction?.status}.`,
-            );
-          }
-
-          if (as.status !== Status.DONE)
-            throw new Error(
-              `Cannot unmark served: Service status is ${as.status}.`,
-            );
-
-          if (as.servedById !== accountId)
-            throw new Error(
-              `Cannot unmark served: Not served by you (Served by ${as.servedBy?.name || "N/A"}).`,
-            );
-
-          return tx.availedService.update({
-            where: {
-              id: availedServiceId,
-              status: Status.DONE,
-              servedById: accountId,
-            },
-            data: {
-              servedById: null,
-              status: Status.PENDING,
-              completedAt: null,
-            },
-            include: {
-              service: { select: { id: true, title: true } },
-              checkedBy: { select: { id: true, name: true } },
-              servedBy: { select: { id: true, name: true } },
-            },
-          });
-        });
-
-        if (updatedAS) {
-          io.emit("availedServiceUpdated", updatedAS);
-          console.log(
-            `[Socket ${clientId}] AvailedService ${availedServiceId} UNMARKED as served by ${accountId}. Broadcasting update.`,
-          );
-
-          cancelCompletionTimer(transactionId);
-        }
-      } catch (error) {
-        console.error(
-          `[Socket ${clientId}] unmarkServiceServed ERROR for ${availedServiceId}:`,
-          error,
-        );
-        let userMsg = "Could not unmark service as served.";
-
-        if (error.message.includes("Service item not found."))
-          userMsg = "Service not found.";
-        else if (error.message.includes("Cannot unmark served:"))
-          userMsg = error.message;
-        else if (
-          error.message.includes("Cannot unmark served: Not served by you")
-        )
-          userMsg = error.message;
-        else if (error.code === "P2025")
-          userMsg =
-            "Could not unmark service due to a data mismatch. Please refresh.";
-        else userMsg = `An unexpected error occurred: ${error.message}`;
-
-        socket.emit("serviceUnmarkServedError", {
-          availedServiceId,
-          message: userMsg,
-        });
-      }
-    },
-  );
-
-  socket.on("disconnect", (reason) => {
-    console.log(
-      `Client disconnected: ${clientId}, Account: ${connectedAccountId}, Reason: ${reason}`,
-    );
-  });
-
-  socket.on("connect_error", (err) => {
-    console.error(`Socket connect_error for ${clientId}: ${err.message}`);
-  });
-});
+// Socket.IO connection handler is defined earlier
 
 httpServer.listen(PORT, () => {
   console.log(`🚀 BeautyFeel Socket Server running on port ${PORT}`);
   console.log(`🔗 Allowed CORS origins: ${allowedOrigins.join(", ")}`);
-  if (!resendKey && process.env.NODE_ENV !== "test") {
-    console.error(
-      "🛑 Resend API Key is MISSING. Email functionalities will be impaired or disabled.",
+  if (resendKey) {
+    console.log(
+      `📧 Email Retry Config: Max Retries=${MAX_EMAIL_RETRIES}, Base Delay=${BASE_EMAIL_RETRY_DELAY_MS}ms, Jitter=${EMAIL_RETRY_JITTER_MS}ms`,
+    );
+  } else {
+    console.warn(
+      `[Email] RESEND_API_KEY not set. Email functionalities DISABLED.`,
     );
   }
 });

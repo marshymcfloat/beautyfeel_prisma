@@ -6,7 +6,15 @@ declare global {
 }
 
 const prismaClientSingleton = () => {
-  return new PrismaClient({}).$extends(withAccelerate());
+  // Add the transactionOptions object here
+  return new PrismaClient({
+    // Configure interactive transaction timeout
+    transactionOptions: {
+      timeout: 10000,
+    },
+    // Optional: Add logging if you want more visibility
+    // log: ['query', 'info', 'warn', 'error'],
+  }).$extends(withAccelerate());
 };
 
 type PrismaClientSingleton = ReturnType<typeof prismaClientSingleton>;

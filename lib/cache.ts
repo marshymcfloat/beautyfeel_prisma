@@ -20,7 +20,6 @@ export type CacheKey =
   | "payslips_ManagePayslips"
   | "accounts_ManagePayslips" // For employee list in ManagePayslips
   | "requests_ManagePayslips" // For payslip requests in ManagePayslips
-  // --- Existing New Keys ---
   | "branches_ManageGiftCertificates" // Branches for GC form
   | "items_ManageGiftCertificates" // Services/Sets for GC form
   | "activeGCs_ManageGiftCertificates" // List of active GCs
@@ -29,9 +28,12 @@ export type CacheKey =
   | "branches_ManageBranches" // List of branches in ManageBranches
   | "customers_SendEmail" // For the customer list in SendEmailToCustomers component
   | "emailTemplates_ManageEmailTemplates" // For the list of email templates
-  // --- ADD THIS NEW KEY ---
-  | "customers_ManageCustomers"; // For the list of customers in ManageCustomers component
-// -------------------------
+  | "customers_ManageCustomers" // For the list of customers in ManageCustomers component
+  | "salesData_daily"
+  | "salesData_monthly"
+  | "salesData_yearly"
+  | "allBranchesList_sales"
+  | "allServicesList_transactionModal"; // <-- NEW KEY for Add Service in Transaction Modal
 
 const initialCacheState: Record<CacheKey, CacheEntry<any, any>> = {
   services_ManageServices: { data: null, lastFetchTime: null },
@@ -65,7 +67,6 @@ const initialCacheState: Record<CacheKey, CacheEntry<any, any>> = {
     lastFetchTime: null,
     lastFetchParams: undefined,
   },
-  // --- Initialize Existing New Keys ---
   branches_ManageGiftCertificates: {
     data: null,
     lastFetchTime: null,
@@ -101,33 +102,50 @@ const initialCacheState: Record<CacheKey, CacheEntry<any, any>> = {
     lastFetchTime: null,
     lastFetchParams: undefined,
   },
-  // --- INITIALIZE THE NEW KEY HERE ---
   emailTemplates_ManageEmailTemplates: {
     data: null,
     lastFetchTime: null,
     lastFetchParams: undefined,
   },
-  // --- INITIALIZE THE NEW KEY HERE ---
   customers_ManageCustomers: {
     data: null,
     lastFetchTime: null,
     lastFetchParams: undefined,
   },
-  // -----------------------------------
+  salesData_daily: {
+    data: null,
+    lastFetchTime: null,
+    lastFetchParams: undefined,
+  },
+  salesData_monthly: {
+    data: null,
+    lastFetchTime: null,
+    lastFetchParams: undefined,
+  },
+  salesData_yearly: {
+    data: null,
+    lastFetchTime: null,
+    lastFetchParams: undefined,
+  },
+  allBranchesList_sales: {
+    data: null,
+    lastFetchTime: null,
+    lastFetchParams: undefined,
+  },
+  allServicesList_transactionModal: {
+    // <-- INITIALIZE NEW KEY
+    data: null,
+    lastFetchTime: null,
+    lastFetchParams: undefined,
+  },
 };
 
-// Deep copy initial state to ensure dataCache is mutable without affecting initialCacheState
-// Note: In a real app with server-side cache (e.g., Redis), dataCache would likely be
-// a mechanism interacting with that store, not an in-memory object like this.
-// This in-memory approach is useful for simple server component caching within a single request/server instance.
-// For broader cache invalidation across server instances, a shared cache store is needed.
 const dataCache: Record<CacheKey, CacheEntry<any, any>> = JSON.parse(
   JSON.stringify(initialCacheState),
 );
 
 const CACHE_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
-// Helper for deep equality check for params
 function deepEqual(obj1: any, obj2: any): boolean {
   if (obj1 === obj2) return true;
   if (
@@ -139,14 +157,11 @@ function deepEqual(obj1: any, obj2: any): boolean {
     return obj1 === obj2;
   }
   if (typeof obj1 !== "object" || typeof obj2 !== "object") {
-    return obj1 === obj2; // Handles primitives
+    return obj1 === obj2;
   }
-
   const keys1 = Object.keys(obj1);
   const keys2 = Object.keys(obj2);
-
   if (keys1.length !== keys2.length) return false;
-
   for (const key of keys1) {
     if (!keys2.includes(key) || !deepEqual(obj1[key], obj2[key])) {
       return false;
@@ -159,35 +174,40 @@ export function getCachedData<T, P = any>(
   key: CacheKey,
   currentParams?: P,
 ): T | null {
-  const entry = dataCache[key] as CacheEntry<T, P>; // Type assertion
+  const entry = dataCache[key] as CacheEntry<T, P>;
+  if (!entry) {
+    // console.warn(`[Cache] Attempted to get data for unknown key: ${key}`);
+    return null;
+  }
+
   if (
     entry.data &&
     entry.lastFetchTime &&
     Date.now() - entry.lastFetchTime < CACHE_DURATION_MS
   ) {
-    // If parameters are involved for this key
-    if (
-      key === "transactions_ManageTransactions" ||
-      key === "vouchers_ManageVouchers" ||
-      key === "payslips_ManagePayslips" ||
-      key === "accounts_ManagePayslips" ||
-      key === "requests_ManagePayslips"
-    ) {
+    const keysWithParams: CacheKey[] = [
+      "transactions_ManageTransactions",
+      "vouchers_ManageVouchers",
+      "payslips_ManagePayslips",
+      "accounts_ManagePayslips",
+      "requests_ManagePayslips",
+    ];
+
+    if (keysWithParams.includes(key)) {
       if (deepEqual(entry.lastFetchParams, currentParams)) {
         // console.log(`[Cache] HIT for ${key} with matching params:`, currentParams);
         return entry.data;
       } else {
         // console.log(`[Cache] MISS for ${key} due to param mismatch. Cached:`, entry.lastFetchParams, "Requested:", currentParams);
-        return null; // Params don't match, treat as cache miss
+        return null;
       }
     } else {
-      // For keys without parameters (like simple lists)
-      // console.log(`[Cache] HIT for ${key} (no params involved)`);
+      // console.log(`[Cache] HIT for ${key} (params not used for invalidation or no params)`);
       return entry.data;
     }
   }
   // console.log(`[Cache] MISS for ${key} (stale, no data, or initial load). Requested params:`, currentParams);
-  return null; // Cache is stale or empty
+  return null;
 }
 
 export function setCachedData<T, P = any>(
@@ -195,16 +215,17 @@ export function setCachedData<T, P = any>(
   data: T,
   params?: P,
 ): void {
+  const entry = dataCache[key] as CacheEntry<T, P>;
+  if (!entry) {
+    // console.warn(`[Cache] Attempted to set data for unknown key: ${key}`);
+    return;
+  }
   // console.log(`[Cache] SET for ${key} with params:`, params);
-  const entry = dataCache[key] as CacheEntry<T, P>; // Type assertion
   entry.data = data;
   entry.lastFetchTime = Date.now();
-
-  // Only store params if they are provided (useful for list with filters/pagination)
   if (params !== undefined) {
     entry.lastFetchParams = params;
   } else {
-    // Ensure no old params are kept if params are not used for this fetch
     delete entry.lastFetchParams;
   }
 }
@@ -214,14 +235,16 @@ export function invalidateCache(keys?: CacheKey | CacheKey[]): void {
     ? Array.isArray(keys)
       ? keys
       : [keys]
-    : (Object.keys(dataCache) as CacheKey[]); // If no key specified, invalidate all
+    : (Object.keys(dataCache) as CacheKey[]);
 
   keysToInvalidate.forEach((key) => {
     if (dataCache[key]) {
       // console.log(`[Cache] INVALIDATE for ${key}`);
       dataCache[key].data = null;
       dataCache[key].lastFetchTime = null;
-      delete dataCache[key].lastFetchParams; // Also clear parameters on invalidation
+      delete dataCache[key].lastFetchParams;
+    } else {
+      // console.warn(`[Cache] Attempted to invalidate unknown key: ${key}`);
     }
   });
 }

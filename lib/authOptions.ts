@@ -1,10 +1,11 @@
 // lib/authOptions.ts
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { PrismaClient, Role } from "@prisma/client"; // Assuming Role enum is from Prisma
+import { PrismaClient, Role } from "@prisma/client";
 import { compare } from "bcryptjs";
 
 const prisma = new PrismaClient();
+const isDevelopment = process.env.NODE_ENV === "development";
 
 export const authOptions: NextAuthOptions = {
   secret: process.env.NEXTAUTH_SECRET, // Essential: Set this in your .env
@@ -17,77 +18,111 @@ export const authOptions: NextAuthOptions = {
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
+        // Validate input
         if (!credentials?.username || !credentials.password) {
-          console.error("[AUTH_AUTHORIZE] Missing username or password.");
-          return null; // Or throw an error that NextAuth can display
+          if (isDevelopment) {
+            console.warn("[AUTH_AUTHORIZE] Missing username or password.");
+          }
+          return null;
         }
 
         const { username, password } = credentials;
+        const trimmedUsername = username.trim();
+
+        if (trimmedUsername.length === 0 || trimmedUsername.length > 100) {
+          if (isDevelopment) {
+            console.warn("[AUTH_AUTHORIZE] Invalid username format.");
+          }
+          return null;
+        }
+
+        // Validate password format
+        if (password.length === 0 || password.length > 500) {
+          if (isDevelopment) {
+            console.warn("[AUTH_AUTHORIZE] Invalid password format.");
+          }
+          return null;
+        }
 
         try {
+          // Find user by username (case-sensitive)
           const user = await prisma.account.findUnique({
-            where: { username: username },
+            where: { username: trimmedUsername },
+            select: {
+              id: true,
+              username: true,
+              password: true,
+              name: true,
+              email: true,
+              role: true,
+              branchId: true,
+              mustChangePassword: true,
+            },
           });
 
-          if (!user) {
-            console.warn(`[AUTH_AUTHORIZE] User not found: ${username}`);
+          // Always perform password comparison to prevent timing attacks
+          // Use a dummy hash if user doesn't exist
+          const dummyHash =
+            "$2a$10$dummy.hash.to.prevent.timing.attacks.by.ensuring.constant.time.comparison";
+          const hashToCompare = user?.password || dummyHash;
+
+          // Compare passwords (always takes same time regardless of user existence)
+          const isValidPassword = await compare(password, hashToCompare);
+
+          // Only return user if both user exists AND password is valid
+          if (!user || !isValidPassword) {
+            if (isDevelopment) {
+              console.warn(
+                `[AUTH_AUTHORIZE] Authentication failed for username: ${trimmedUsername}`,
+              );
+            }
             return null;
           }
 
-          const isValidPassword = await compare(password, user.password);
-
-          if (!isValidPassword) {
-            console.warn(
-              `[AUTH_AUTHORIZE] Invalid password for user: ${username}`,
+          if (isDevelopment) {
+            console.log(
+              `[AUTH_AUTHORIZE] Auth Success: User ${user.username} authorized.`,
             );
-            return null;
           }
 
-          console.log(
-            `[AUTH_AUTHORIZE] Auth Success: User ${user.username} authorized.`,
-          );
           // This object MUST match the 'User' interface in your next-auth.d.ts
           const authorizedUser = {
             id: user.id,
             name: user.name,
-            email: user.email, // Ensure your Account model has email
-            username: user.username, // Adding username to the user object
+            email: user.email,
+            username: user.username,
             role: user.role,
             branchId: user.branchId,
             mustChangePassword: user.mustChangePassword,
           };
-          console.log(
-            "[AUTH_AUTHORIZE] Returning user object:",
-            JSON.stringify(authorizedUser, null, 2),
-          );
+
           return authorizedUser;
         } catch (error) {
           console.error("[AUTH_AUTHORIZE] Error during authorization:", error);
+          // Don't expose internal errors to client
           return null;
         }
       },
     }),
   ],
 
-  session: {
-    strategy: "jwt", // Using JWT strategy is crucial for getToken in middleware
-  },
-
   callbacks: {
     async jwt({ token, user, trigger, session: sessionUpdateData }) {
       // The 'user' object is available only on initial sign-in.
-      // It's the object returned by the 'authorize' callback.
       if (user) {
-        console.log(
-          '[AUTH_JWT] Initial sign-in, "user" object:',
-          JSON.stringify(user, null, 2),
-        );
-        const typedUser = user as import("next-auth").User; // Use the augmented User type
+        if (isDevelopment) {
+          console.log('[AUTH_JWT] Initial sign-in, "user" object:', {
+            id: user.id,
+            username: (user as any).username,
+            mustChangePassword: user.mustChangePassword,
+          });
+        }
+        const typedUser = user as import("next-auth").User;
 
         token.id = typedUser.id;
         token.name = typedUser.name;
         token.email = typedUser.email;
-        token.username = (typedUser as any).username; // If username added in authorize
+        token.username = (typedUser as any).username;
         token.role = typedUser.role;
         token.branchId = typedUser.branchId;
         token.mustChangePassword = typedUser.mustChangePassword;
@@ -98,25 +133,20 @@ export const authOptions: NextAuthOptions = {
         trigger === "update" &&
         typeof sessionUpdateData?.mustChangePassword === "boolean"
       ) {
-        console.log(
-          "[AUTH_JWT] Session update triggered. New mustChangePassword:",
-          sessionUpdateData.mustChangePassword,
-        );
+        if (isDevelopment) {
+          console.log(
+            "[AUTH_JWT] Session update triggered. New mustChangePassword:",
+            sessionUpdateData.mustChangePassword,
+          );
+        }
         token.mustChangePassword = sessionUpdateData.mustChangePassword;
       }
-      console.log(
-        "[AUTH_JWT] Returning token:",
-        JSON.stringify(token, null, 2),
-      );
+
       return token;
     },
 
     async session({ session, token }) {
       // The 'token' object is the JWT payload from the 'jwt' callback.
-      console.log(
-        '[AUTH_SESSION] "token" object for session:',
-        JSON.stringify(token, null, 2),
-      );
       if (token && session.user) {
         session.user.id = token.id as string;
         session.user.name = token.name as string | null;
@@ -126,18 +156,36 @@ export const authOptions: NextAuthOptions = {
         session.user.branchId = token.branchId as string | null;
         session.user.mustChangePassword = token.mustChangePassword as boolean;
       }
-      console.log(
-        "[AUTH_SESSION] Returning session:",
-        JSON.stringify(session, null, 2),
-      );
       return session;
     },
   },
 
   pages: {
-    signIn: "/login", // Your designated login page/modal trigger route
-    // error: "/auth/error", // Optional: custom error page for auth errors
+    signIn: "/login",
+    error: "/login", // Redirect auth errors to login page
   },
 
-  // debug: process.env.NODE_ENV === "development", // Useful for verbose logging from NextAuth
+  // Security: Prevent CSRF attacks
+  useSecureCookies: process.env.NODE_ENV === "production",
+
+  // Session configuration
+  session: {
+    strategy: "jwt", // Using JWT strategy is crucial for getToken in middleware
+    maxAge: 30 * 24 * 60 * 60, // 30 days
+    updateAge: 24 * 60 * 60, // 24 hours
+  },
+
+  // Events for logging (optional)
+  events: {
+    async signIn({ user, isNewUser }) {
+      if (isDevelopment) {
+        console.log(`[AUTH_EVENT] User signed in: ${user.id}`);
+      }
+    },
+    async signOut({ session }) {
+      if (isDevelopment) {
+        console.log(`[AUTH_EVENT] User signed out: ${session?.user?.id}`);
+      }
+    },
+  },
 };

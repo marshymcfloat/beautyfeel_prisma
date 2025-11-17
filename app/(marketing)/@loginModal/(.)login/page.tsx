@@ -60,41 +60,40 @@ export default function InterceptedLoginPage() {
       }
 
       try {
-        console.log(
-          `[LOGIN_MODAL] Attempting sign in. Target callback for initial navigation: ${callbackUrl}`,
-        );
         const result = await signIn("credentials", {
-          username: inputs.username,
+          username: inputs.username.trim(),
           password: inputs.password,
           redirect: false,
         });
 
-        console.log("[LOGIN_MODAL] signIn result:", result);
-
         if (result?.ok && !result.error) {
-          console.log(
-            `[LOGIN_MODAL] Sign-in successful. Navigating via window.location.href to: ${callbackUrl}. Middleware will handle final destination.`,
-          );
-
-          window.location.href = callbackUrl;
-
+          // Clear form on success
+          setInputs({ username: "", password: "" });
+          setErrorMessage(null);
+          
+          // Close modal and navigate
+          router.back();
+          router.push(callbackUrl);
+          router.refresh(); // Refresh to get updated session
           return;
         } else {
-          console.error("[LOGIN_MODAL] Login failed:", result?.error);
+          // Handle different error types gracefully
           if (result?.error === "CredentialsSignin") {
-            setErrorMessage("Invalid username or password.");
+            setErrorMessage("Invalid username or password. Please try again.");
+          } else if (result?.error === "Configuration") {
+            setErrorMessage("Server configuration error. Please contact support.");
           } else {
-            setErrorMessage(result?.error || "Login failed. Please try again.");
+            setErrorMessage("Login failed. Please check your credentials and try again.");
           }
         }
       } catch (error) {
-        console.error("[LOGIN_MODAL] Unexpected error during sign in:", error);
+        console.error("[LOGIN_MODAL] Unexpected error:", error);
         setErrorMessage(
           "An unexpected error occurred. Please check your connection and try again.",
         );
+      } finally {
+        setIsSubmitting(false);
       }
-
-      setIsSubmitting(false);
     },
     [inputs, callbackUrl],
   );
