@@ -180,6 +180,9 @@ export default function ManageTransactionsModal({
                 originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
                 originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
                 serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
+                postTreatmentEmailSentAt: as.postTreatmentEmailSentAt
+                  ? new Date(as.postTreatmentEmailSentAt)
+                  : null, // Ensure undefined becomes null
                 units: as.units.map((unit) => ({
                   ...unit,
                   checkedBy: unit.checkedBy
@@ -234,6 +237,9 @@ export default function ManageTransactionsModal({
               originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
               originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
               serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
+              postTreatmentEmailSentAt: as.postTreatmentEmailSentAt
+                ? new Date(as.postTreatmentEmailSentAt)
+                : null, // Ensure undefined becomes null
               units: as.units.map((unit) => ({
                 ...unit,
                 checkedBy: unit.checkedBy
@@ -506,6 +512,9 @@ export default function ManageTransactionsModal({
               originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
               originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
               serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
+              postTreatmentEmailSentAt: as.postTreatmentEmailSentAt
+                ? new Date(as.postTreatmentEmailSentAt)
+                : null, // Ensure undefined becomes null
               units: as.units?.map((unit) => ({
                 ...unit,
                 checkedBy: unit.checkedBy
