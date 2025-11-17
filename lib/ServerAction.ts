@@ -1108,7 +1108,7 @@ interface ActionResult {
   };
 }
 
-type GCValidationDetails = GiftCertificate & {
+export type GCValidationDetails = GiftCertificate & {
   services: Pick<Service, "id" | "title" | "price">[];
   serviceSets: Pick<ServiceSet, "id" | "title" | "price">[];
   purchaserCustomer?: Pick<Customer, "id" | "name" | "email"> | null;
