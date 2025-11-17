@@ -83,10 +83,22 @@ export default function ManageTransactions() {
         });
 
         if (transactionsRes.success && transactionsRes.data) {
-          setTransactions(transactionsRes.data);
+          // Normalize undefined to null for fields that can be undefined in TransactionForManagement
+          // but are required to be string | null (not undefined) in TransactionListData
+          const normalizedTransactions: TransactionListData[] =
+            transactionsRes.data.map((tx) => ({
+              ...tx,
+              availedServices: tx.availedServices.map((as) => ({
+                ...as,
+                originatingSetId: as.originatingSetId ?? null,
+                originatingSetTitle: as.originatingSetTitle ?? null,
+                serviceSetId: as.serviceSetId ?? null,
+              })),
+            }));
+          setTransactions(normalizedTransactions);
           setCachedData(
             TRANSACTIONS_CACHE_KEY,
-            transactionsRes.data,
+            normalizedTransactions,
             currentFilters,
           );
         } else {
