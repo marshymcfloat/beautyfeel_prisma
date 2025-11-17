@@ -582,11 +582,11 @@ export default function CashierClient({
                   className="flex items-center justify-between rounded border border-customGray/30 p-2"
                 >
                   <div className="flex-1">
-                    <p className="text-sm font-medium">{rec.serviceTitle}</p>
+                    <p className="text-sm font-medium">
+                      {rec.originatingService?.title || "Unknown Service"}
+                    </p>
                     <p className="text-xs text-gray-500">
-                      {rec.followUpPolicy === FollowUpPolicy.AFTER_X_DAYS
-                        ? `After ${rec.daysAfter} days`
-                        : rec.followUpPolicy}
+                      {rec.originatingService?.followUpPolicy || "NONE"}
                     </p>
                   </div>
                   <div className="flex gap-2">
@@ -618,7 +618,7 @@ export default function CashierClient({
                 disabled={isCashierDisabled}
                 className="mt-2 w-full rounded bg-customDarkPink px-4 py-2 text-sm text-white hover:bg-customDarkPink/90 disabled:opacity-50"
               >
-                Add {selectedRecommendation.serviceTitle} to Cart
+                Add {selectedRecommendation.originatingService?.title || "Service"} to Cart
               </button>
             )}
           </div>
