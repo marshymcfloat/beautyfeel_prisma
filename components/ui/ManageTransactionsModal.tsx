@@ -177,6 +177,9 @@ export default function ManageTransactionsModal({
                 ...as,
                 createdAt: new Date(as.createdAt),
                 updatedAt: new Date(as.updatedAt),
+                originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
+                originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
+                serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
               })),
             })),
           );
@@ -197,6 +200,9 @@ export default function ManageTransactionsModal({
               ...as,
               createdAt: new Date(as.createdAt),
               updatedAt: new Date(as.updatedAt),
+              originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
+              originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
+              serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
             })),
           }));
           setTransactions(processedData);
@@ -435,6 +441,9 @@ export default function ManageTransactionsModal({
               ...as,
               createdAt: new Date(as.createdAt),
               updatedAt: new Date(as.updatedAt),
+              originatingSetId: as.originatingSetId ?? null, // Ensure undefined becomes null
+              originatingSetTitle: as.originatingSetTitle ?? null, // Ensure undefined becomes null
+              serviceSetId: as.serviceSetId ?? null, // Ensure undefined becomes null
             }),
           ),
         };
