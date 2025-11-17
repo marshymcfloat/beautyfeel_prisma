@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from "react";
 import { ListChecks, Eye, X, Loader2, AlertCircle } from "lucide-react";
 import { getServedServicesTodayByUser } from "@/lib/ServerAction";
-import { AvailedServicesProps } from "@/lib/Types";
+import { SalaryBreakdownItem } from "@/lib/Types";
 import Modal from "@/components/Dialog/Modal";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button";
@@ -38,7 +38,7 @@ export default function UserServedTodayWidget({
   loggedInUserId,
   className,
 }: UserServedTodayWidgetProps) {
-  const [servedServices, setServedServices] = useState<AvailedServicesProps[]>(
+  const [servedServices, setServedServices] = useState<SalaryBreakdownItem[]>(
     [],
   );
   const [isLoading, setIsLoading] = useState(true);
@@ -169,14 +169,14 @@ export default function UserServedTodayWidget({
                   <li key={item.id} className="p-3 hover:bg-gray-50">
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-customBlack">
-                        {item.service?.title || "Unknown Service"}
+                        {item.serviceTitle || "Unknown Service"}
                       </span>
                       <span className="text-xs text-gray-500">
-                        Qty: {item.quantity}
+                        Commission: ₱{item.commissionEarned.toLocaleString()}
                       </span>
                     </div>
                     <div className="mt-0.5 text-sm text-gray-600">
-                      Customer: {item.transaction?.customer?.name || "N/A"}
+                      Customer: {item.customerName || "N/A"}
                     </div>
                     <div className="mt-0.5 text-xs text-gray-400">
                       Completed: {formatCompletedAtToPHT(item.completedAt)}
