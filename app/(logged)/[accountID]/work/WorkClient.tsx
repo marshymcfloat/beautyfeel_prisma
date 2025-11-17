@@ -300,11 +300,19 @@ export default function WorkClient({
 
   const isCheckboxDisabled = useCallback(
     (service: AvailedServicesPropsForTransactions): boolean => {
-      return (
-        processingCheckActions.has(service.id) ||
-        (!!service.checkedById && service.checkedById !== accountId) ||
-        !!service.servedById
-      );
+      // Check if any unit is being processed
+      if (processingCheckActions.has(service.id)) return true;
+      
+      // Check if any unit is checked by someone else or served
+      if (service.units && service.units.length > 0) {
+        return service.units.some(
+          (unit) =>
+            (unit.checkedById && unit.checkedById !== accountId) ||
+            !!unit.servedById
+        );
+      }
+      
+      return false;
     },
     [accountId, processingCheckActions],
   );
@@ -462,7 +470,7 @@ export default function WorkClient({
                     </p>
                   </div>
                   <div className="ml-4 flex items-center gap-2">
-                    {service.checkedById === accountId ? (
+                    {service.units && service.units.some((unit) => unit.checkedById === accountId) ? (
                       <button
                         onClick={() => handleServiceCheckToggle(service, false)}
                         disabled={isCheckboxDisabled(service)}
