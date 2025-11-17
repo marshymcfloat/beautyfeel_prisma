@@ -15,11 +15,11 @@ import {
   CircleDashed,
 } from "lucide-react";
 import { getActiveTransactions } from "@/lib/ServerAction";
-import { TransactionProps, AvailedServicesProps } from "@/lib/Types";
+import { TransactionPropsForTransactions, AvailedServicesProps } from "@/lib/Types";
 import { Status } from "@prisma/client";
 
 interface WorkClientProps {
-  initialTransactions: TransactionProps[];
+  initialTransactions: TransactionPropsForTransactions[];
   accountId: string;
   loggedInUserId: string;
 }
@@ -31,10 +31,10 @@ export default function WorkClient({
 }: WorkClientProps) {
   const router = useRouter();
   const [fetchedTransactions, setFetchedTransactions] = useState<
-    TransactionProps[] | null
+    TransactionPropsForTransactions[] | null
   >(initialTransactions || null);
   const [selectedTransaction, setSelectedTransaction] =
-    useState<TransactionProps | null>(null);
+    useState<TransactionPropsForTransactions | null>(null);
   const [loading, setLoading] = useState(false);
   const [socket, setSocket] = useState<Socket | null>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -166,7 +166,7 @@ export default function WorkClient({
   );
 
   const handleTransactionCompletion = useCallback(
-    (completedTransaction: TransactionProps) => {
+    (completedTransaction: TransactionPropsForTransactions) => {
       if (!completedTransaction?.id) return;
       setFetchedTransactions(
         (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
@@ -226,16 +226,8 @@ export default function WorkClient({
       if (!Array.isArray(data)) {
         throw new Error("Invalid data received from server.");
       }
-      const processedData = data.map((tx) => ({
-        ...tx,
-        createdAt: tx.createdAt ? new Date(tx.createdAt) : new Date(), // createdAt is required, use current date as fallback
-        bookedFor: tx.bookedFor ? new Date(tx.bookedFor) : null, // bookedFor can be null, not undefined
-        availedServices:
-          tx.availedServices?.map((service) => ({
-            ...service,
-          })) || [],
-      }));
-      setFetchedTransactions(processedData);
+      // getActiveTransactions already returns TransactionPropsForTransactions[] with proper types
+      setFetchedTransactions(data);
     } catch (err: any) {
       setError(`Fetch error: ${err.message || "Unknown error"}`);
     } finally {
@@ -247,8 +239,8 @@ export default function WorkClient({
     if (!fetchedTransactions)
       return { serveNowTransactions: [], futureTransactions: [] };
 
-    const serveNowItems: TransactionProps[] = [];
-    const futureItems: TransactionProps[] = [];
+    const serveNowItems: TransactionPropsForTransactions[] = [];
+    const futureItems: TransactionPropsForTransactions[] = [];
     const now = new Date();
 
     fetchedTransactions.forEach((tx) => {
@@ -261,7 +253,7 @@ export default function WorkClient({
         }
       }
     });
-    const sortByBookedFor = (a: TransactionProps, b: TransactionProps) =>
+    const sortByBookedFor = (a: TransactionPropsForTransactions, b: TransactionPropsForTransactions) =>
       (a.bookedFor?.getTime() ?? 0) - (b.bookedFor?.getTime() ?? 0);
     serveNowItems.sort(sortByBookedFor);
     futureItems.sort(sortByBookedFor);
@@ -271,7 +263,7 @@ export default function WorkClient({
     };
   }, [fetchedTransactions]);
 
-  const handleSelectTransaction = (transaction: TransactionProps) => {
+  const handleSelectTransaction = (transaction: TransactionPropsForTransactions) => {
     setError(null);
     setSelectedTransaction(transaction);
   };
@@ -318,7 +310,7 @@ export default function WorkClient({
   );
 
   const renderTransactionTable = (
-    transactions: TransactionProps[],
+    transactions: TransactionPropsForTransactions[],
     title: string,
   ) => (
     <div className="mb-1">

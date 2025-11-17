@@ -6,7 +6,7 @@ import { getActiveTransactions } from "@/lib/ServerAction";
 import WorkClient from "./WorkClient";
 import { WorkSkeleton } from "@/components/ui/skeletons/WorkSkeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import type { TransactionProps } from "@/lib/Types";
+import type { TransactionPropsForTransactions } from "@/lib/Types";
 
 interface PageProps {
   params: Promise<{ accountID: string }>;
@@ -18,7 +18,7 @@ async function WorkData({ accountID, loggedInUserId }: {
 }) {
   // Fetch initial transactions
   const transactions = await getActiveTransactions(loggedInUserId);
-  const transactionsArray: TransactionProps[] = Array.isArray(transactions)
+  const transactionsArray: TransactionPropsForTransactions[] = Array.isArray(transactions)
     ? transactions
     : [];
 
