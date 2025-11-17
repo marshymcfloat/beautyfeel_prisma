@@ -89,6 +89,10 @@ export default function ManageTransactions() {
           const normalizedTransactions: TransactionListData[] =
             transactionsRes.data.map((tx) => ({
               ...tx,
+              // Normalize nullable fields that might be undefined
+              voucherId: tx.voucherId ?? null,
+              branchId: tx.branchId ?? null,
+              giftCertificateId: tx.giftCertificateId ?? null,
               availedServices: tx.availedServices.map((as) => ({
                 ...as,
                 originatingSetId: as.originatingSetId ?? null,
