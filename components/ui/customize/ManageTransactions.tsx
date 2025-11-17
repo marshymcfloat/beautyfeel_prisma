@@ -104,8 +104,10 @@ export default function ManageTransactions() {
                 units: as.units.map((unit) => ({
                   ...unit,
                   // Use the fields that are now included in the server action response
-                  checkedById: (unit as any).checkedById ?? unit.checkedBy?.id ?? null,
-                  servedById: (unit as any).servedById ?? unit.servedBy?.id ?? null,
+                  checkedById:
+                    (unit as any).checkedById ?? unit.checkedBy?.id ?? null,
+                  servedById:
+                    (unit as any).servedById ?? unit.servedBy?.id ?? null,
                   createdAt: (unit as any).createdAt ?? new Date(),
                   updatedAt: (unit as any).updatedAt ?? new Date(),
                   // Construct full ClientAccountIncluded objects from the minimal ones returned by server
@@ -650,11 +652,15 @@ export default function ManageTransactions() {
                           {formatCurrency(item.price)}
                         </td>
                         <td className="px-2 py-1">
-                          {item.servedBy?.name ?? "-"}
+                          {item.units && item.units.length > 0
+                            ? (item.units[0].servedBy?.name ?? "-")
+                            : "-"}
                         </td>
                         <td className="px-2 py-1">
-                          {item.completedAt
-                            ? formatShortDate(item.completedAt)
+                          {item.units && item.units.length > 0
+                            ? item.units[0].completedAt
+                              ? formatShortDate(item.units[0].completedAt)
+                              : "-"
                             : "-"}
                         </td>
                       </tr>
