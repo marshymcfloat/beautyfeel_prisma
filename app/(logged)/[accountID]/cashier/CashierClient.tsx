@@ -645,17 +645,9 @@ export default function CashierClient({
         )}
 
         <ServicesSelect
-          items={itemsToDisplay}
-          onSelect={(item) =>
-            dispatch(
-              cashierActions.selectItem({
-                id: item.id,
-                title: item.title,
-                price: item.price,
-                type: item.type,
-              }),
-            )
-          }
+          isLoading={itemsLoading}
+          data={itemsToDisplay}
+          error={itemsError}
           disabled={isCashierDisabled}
         />
 

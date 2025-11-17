@@ -274,15 +274,6 @@ function formatInstructionsToHtml(instructionsText) {
   return `<div style="line-height: 1.6;">${html}</div>`;
 }
 
-/**
- * Sends a custom HTML email using Resend.
- * Now uses the retry logic.
- * @param {string} toEmail - The recipient's email address.
- * @param {string} customerName - The customer's name (for potential use in the body/text).
- * @param {string} subject - The email subject.
- * @param {string} bodyContentHtml - The HTML content for the main body block.
- * @returns {Promise<boolean>} True if successful after retries, false otherwise.
- */
 async function sendCustomHtmlEmail(
   toEmail,
   customerName, // Included for completeness if needed
@@ -337,14 +328,6 @@ async function sendCustomHtmlEmail(
   }
 }
 
-/**
- * Generates the full HTML structure for an email, wrapping the provided body content.
- * Assumes LOGO_URL_SERVER is available in scope.
- * @param {string} subjectLine - The final subject line for the <title> tag and email client.
- * @param {string} bodyContentHtml - The dynamically generated HTML content block for the main area.
- * @param {string} logoUrl - URL for the logo image.
- * @returns {string} The full HTML for the email.
- */
 function generateMasterEmailHtml(subjectLine, bodyContentHtml, logoUrl) {
   return `
   <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
@@ -2302,7 +2285,7 @@ async function checkAndSendFollowUpReminders() {
     );
     return;
   }
-  
+
   const jobStartTime = Date.now();
   console.log(
     `[Cron FollowUp] Starting check for follow-up recommendation reminders at ${new Date().toISOString()}...`,
@@ -2566,7 +2549,7 @@ async function checkAndSendFollowUpReminders() {
       e,
     );
   }
-  
+
   const jobDuration = Date.now() - jobStartTime;
   console.log(
     `[Cron FollowUp] Follow-up recommendation reminder check finished in ${Math.round(jobDuration / 1000)}s.`,
@@ -2580,7 +2563,7 @@ async function checkAndSendBookingReminders() {
     );
     return;
   }
-  
+
   const jobStartTime = Date.now();
   console.log(
     `[Cron BookingReminder] Cycle START at ${new Date().toISOString()}. Current UTC: ${new Date().toISOString()}`,
@@ -2743,7 +2726,7 @@ async function checkAndSendBookingReminders() {
       e,
     );
   }
-  
+
   const jobDuration = Date.now() - jobStartTime;
   console.log(
     `[Cron BookingReminder] Cycle END in ${Math.round(jobDuration / 1000)}s.`,
@@ -2768,7 +2751,8 @@ if (resend) {
 
   cron.schedule(
     BOOKING_REMINDER_CRON_SCHEDULE,
-    () => executeCronJobWithLock("BookingReminder", checkAndSendBookingReminders),
+    () =>
+      executeCronJobWithLock("BookingReminder", checkAndSendBookingReminders),
     {
       scheduled: true,
       timezone: CRON_TIMEZONE,
@@ -2777,15 +2761,19 @@ if (resend) {
   console.log(
     `[Cron] 1-hour booking reminders scheduled: '${BOOKING_REMINDER_CRON_SCHEDULE}' (Timezone: ${CRON_TIMEZONE})`,
   );
-  
+
   // Log CRON job status periodically (every 5 minutes)
-  setInterval(() => {
-    console.log(`[Cron Status] Active jobs:`, {
-      FollowUp: cronJobExecutions.get("FollowUp") || { status: "never run" },
-      BookingReminder:
-        cronJobExecutions.get("BookingReminder") || { status: "never run" },
-    });
-  }, 5 * 60 * 1000); // Every 5 minutes
+  setInterval(
+    () => {
+      console.log(`[Cron Status] Active jobs:`, {
+        FollowUp: cronJobExecutions.get("FollowUp") || { status: "never run" },
+        BookingReminder: cronJobExecutions.get("BookingReminder") || {
+          status: "never run",
+        },
+      });
+    },
+    5 * 60 * 1000,
+  ); // Every 5 minutes
 } else {
   console.warn(
     `[Cron] RESEND_API_KEY not set. All email reminder tasks are DISABLED.`,
