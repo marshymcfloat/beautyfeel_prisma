@@ -330,15 +330,11 @@ export interface SalaryBreakdownItem {
   availedServiceId: string; // Added: Useful to link back to the parent AS (uuid string)
   unitId: string; // Added for clarity, although 'id' is already the unit ID
   serviceTitle: string | null; // Title of the Service (string from schema)
+  servicePrice: number; // Price per unit (calculated from parent AS price / quantity or service.price)
   customerName: string | null; // Name of the Customer from the Transaction (string | null based on mapping below)
   completedAt: Date | null; // Completion time (servedAt) for THIS UNIT (DateTime) - can be null
   commissionEarned: number; // Commission calculated FOR THIS UNIT (number)
   originatingSetTitle: string | null; // Title from the originating ServiceSet (string | null from schema)
-  // servicePrice property is removed as per user's client type definition
-  // Added this back based on its use in the *server* breakdown item construction before it was removed in the *client* type.
-  // If the client type REMOVED it, the server should NOT send it. I'll remove it from the server side construction.
-  // But the user's client type also commented out the property (`// Removed servicePrice`), indicating they might need it eventually?
-  // Let's stick to the provided client types STRICTLY to fix compilation. Server removes servicePrice.
 }
 
 type CustomerProp = {
@@ -8955,6 +8951,13 @@ export async function getCurrentSalaryDetails(
         unit.servedBy?.role || [],
       );
 
+      // Calculate price per unit for display context
+      // Use parent.price / parent.quantity since service.price is not selected in the query
+      const unitPrice =
+        parent.price > 0 && parent.quantity > 0
+          ? Math.round(parent.price / parent.quantity)
+          : 0;
+
       // Construct the breakdown item
       commissionBreakdownItems.push({
         id: unit.id,
@@ -8962,6 +8965,7 @@ export async function getCurrentSalaryDetails(
         availedServiceId: parent.id,
         unitId: unit.id, // Added for clarity, although 'id' is already the unit ID
         serviceTitle: parent.service.title,
+        servicePrice: unitPrice, // Price per unit (calculated safely)
         customerName: parent.transaction.customer.name,
         completedAt: unit.servedAt,
         commissionEarned: unitCommission,
