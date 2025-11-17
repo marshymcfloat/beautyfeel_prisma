@@ -98,10 +98,16 @@ type AvailedServiceUnitWithRelations = Prisma.AvailedServiceUnitGetPayload<{
   };
 }>;
 
-type PayslipRequestWithAccounts = PayslipRequest & {
+export type PayslipRequestWithAccounts = PayslipRequest & {
   account: { id: string; name: string; role: Role[]; dailyRate: number };
   processedBy: { name: string } | null;
   relatedPayslip: { id: string } | null;
+};
+
+export type Employee = {
+  id: string;
+  name: string;
+  canRequestPayslip: boolean;
 };
 
 const PHILIPPINES_TIMEZONE = "Asia/Manila"; // Use IANA timezone name for robustness
