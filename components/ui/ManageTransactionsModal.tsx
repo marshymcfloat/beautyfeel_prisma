@@ -197,7 +197,6 @@ export default function ManageTransactionsModal({
               ...as,
               createdAt: new Date(as.createdAt),
               updatedAt: new Date(as.updatedAt),
-              completedAt: as.completedAt ? new Date(as.completedAt) : null,
             })),
           }));
           setTransactions(processedData);
@@ -436,7 +435,6 @@ export default function ManageTransactionsModal({
               ...as,
               createdAt: new Date(as.createdAt),
               updatedAt: new Date(as.updatedAt),
-              completedAt: as.completedAt ? new Date(as.completedAt) : null,
             }),
           ),
         };
