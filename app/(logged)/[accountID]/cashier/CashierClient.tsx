@@ -683,14 +683,6 @@ export default function CashierClient({
 
         {serveTime === "later" && (
           <DateTimePicker
-            date={date}
-            time={time}
-            onDateChange={(newDate) =>
-              dispatch(cashierActions.setDate(newDate))
-            }
-            onTimeChange={(newTime) =>
-              dispatch(cashierActions.setTime(newTime))
-            }
             disabled={isCashierDisabled}
             error={formErrors.serveTime}
           />
