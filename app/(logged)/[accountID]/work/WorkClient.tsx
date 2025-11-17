@@ -15,7 +15,7 @@ import {
   CircleDashed,
 } from "lucide-react";
 import { getActiveTransactions } from "@/lib/ServerAction";
-import { TransactionPropsForTransactions, AvailedServicesProps } from "@/lib/Types";
+import { TransactionPropsForTransactions, AvailedServicesProps, AvailedServicesPropsForTransactions } from "@/lib/Types";
 import { Status } from "@prisma/client";
 
 interface WorkClientProps {
@@ -132,7 +132,7 @@ export default function WorkClient({
   };
 
   const handleAvailedServiceUpdate = useCallback(
-    (updatedAvailedService: AvailedServicesProps) => {
+    (updatedAvailedService: AvailedServicesPropsForTransactions) => {
       if (!updatedAvailedService?.id) return;
       setProcessingCheckActions((prev) => {
         if (!prev.has(updatedAvailedService.id)) return prev;
@@ -141,8 +141,8 @@ export default function WorkClient({
         return next;
       });
       const updateList = (
-        list: AvailedServicesProps[] = [],
-      ): AvailedServicesProps[] =>
+        list: AvailedServicesPropsForTransactions[] = [],
+      ): AvailedServicesPropsForTransactions[] =>
         list.map((s) =>
           s.id === updatedAvailedService.id
             ? { ...s, ...updatedAvailedService }
@@ -273,7 +273,7 @@ export default function WorkClient({
   };
 
   const handleServiceCheckToggle = useCallback(
-    (availedService: AvailedServicesProps, wantsToBecomeChecked: boolean) => {
+    (availedService: AvailedServicesPropsForTransactions, wantsToBecomeChecked: boolean) => {
       if (
         !socket ||
         !socket.connected ||
@@ -299,7 +299,7 @@ export default function WorkClient({
   );
 
   const isCheckboxDisabled = useCallback(
-    (service: AvailedServicesProps): boolean => {
+    (service: AvailedServicesPropsForTransactions): boolean => {
       return (
         processingCheckActions.has(service.id) ||
         (!!service.checkedById && service.checkedById !== accountId) ||
