@@ -96,6 +96,7 @@ export default function ManageTransactions() {
                 serviceSetId: as.serviceSetId ?? null,
                 // Convert units from AvailedServiceUnitPropsForManagement to AvailedServiceUnitProps
                 // The server action now includes checkedById, servedById, createdAt, and updatedAt
+                // Also need to construct full ClientAccountIncluded objects for checkedBy and servedBy
                 units: as.units.map((unit) => ({
                   ...unit,
                   // Use the fields that are now included in the server action response
@@ -103,6 +104,35 @@ export default function ManageTransactions() {
                   servedById: (unit as any).servedById ?? unit.servedBy?.id ?? null,
                   createdAt: (unit as any).createdAt ?? new Date(),
                   updatedAt: (unit as any).updatedAt ?? new Date(),
+                  // Construct full ClientAccountIncluded objects from the minimal ones returned by server
+                  checkedBy: unit.checkedBy
+                    ? {
+                        id: unit.checkedBy.id,
+                        username: "", // Not selected in query, set to empty string
+                        name: unit.checkedBy.name,
+                        email: null, // Not selected in query
+                        role: [], // Not selected in query
+                        salary: 0, // Not selected in query
+                        dailyRate: 0, // Not selected in query
+                        branchId: null, // Not selected in query
+                        canRequestPayslip: false, // Not selected in query
+                        mustChangePassword: false, // Not selected in query
+                      }
+                    : null,
+                  servedBy: unit.servedBy
+                    ? {
+                        id: unit.servedBy.id,
+                        username: "", // Not selected in query, set to empty string
+                        name: unit.servedBy.name,
+                        email: null, // Not selected in query
+                        role: [], // Not selected in query
+                        salary: 0, // Not selected in query
+                        dailyRate: 0, // Not selected in query
+                        branchId: null, // Not selected in query
+                        canRequestPayslip: false, // Not selected in query
+                        mustChangePassword: false, // Not selected in query
+                      }
+                    : null,
                 })),
               })),
             }));
