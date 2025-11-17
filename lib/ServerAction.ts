@@ -327,10 +327,10 @@ export interface SalaryBreakdownItem {
   id: string; // THIS IS THE AvailedServiceUnit ID (uuid string from schema)
   transactionId: string; // Added to match server action
   availedServiceId: string; // Added: Useful to link back to the parent AS (uuid string)
-  // unitId: string; // Removed - 'id' is already the unit ID
+  unitId: string; // Added for clarity, although 'id' is already the unit ID
   serviceTitle: string | null; // Title of the Service (string from schema)
   customerName: string | null; // Name of the Customer from the Transaction (string | null based on mapping below)
-  completedAt: Date; // Completion time (servedAt) for THIS UNIT (DateTime) - assuming non-null if status DONE
+  completedAt: Date | null; // Completion time (servedAt) for THIS UNIT (DateTime) - can be null
   commissionEarned: number; // Commission calculated FOR THIS UNIT (number)
   originatingSetTitle: string | null; // Title from the originating ServiceSet (string | null from schema)
   // servicePrice property is removed as per user's client type definition
@@ -4964,13 +4964,14 @@ export async function getSalaryBreakdown(
           id: unit.id, // Use the UNIT ID for the breakdown item
           transactionId: parent.transaction.id, // Add missing field
           availedServiceId: parent.id, // Add missing field
+          unitId: unit.id, // Added for clarity, although 'id' is already the unit ID
           // Use the title from the service or the originating set title
           serviceTitle:
             parent.service?.title ||
             parent.originatingSetTitle ||
             "Unknown Service",
           customerName: parent.transaction?.customer?.name || "N/A",
-          completedAt: unit.servedAt!, // Completion time is the unit's servedAt
+          completedAt: unit.servedAt, // Completion time is the unit's servedAt (can be null)
           servicePrice: unitPrice, // Price per unit (calculated safely)
           commissionEarned: unitCommission, // Commission earned *by this unit* using unified helper
           originatingSetId: parent.originatingSetId ?? null,
@@ -8965,6 +8966,7 @@ export async function getCurrentSalaryDetails(
         id: unit.id,
         transactionId: parent.transaction.id,
         availedServiceId: parent.id,
+        unitId: unit.id, // Added for clarity, although 'id' is already the unit ID
         serviceTitle: parent.service.title,
         customerName: parent.transaction.customer.name,
         completedAt: unit.servedAt,
@@ -9761,13 +9763,14 @@ export async function getServedServicesTodayByUser(
           id: unit.id, // Use the UNIT ID for the breakdown item
           transactionId: parent.transaction.id, // Add missing field
           availedServiceId: parent.id, // Add missing field
+          unitId: unit.id, // Added for clarity, although 'id' is already the unit ID
           // Use the title from the service or the originating set title
           serviceTitle:
             parent.service?.title ||
             parent.originatingSetTitle ||
             "Unknown Service",
           customerName: parent.transaction?.customer?.name || "N/A",
-          completedAt: unit.servedAt!, // Completion time is the unit's servedAt
+          completedAt: unit.servedAt, // Completion time is the unit's servedAt (can be null)
           servicePrice: unitPrice, // Price per unit (calculated safely)
           commissionEarned: unitCommission, // Commission earned *by this unit* using unified helper
           originatingSetId: parent.originatingSetId ?? null,
@@ -13293,13 +13296,14 @@ export async function fetchPayslipModalData(
           id: unit.id, // Use the UNIT ID for the breakdown item
           transactionId: parent.transaction.id, // Add missing field
           availedServiceId: parent.id, // Add missing field
+          unitId: unit.id, // Added for clarity, although 'id' is already the unit ID
           // Use the title from the service or the originating set title
           serviceTitle:
             parent.service?.title ||
             parent.originatingSetTitle ||
             "Unknown Service",
           customerName: parent.transaction?.customer?.name || "N/A",
-          completedAt: unit.servedAt!, // Completion time is the unit's servedAt. Use non-null assertion as query filters for not: null
+          completedAt: unit.servedAt, // Completion time is the unit's servedAt (can be null)
           servicePrice: unitPrice, // Price per unit (calculated safely)
           commissionEarned: unitCommission, // Commission earned *by this unit* using unified helper
           originatingSetId: parent.originatingSetId ?? null,
