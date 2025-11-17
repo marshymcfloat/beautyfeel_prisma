@@ -225,7 +225,7 @@ export default function ManageTransactions() {
         invalidateCache(TRANSACTIONS_CACHE_KEY);
         await loadData(filters, true);
       } else {
-        setActionError(res.message);
+        setActionError(res.message ?? null);
       }
     });
   };
