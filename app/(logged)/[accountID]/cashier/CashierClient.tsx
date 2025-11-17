@@ -670,21 +670,7 @@ export default function CashierClient({
           )}
         </div>
 
-        <VoucherInput
-          initialValue={cashierForm.voucherCode}
-          onVoucherSelect={(voucher) => {
-            dispatch(
-              cashierActions.setVoucher({
-                code: voucher.code,
-                discountValue: voucher.discountValue,
-              }),
-            );
-          }}
-          onClear={() => {
-            dispatch(cashierActions.setVoucher({ code: "", discountValue: 0 }));
-          }}
-          disabled={isCashierDisabled}
-        />
+        <VoucherInput disabled={isCashierDisabled} />
 
         <SelectInputGroup
           name="serveTime"
