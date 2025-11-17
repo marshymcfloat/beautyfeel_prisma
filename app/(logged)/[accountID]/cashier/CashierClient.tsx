@@ -658,18 +658,12 @@ export default function CashierClient({
             servicesAvailed.map((item, index) => (
               <SelectedItem
                 key={`${item.id}-${index}`}
-                item={item}
-                onRemove={() =>
-                  dispatch(cashierActions.removeItem(item.id))
-                }
-                onQuantityChange={(newQuantity) =>
-                  dispatch(
-                    cashierActions.updateItemQuantity({
-                      id: item.id,
-                      quantity: newQuantity,
-                    }),
-                  )
-                }
+                id={item.id}
+                name={item.name}
+                quantity={item.quantity}
+                originalPrice={item.originalPrice}
+                discountApplied={item.discountApplied}
+                type={item.type}
                 disabled={isCashierDisabled}
               />
             ))
