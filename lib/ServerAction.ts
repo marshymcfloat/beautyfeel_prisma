@@ -82,6 +82,7 @@ import {
   BranchSalesDataPoint,
   CustomerWithRecommendations,
   CustomerForEmail,
+  AttendanceRecord,
 } from "./Types";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -470,14 +471,7 @@ type TransactionProps = {
   // Add other fields from Transaction model if needed client-side
 };
 
-type AttendanceRecord = {
-  id: string;
-  date: string | Date; // Field present in optimistic update
-  isPresent: boolean;
-  notes?: string | null; // Field is optional -> string | null | undefined
-  // Potentially other fields like accountId, checkedById if your optimistic update adds them
-  // to the object you type as AttendanceRecord
-};
+// AttendanceRecord is now imported from "./Types"
 type MonthlySalesWithPaymentBreakdown = {
   month: string;
   yearMonth: string;
