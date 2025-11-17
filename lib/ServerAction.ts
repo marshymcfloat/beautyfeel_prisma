@@ -1201,8 +1201,7 @@ const PHILIPPINES_TIMEZONE = "Asia/Manila";
 const MANILA_OFFSET_HOURS: number = 8;
 const PHT_TIMEZONE_OFFSET_HOURS = 8;
 
-const resendApiKeySA =
-  process.env.RESEND_API_KEY || "re_2jVrmuDq_ANKBi91TjmsYVj8Gv7VHZfZD";
+const resendApiKeySA = process.env.RESEND_API_KEY;
 const resendInstanceSA = resendApiKeySA ? new Resend(resendApiKeySA) : null;
 if (!resendInstanceSA && process.env.NODE_ENV === "production") {
   console.warn(
@@ -13559,9 +13558,4 @@ export async function requestCurrentPayslip(accountId: string): Promise<{
       error: `Failed to submit payslip request: ${error.message || "Unknown error"}`,
     };
   }
-  // Ensure Prisma client disconnects if not using connection pooling (Vercel Edge Functions etc.)
-  // If running as a long-lived process (Node.js server), keep it connected.
-  // finally {
-  //   await prisma.$disconnect();
-  // }
 }
