@@ -20,8 +20,12 @@ const {
   format,
   isValid,
 } = require("date-fns");
-// Assuming date-fns-tz is used for timezones if needed beyond basic date-fns
-// const { utcToZonedTime, zonedTimeToUtc } = require('date-fns-tz');
+const {
+  utcToZonedTime,
+  zonedTimeToUtc,
+  formatInTimeZone,
+  toDate,
+} = require("date-fns-tz");
 
 require("dotenv").config({ path: "../.env" });
 
@@ -82,6 +86,45 @@ const CRON_ITEM_PROCESSING_DELAY = parseInt(
   10,
 );
 const CRON_TIMEZONE = process.env.CRON_TIMEZONE || "Asia/Manila";
+
+// --- Timezone-aware date helper functions ---
+/**
+ * Get the start of day in a specific timezone
+ * @param {Date} date - The date to get start of day for
+ * @param {string} timeZone - IANA timezone string (e.g., "Asia/Manila")
+ * @returns {Date} - UTC Date object representing start of day in the timezone
+ */
+function startOfDayInTimezone(date, timeZone) {
+  // 1. Format the input UTC Date to get the date part (e.g., "2023-10-27")
+  //    as it appears in the target timezone.
+  const datePart = formatInTimeZone(date, timeZone, "yyyy-MM-dd");
+
+  // 2. Construct a string representing the start of that day in the target timezone.
+  const startOfDayString = `${datePart}T00:00:00.000`;
+
+  // 3. Parse this string using toDate, telling it that the string represents
+  //    a local time in the specified 'timeZone'. This returns a UTC Date object.
+  return toDate(startOfDayString, { timeZone });
+}
+
+/**
+ * Get the end of day in a specific timezone
+ * @param {Date} date - The date to get end of day for
+ * @param {string} timeZone - IANA timezone string (e.g., "Asia/Manila")
+ * @returns {Date} - UTC Date object representing end of day in the timezone
+ */
+function endOfDayInTimezone(date, timeZone) {
+  // 1. Format the input UTC Date to get the date part in the target timezone.
+  const datePart = formatInTimeZone(date, timeZone, "yyyy-MM-dd");
+
+  // 2. Construct a string representing the end of that day (23:59:59.999)
+  //    in the target timezone.
+  const endOfDayString = `${datePart}T23:59:59.999`;
+
+  // 3. Parse this string, interpreting it as local time in the specified 'timeZone',
+  //    to get the corresponding UTC Date object.
+  return toDate(endOfDayString, { timeZone });
+}
 
 // --- CRON Job Execution Tracking (Prevent Overlapping Executions) ---
 const cronJobExecutions = new Map();
@@ -1184,8 +1227,10 @@ async function completeTransactionAndCalculateSalary(transactionId) {
                   RecommendedAppointmentStatus.SCHEDULED,
                 ],
               },
-              // Filter for RAs recommended from the start of today UTC onwards
-              recommendedDate: { gte: startOfDay(new Date()) },
+              // Filter for RAs recommended from the start of today in Manila timezone onwards
+              recommendedDate: {
+                gte: startOfDayInTimezone(new Date(), PHILIPPINES_TIMEZONE),
+              },
             },
             orderBy: { recommendedDate: "asc" },
             take: 1, // Get only the earliest one
@@ -1200,12 +1245,12 @@ async function completeTransactionAndCalculateSalary(transactionId) {
         const currentNextAppt = customerWithRAs.nextAppointment || null;
         let needsUpdate = false;
 
-        // Compare dates by their start of day to avoid time component issues
+        // Compare dates by their start of day in Manila timezone to avoid time component issues
         const newDateStart = newEarliestRADate
-          ? startOfDay(newEarliestRADate)
+          ? startOfDayInTimezone(newEarliestRADate, PHILIPPINES_TIMEZONE)
           : null;
         const currentDateStart = currentNextAppt
-          ? startOfDay(currentNextAppt)
+          ? startOfDayInTimezone(currentNextAppt, PHILIPPINES_TIMEZONE)
           : null;
 
         // Check if the new date is different from the current date (considering nulls)
@@ -2292,19 +2337,30 @@ async function checkAndSendFollowUpReminders() {
   );
 
   const now = new Date();
-  const todayStartUTC = startOfDay(now); // Start of today in UTC
+  // Get the current date in Asia/Manila timezone
+  const nowInManila = utcToZonedTime(now, PHILIPPINES_TIMEZONE);
+  // Get start of today in Asia/Manila timezone (returns UTC Date object)
+  const todayStartInManila = startOfDayInTimezone(now, PHILIPPINES_TIMEZONE);
 
-  // Get the target dates for the current check window (start of day UTC for each target date)
+  console.log(
+    `[Cron FollowUp] Current time in ${PHILIPPINES_TIMEZONE}: ${formatInTimeZone(now, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")}, Start of today: ${todayStartInManila.toISOString()}`,
+  );
+
+  // Get the target dates for the current check window (start of day in Manila timezone for each target date)
   const targetDatesForQuery = FOLLOW_UP_REMINDER_WINDOWS_DAYS.map((days) =>
-    startOfDay(addDays(todayStartUTC, days)),
+    startOfDayInTimezone(
+      addDays(todayStartInManila, days),
+      PHILIPPINES_TIMEZONE,
+    ),
   );
 
   // Map the target dates to a format suitable for the Prisma 'OR' query condition on `recommendedDate`
+  // recommendedDate is stored as @db.Date (DATE type), so we need to compare date ranges
   const recommendedDateConditions = targetDatesForQuery.map(
-    (localStartOfDayUTC) => ({
+    (targetDateStartUTC) => ({
       recommendedDate: {
-        gte: localStartOfDayUTC,
-        lt: addDays(localStartOfDayUTC, 1), // Check for RAs whose recommendedDate falls within this specific 24hr UTC window
+        gte: targetDateStartUTC,
+        lt: addDays(targetDateStartUTC, 1), // Check for RAs whose recommendedDate falls within this specific 24hr window
       },
     }),
   );
@@ -2357,13 +2413,15 @@ async function checkAndSendFollowUpReminders() {
     );
 
     for (const ra of rAsToConsider) {
-      // Calculate the number of days between the recommended date (start of day UTC) and today (start of day UTC)
-      const raRecommendedDateStartUTC = startOfDay(
+      // Calculate the number of days between the recommended date and today
+      // Both should be compared in Asia/Manila timezone
+      const raRecommendedDateStartInManila = startOfDayInTimezone(
         new Date(ra.recommendedDate),
+        PHILIPPINES_TIMEZONE,
       );
       const daysAway = differenceInDays(
-        raRecommendedDateStartUTC,
-        todayStartUTC,
+        raRecommendedDateStartInManila,
+        todayStartInManila,
       );
 
       const reminderFieldToUpdateKey = String(daysAway); // e.g., "7", "0", "-1"
@@ -2517,9 +2575,10 @@ async function checkAndSendFollowUpReminders() {
       ...FOLLOW_UP_REMINDER_WINDOWS_DAYS.filter((d) => d < 0),
     );
 
-    // Calculate the cutoff date (start of day UTC before the furthest past window)
-    const missedCutoffDate = startOfDay(
-      addDays(todayStartUTC, furthestPastReminderDay - 1),
+    // Calculate the cutoff date (start of day in Manila timezone before the furthest past window)
+    const missedCutoffDate = startOfDayInTimezone(
+      addDays(todayStartInManila, furthestPastReminderDay - 1),
+      PHILIPPINES_TIMEZONE,
     );
 
     // Update RAs that are still RECOMMENDED or SCHEDULED but are older than the cutoff
@@ -2565,18 +2624,22 @@ async function checkAndSendBookingReminders() {
   }
 
   const jobStartTime = Date.now();
+  const nowUTC = new Date();
   console.log(
-    `[Cron BookingReminder] Cycle START at ${new Date().toISOString()}. Current UTC: ${new Date().toISOString()}`,
+    `[Cron BookingReminder] Cycle START at ${nowUTC.toISOString()}. Current time in ${PHILIPPINES_TIMEZONE}: ${formatInTimeZone(nowUTC, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")}`,
   );
 
-  const nowUTC = new Date();
   // Window: 50 to 65 minutes from now (adjust window based on how cron schedule is set)
   // If cron is every 15 min, checking 50-65min ensures we hit the ~60 min mark.
+  // bookedFor is stored as DateTime in UTC, so we compare in UTC
   const reminderWindowStartUTC = new Date(nowUTC.getTime() + 50 * 60 * 1000);
   const reminderWindowEndUTC = new Date(nowUTC.getTime() + 65 * 60 * 1000);
 
   console.log(
     `[Cron BookingReminder] Reminder Window UTC: ${reminderWindowStartUTC.toISOString()} to ${reminderWindowEndUTC.toISOString()}`,
+  );
+  console.log(
+    `[Cron BookingReminder] Reminder Window in ${PHILIPPINES_TIMEZONE}: ${formatInTimeZone(reminderWindowStartUTC, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")} to ${formatInTimeZone(reminderWindowEndUTC, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")}`,
   );
 
   try {
