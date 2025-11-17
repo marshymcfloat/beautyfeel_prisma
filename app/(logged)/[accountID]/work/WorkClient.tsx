@@ -228,8 +228,8 @@ export default function WorkClient({
       }
       const processedData = data.map((tx) => ({
         ...tx,
-        createdAt: tx.createdAt ? new Date(tx.createdAt) : undefined,
-        bookedFor: tx.bookedFor ? new Date(tx.bookedFor) : undefined,
+        createdAt: tx.createdAt ? new Date(tx.createdAt) : new Date(), // createdAt is required, use current date as fallback
+        bookedFor: tx.bookedFor ? new Date(tx.bookedFor) : null, // bookedFor can be null, not undefined
         availedServices:
           tx.availedServices?.map((service) => ({
             ...service,
