@@ -2799,7 +2799,6 @@ async function checkAndSendBookingReminders() {
 // --- Socket Server Startup ---
 
 if (resend) {
-  // Schedule with execution lock wrapper to prevent overlapping executions
   cron.schedule(
     FOLLOW_UP_CRON_SCHEDULE,
     () => executeCronJobWithLock("FollowUp", checkAndSendFollowUpReminders),
