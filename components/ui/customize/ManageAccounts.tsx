@@ -84,7 +84,7 @@ export default function ManageAccounts() {
               return data;
             }),
         brData && !forceRefresh
-          ? Promise.resolve(brData)
+          ? Promise.resolve(brData as BranchForSelect[])
           : getBranchesForSelectAction().then((data) => {
               setCachedData<BranchForSelect[]>(
                 BRANCHES_ACCOUNTS_CACHE_KEY,

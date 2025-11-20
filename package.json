@@ -4,10 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "prisma generate --no-engine && next build",
     "start": "next start",
     "lint": "next lint",
-    "prisma:seed": "node lib/seeders/BeautyfeelSeeder.js"
+    "prisma:seed": "node lib/seeders/BeautyfeelSeeder.js",
+    "postinstall": "prisma generate --no-engine"
   },
   "dependencies": {
     "@million/lint": "^1.0.14",

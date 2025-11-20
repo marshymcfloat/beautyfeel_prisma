@@ -1,95 +1,46 @@
 "use client";
 
-import {
-  ChangeEvent,
-  useState,
-  useCallback,
-  FormEvent,
-  useEffect,
-} from "react";
+import { ChangeEvent, useState, useCallback, FormEvent } from "react";
 import Button from "@/components/Buttons/Button";
-import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Loader2, X } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [callbackUrl, setCallbackUrl] = useState("/");
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [inputs, setInputs] = useState({ username: "", password: "" });
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    const cbUrlFromParams = searchParams?.get("callbackUrl");
-    if (cbUrlFromParams) {
-      setCallbackUrl(cbUrlFromParams);
-    }
-  }, [searchParams]);
+  // Use optimized shared authentication hook
+  const { isSubmitting, errorMessage, handleLogin, clearError } = useAuth({
+    onSuccess: (redirectUrl) => {
+      // Clear form on success
+      setInputs({ username: "", password: "" });
+
+      // Optimized: Single navigation with refresh
+      router.refresh();
+      setTimeout(() => {
+        router.push(redirectUrl);
+      }, 100);
+    },
+  });
 
   const handleInputChange = useCallback(
     (identifier: string, e: ChangeEvent<HTMLInputElement>) => {
       setInputs((prev) => ({ ...prev, [identifier]: e.target.value }));
       if (errorMessage) {
-        setErrorMessage(null);
+        clearError();
       }
     },
-    [errorMessage],
+    [errorMessage, clearError],
   );
 
   const handleLoginSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      setIsSubmitting(true);
-      setErrorMessage(null);
-
-      if (inputs.username.trim() === "" || inputs.password.trim() === "") {
-        setErrorMessage("Username and password are required.");
-        setIsSubmitting(false);
-        return;
-      }
-
-      try {
-        const result = await signIn("credentials", {
-          username: inputs.username.trim(),
-          password: inputs.password,
-          redirect: false,
-        });
-
-        if (result?.ok && !result.error) {
-          // Clear form on success
-          setInputs({ username: "", password: "" });
-          setErrorMessage(null);
-
-          // Use router.push for better navigation handling
-          // The middleware will handle redirects based on mustChangePassword
-          router.push(callbackUrl);
-          router.refresh(); // Refresh to get updated session
-          return;
-        } else {
-          // Handle different error types gracefully
-          if (result?.error === "CredentialsSignin") {
-            setErrorMessage("Invalid username or password. Please try again.");
-          } else if (result?.error === "Configuration") {
-            setErrorMessage(
-              "Server configuration error. Please contact support.",
-            );
-          } else {
-            setErrorMessage(
-              "Login failed. Please check your credentials and try again.",
-            );
-          }
-        }
-      } catch (error) {
-        console.error("[LOGIN_PAGE] Unexpected error:", error);
-        setErrorMessage(
-          "An unexpected error occurred. Please try again later.",
-        );
-      } finally {
-        setIsSubmitting(false);
-      }
+      await handleLogin(inputs.username, inputs.password);
     },
-    [inputs, callbackUrl, router],
+    [inputs.username, inputs.password, handleLogin],
   );
 
   return (
@@ -178,6 +129,7 @@ export default function LoginPage() {
               id="error-message-loginpage"
               className="mb-4 rounded-md bg-red-50 p-3 text-center text-sm text-red-600 ring-1 ring-inset ring-red-200"
               role="alert"
+              aria-live="polite"
             >
               {errorMessage}
             </p>

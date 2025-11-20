@@ -1,285 +1,300 @@
 "use client";
 
-import { useState, useEffect, ChangeEvent, useRef, FocusEvent } from "react";
+import {
+  useState,
+  useEffect,
+  ChangeEvent,
+  useRef,
+  useCallback,
+  useMemo,
+} from "react";
 import { getCustomer as fetchCustomers } from "@/lib/ServerAction";
 import type { CustomerWithRecommendations } from "@/lib/Types";
-import { Loader2 } from "lucide-react"; // Added Loader2 import
+import { Loader2 } from "lucide-react";
 
 type CustomerData = CustomerWithRecommendations;
 
 interface CustomerInputProps {
   error?: string;
   initialValue?: string;
-  // Consider adding a 'value' prop and making it a controlled component if
-  // the parent needs to programmatically change the input value after initial render.
-  // For now, it behaves more like an uncontrolled component initialized by initialValue.
-
   onCustomerSelect?: (customer: CustomerData | null) => void;
-  // Renamed from onChange to onInputChange to avoid confusion with form onChange
   onInputChange?: (value: string) => void;
   disabled?: boolean;
   autoFocus?: boolean;
-  // Optional: loading state from parent if fetching is coordinated elsewhere
-  // isLoading?: boolean;
+  debounceMs?: number; // Configurable debounce delay
+  minQueryLength?: number; // Minimum characters before searching
 }
+
+const DEBOUNCE_DELAY = 400; // Default debounce delay in ms
+const MIN_QUERY_LENGTH = 2; // Minimum characters before searching
 
 export default function CustomerInput({
   error,
   initialValue = "",
   onCustomerSelect,
-  onInputChange, // Using onInputChange instead of onChange
+  onInputChange,
   disabled = false,
   autoFocus = false,
+  debounceMs = DEBOUNCE_DELAY,
+  minQueryLength = MIN_QUERY_LENGTH,
 }: CustomerInputProps) {
-  // Initialize state directly from initialValue
   const [internalQuery, setInternalQuery] = useState(initialValue ?? "");
-  // Initialize debounced state from initialValue
-  const [debouncedQuery, setDebouncedQuery] = useState(initialValue ?? "");
-
-  const [searchResults, setSearchResults] = useState<CustomerData[] | null>(
-    null,
-  );
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<CustomerData[]>([]);
   const [isDropdownVisible, setIsDropdownVisible] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [isFetching, setIsFetching] = useState(false); // Local fetching state
+  const [isFetching, setIsFetching] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
-  // Ref to track if a customer has been explicitly selected from the dropdown
   const customerSelectedRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isUserTypingRef = useRef(false);
+  const lastInitialValueRef = useRef<string | undefined>(initialValue);
 
-  // Effect 1: Debounce input value for fetching
+  // Debounce input value for fetching
   useEffect(() => {
-    const value = internalQuery.trim();
-    console.log(
-      `Debounce Effect: internalQuery=${internalQuery}, trimmed=${value}`,
-    );
+    const trimmedValue = internalQuery.trim();
 
-    // Clear debounced query, results, and hide dropdown if input is empty
-    if (value === "") {
-      console.log("Debounce Effect: Input is empty, resetting.");
+    // Clear previous debounce timer
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+    }
+
+    // Reset state if input is empty
+    if (trimmedValue === "") {
       setDebouncedQuery("");
-      setSearchResults(null);
+      setSearchResults([]);
       setIsDropdownVisible(false);
-      // Notify parent that selection is cleared if input is made empty
-      // Check if a selection was previously made before clearing parent state
-      // This prevents unnecessarily calling onCustomerSelect(null) on initial empty render
       if (customerSelectedRef.current) {
-        console.log(
-          "Debounce Effect: Input cleared after selection, calling onCustomerSelect(null)",
-        );
         onCustomerSelect?.(null);
-        customerSelectedRef.current = false; // Reset the flag
+        customerSelectedRef.current = false;
       }
-      return; // No need to set a timeout for empty value
+      return;
     }
 
-    // Set up the debounce timer
-    const handler = setTimeout(() => {
-      // Only update debounced query if the input value hasn't changed since the timeout was set
-      if (inputRef.current && value === inputRef.current.value.trim()) {
-        console.log(
-          `Debounce Effect: Timeout finished, setting debouncedQuery to "${value}"`,
-        );
-        setDebouncedQuery(value);
-      } else {
-        console.log(
-          "Debounce Effect: Timeout finished, but input value changed. Skipping setDebouncedQuery.",
-        );
-      }
-    }, 500); // 500ms debounce delay
+    // Only search if query meets minimum length requirement
+    if (trimmedValue.length < minQueryLength) {
+      setDebouncedQuery("");
+      setSearchResults([]);
+      setIsDropdownVisible(false);
+      return;
+    }
 
-    // Cleanup function: clear the timeout if internalQuery changes before the timeout fires
+    // Set up debounce timer
+    debounceTimerRef.current = setTimeout(() => {
+      const currentValue = inputRef.current?.value.trim() ?? "";
+      if (
+        currentValue === trimmedValue &&
+        currentValue.length >= minQueryLength
+      ) {
+        setDebouncedQuery(currentValue);
+      }
+    }, debounceMs);
+
     return () => {
-      console.log("Debounce Effect: Clearing timeout.");
-      clearTimeout(handler);
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current);
+      }
     };
-  }, [internalQuery, onCustomerSelect]); // Depend on internalQuery to re-run when it changes
+  }, [internalQuery, minQueryLength, debounceMs, onCustomerSelect]);
 
-  // Effect 2: Fetch data when debounced query changes
+  // Fetch data when debounced query changes
   useEffect(() => {
+    // Cancel any ongoing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Reset if no query or disabled
+    if (!debouncedQuery || disabled) {
+      setSearchResults([]);
+      setIsDropdownVisible(false);
+      setIsFetching(false);
+      return;
+    }
+
+    // Create new abort controller for this request
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
+    let isCancelled = false;
+
     async function fetchData() {
-      // Only fetch if there's a debounced query and the component is not disabled
-      if (debouncedQuery && !disabled) {
-        console.log(`Fetch Effect: Fetching customers for "${debouncedQuery}"`);
-        setIsFetching(true);
-        setSearchResults(null); // Clear previous results immediately
+      setIsFetching(true);
+      setSearchResults([]);
 
-        try {
-          const response = await fetchCustomers(debouncedQuery);
-          const results = response ?? [];
-          console.log(`Fetch Effect: Received ${results.length} results.`);
-          setSearchResults(results);
+      try {
+        const response = await fetchCustomers(debouncedQuery);
+        const results = Array.isArray(response) ? response : [];
 
-          // Show dropdown if results are found AND input is currently focused
-          // Avoid showing dropdown if the user has blurred the input while fetching
-          if (results.length > 0 && isInputFocused) {
-            setIsDropdownVisible(true);
-            console.log("Fetch Effect: Showing dropdown.");
-          } else {
-            setIsDropdownVisible(false);
-            console.log(
-              "Fetch Effect: Hiding dropdown (no results or not focused).",
-            );
-          }
-        } catch (err) {
-          console.error("Fetch Effect: Failed to fetch customers:", err);
-          setSearchResults([]); // Set to empty array on error
-          setIsDropdownVisible(false); // Hide dropdown on error
-        } finally {
-          setIsFetching(false); // Always set fetching to false when done
-          console.log("Fetch Effect: Fetching finished.");
+        // Check if request was cancelled
+        if (abortController.signal.aborted || isCancelled) {
+          return;
         }
-      } else if (!debouncedQuery) {
-        // If debouncedQuery becomes empty (e.g., user deleted input)
-        console.log(
-          "Fetch Effect: debouncedQuery is empty, resetting results.",
-        );
-        setSearchResults(null);
-        setIsDropdownVisible(false);
-        setIsFetching(false); // Ensure fetching is off
-      } else if (disabled) {
-        // If disabled becomes true while a fetch was pending
-        console.log(
-          "Fetch Effect: Disabled prop is true, aborting potential fetch.",
-        );
-        setIsFetching(false);
+
+        setSearchResults(results);
+        setIsDropdownVisible(results.length > 0 && isInputFocused && !disabled);
+      } catch (err) {
+        // Ignore abort errors
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
+        // Only set error state if not cancelled
+        if (!abortController.signal.aborted && !isCancelled) {
+          setSearchResults([]);
+          setIsDropdownVisible(false);
+        }
+      } finally {
+        if (!abortController.signal.aborted && !isCancelled) {
+          setIsFetching(false);
+        }
       }
     }
 
-    // Call fetchData when debouncedQuery or disabled state changes
     fetchData();
-  }, [debouncedQuery, disabled, isInputFocused]); // Depend on debouncedQuery, disabled, and isInputFocused
 
-  // Removed the third useEffect that synced with initialValue
+    return () => {
+      isCancelled = true;
+      abortController.abort();
+    };
+  }, [debouncedQuery, disabled, isInputFocused]);
+
+  // Sync with initialValue changes from parent (only when not typing and value actually changed externally)
+  useEffect(() => {
+    // Only sync if:
+    // 1. User is not currently typing
+    // 2. initialValue actually changed from the last known value
+    // 3. The new initialValue is different from current internalQuery
+    // 4. The change is significant (not just whitespace differences)
+    const initialValueTrimmed = initialValue?.trim() ?? "";
+    const internalQueryTrimmed = internalQuery.trim();
+    const lastInitialValueTrimmed = lastInitialValueRef.current?.trim() ?? "";
+
+    if (
+      !isUserTypingRef.current &&
+      initialValue !== undefined &&
+      initialValueTrimmed !== lastInitialValueTrimmed &&
+      initialValueTrimmed !== internalQueryTrimmed
+    ) {
+      // Only sync if the change is significant (more than just whitespace or case)
+      // This prevents syncing when Redux updates due to our own typing
+      setInternalQuery(initialValue);
+      lastInitialValueRef.current = initialValue;
+    } else if (initialValue !== lastInitialValueRef.current) {
+      // Update ref to track changes, even if we don't sync
+      lastInitialValueRef.current = initialValue;
+    }
+  }, [initialValue, internalQuery]);
 
   // Handle user typing in the input field
-  function handleInput(e: ChangeEvent<HTMLInputElement>) {
-    const value = e.target.value;
-    console.log(`handleInput: Setting internalQuery to "${value}"`);
-    setInternalQuery(value); // Update internal state immediately
-
-    // Notify parent component about the input change
-    onInputChange?.(value);
-
-    // Hide dropdown immediately if the input value changes,
-    // it will reappear if new search results warrant it in the fetch effect.
-    setIsDropdownVisible(false); // Hide on input change
-    // Also clear search results visually until debounce/fetch kicks in
-    // setSearchResults(null); // Optional: uncomment if you want results to clear instantly on typing
-  }
+  const handleInput = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const value = e.target.value;
+      isUserTypingRef.current = true;
+      setInternalQuery(value);
+      // Update the ref to prevent sync effect from resetting
+      lastInitialValueRef.current = value;
+      onInputChange?.(value);
+      setIsDropdownVisible(false);
+      // Reset typing flag after a delay to allow external updates
+      setTimeout(() => {
+        isUserTypingRef.current = false;
+      }, 500);
+    },
+    [onInputChange],
+  );
 
   // Handle selecting a customer from the dropdown
-  function handleSelecting(customer: CustomerData) {
-    console.log(`handleSelecting: Customer "${customer.name}" selected.`);
-    // Set the input value to the selected customer's name
-    setInternalQuery(customer.name);
-
-    // Notify the parent component about the selected customer data
-    onCustomerSelect?.(customer);
-    customerSelectedRef.current = true; // Mark that a customer has been selected
-
-    // Hide the dropdown
-    setIsDropdownVisible(false);
-    setSearchResults(null); // Clear search results after selection
-
-    // Blur the input field
-    inputRef.current?.blur();
-  }
+  const handleSelecting = useCallback(
+    (customer: CustomerData) => {
+      isUserTypingRef.current = false; // Clear typing flag
+      setInternalQuery(customer.name);
+      lastInitialValueRef.current = customer.name; // Update ref to match
+      onCustomerSelect?.(customer);
+      customerSelectedRef.current = true;
+      setIsDropdownVisible(false);
+      setSearchResults([]);
+      inputRef.current?.blur();
+    },
+    [onCustomerSelect],
+  );
 
   // Handle input field receiving focus
-  const handleFocus = () => {
-    console.log("handleFocus: Input focused.");
-    setIsInputFocused(true); // Set focus state
+  const handleFocus = useCallback(() => {
+    setIsInputFocused(true);
+    const trimmedQuery = internalQuery.trim();
 
-    // If there is already text in the input and we have search results, show the dropdown
-    // This handles the case where the user focuses the input again after blurring
-    if (
-      internalQuery.trim().length > 0 &&
-      searchResults !== null &&
-      searchResults.length > 0
-    ) {
-      console.log(
-        "handleFocus: Input has value and results exist, showing dropdown.",
-      );
+    if (trimmedQuery.length >= minQueryLength && searchResults.length > 0) {
       setIsDropdownVisible(true);
     } else if (
-      internalQuery.trim().length > 0 &&
-      searchResults === null &&
+      trimmedQuery.length >= minQueryLength &&
+      searchResults.length === 0 &&
       !isFetching &&
-      debouncedQuery.trim() !== internalQuery.trim()
+      debouncedQuery !== trimmedQuery
     ) {
-      // If input has value, no results yet, not fetching, and debounced query is stale,
-      // immediately trigger debounce to fetch results on focus.
-      console.log(
-        "handleFocus: Input has value, no results, not fetching, debounced stale. Triggering fetch.",
-      );
-      setDebouncedQuery(internalQuery.trim());
-      // The fetch effect will show the dropdown if results are found
-    } else if (
-      internalQuery.trim().length > 0 &&
-      searchResults === null &&
-      isFetching
-    ) {
-      // If input has value and we're already fetching, just wait for fetch effect to handle dropdown
-      console.log(
-        "handleFocus: Input has value, fetching in progress. Waiting for fetch result.",
-      );
+      setDebouncedQuery(trimmedQuery);
     }
-    // If input is empty, dropdown stays hidden until user types and results arrive
-  };
+  }, [
+    internalQuery,
+    searchResults,
+    isFetching,
+    debouncedQuery,
+    minQueryLength,
+  ]);
 
   // Handle input field losing focus
-  const handleBlur = () => {
-    console.log("handleBlur: Input blurred.");
-    // Use a timeout to allow click events on the dropdown items to register
-    // before the dropdown is hidden and focus state is reset.
+  const handleBlur = useCallback(() => {
+    // Use timeout to allow dropdown clicks to register
     setTimeout(() => {
-      console.log("handleBlur: Timeout finished.");
-      setIsInputFocused(false); // Reset focus state
-      setIsDropdownVisible(false); // Hide the dropdown
-      // Optional: Clear search results on blur if you want to hide results when not focused
-      // setSearchResults(null);
-    }, 100); // 100ms delay
-  };
+      setIsInputFocused(false);
+      setIsDropdownVisible(false);
+    }, 150);
+  }, []);
 
-  // Determine if the floating label should be in the floated state
-  // It floats if the input is focused OR if it has a non-empty value
-  const shouldLabelFloat = isInputFocused || internalQuery.trim().length > 0;
+  // Memoize computed styles
+  const shouldLabelFloat = useMemo(
+    () => isInputFocused || internalQuery.trim().length > 0,
+    [isInputFocused, internalQuery],
+  );
 
-  // --- Dynamic Class Handling (using state instead of peer) ---
-  // Border color based on error, focus, or default
-  let borderColor = error
-    ? "border-red-500" // Error state
-    : isInputFocused
-      ? "border-customDarkPink" // Focused state
-      : "border-gray-300"; // Default state
+  const borderColor = useMemo(
+    () =>
+      error
+        ? "border-red-500"
+        : isInputFocused
+          ? "border-customDarkPink"
+          : "border-gray-300",
+    [error, isInputFocused],
+  );
 
-  // Label and status text color based on error, focus, or default
-  let labelColor = error
-    ? "text-red-600" // Error state
-    : isInputFocused
-      ? "text-customDarkPink" // Focused state
-      : "text-gray-500"; // Default state
+  const labelColor = useMemo(
+    () =>
+      error
+        ? "text-red-600"
+        : isInputFocused
+          ? "text-customDarkPink"
+          : "text-gray-500",
+    [error, isInputFocused],
+  );
 
-  // Styles for disabled input
-  const inputDisabledStyle = disabled ? "cursor-not-allowed bg-gray-100" : "";
+  const labelClasses = useMemo(
+    () =>
+      `absolute left-3 px-1 font-medium transition-all duration-150 pointer-events-none bg-white whitespace-nowrap ${labelColor} ${
+        shouldLabelFloat
+          ? "top-0 -translate-y-1/2 text-sm z-10"
+          : "top-1/2 -translate-y-1/2 text-base z-0"
+      } ${disabled ? "cursor-not-allowed text-gray-400" : "cursor-text"}`,
+    [labelColor, shouldLabelFloat, disabled],
+  );
 
-  // Base label classes for position and transition
-  const labelBaseClasses =
-    "absolute left-3 px-1 font-medium transition-all duration-150 pointer-events-none bg-white whitespace-nowrap"; // Added bg-white
-
-  // Floating label classes for the upper position and size
-  // Removed z-10 from here, apply dynamically below
-  const labelFloatedClasses = "top-0 -translate-y-1/2 text-sm";
-
-  // Combine base and floated label classes based on state
-  const labelClasses = `${labelBaseClasses}
-     ${labelColor}
-     ${shouldLabelFloat ? labelFloatedClasses : "top-1/2 -translate-y-1/2 text-base"} // Apply floated or base position/size
-     ${shouldLabelFloat ? "z-10" : "z-0"} // Apply z-index based on float state
-     ${disabled ? "cursor-not-allowed text-gray-400" : "cursor-text"}
-     `;
-  // Using text-sm/text-base and z-10/z-0 conditionally based on shouldLabelFloat
+  const inputClasses = useMemo(
+    () =>
+      `relative z-0 h-[50px] w-full rounded-md border-2 bg-white px-2 shadow-sm outline-none transition-colors duration-150 ${borderColor} ${
+        disabled ? "cursor-not-allowed bg-gray-100" : ""
+      } ${shouldLabelFloat ? "pt-[1.125rem]" : "py-[0.6rem]"} pt-2.5`,
+    [borderColor, disabled, shouldLabelFloat],
+  );
 
   return (
     <div className="relative w-full">
@@ -288,17 +303,16 @@ export default function CustomerInput({
           ref={inputRef}
           name="customer_display"
           id="customer-input"
-          value={internalQuery} // Controlled by React state
-          onChange={handleInput} // Use internal handler
-          onFocus={handleFocus} // Use internal handler
-          onBlur={handleBlur} // Use internal handler
-          autoComplete="off" // Disable browser autocomplete
-          // Removed placeholder=" " as we're not using :placeholder-shown
-          className={`// Height class relative z-0 h-[50px] w-full rounded-md border-2 bg-white px-2 shadow-sm outline-none transition-colors duration-150 ${borderColor} // Border color based on state ${inputDisabledStyle} // Disabled styles // Add padding-top to make space for floated label ${shouldLabelFloat ? "pt-[1.125rem]" : "py-[0.6rem]"} // Adjust padding based on whether label is floated (pt-5 vs roughly) pt-2.5`}
-          aria-invalid={!!error} // Accessibility: indicates if input is invalid
-          aria-describedby={error ? "customer-error" : undefined} // Accessibility: links to error message
-          disabled={disabled} // Disable input field
-          autoFocus={autoFocus} // Auto-focus on mount if prop is true
+          value={internalQuery}
+          onChange={handleInput}
+          onFocus={handleFocus}
+          onBlur={handleBlur}
+          autoComplete="off"
+          className={inputClasses}
+          aria-invalid={!!error}
+          aria-describedby={error ? "customer-error" : undefined}
+          disabled={disabled}
+          autoFocus={autoFocus}
         />
         {/* The label element */}
         <label
@@ -316,20 +330,17 @@ export default function CustomerInput({
         )}
 
         {/* Dropdown for search results */}
-        {/* Only show if dropdown is visible AND there are search results */}
-        {isDropdownVisible && searchResults !== null && (
+        {isDropdownVisible && (
           <div className="absolute left-0 top-full z-20 mt-1 max-h-[300px] w-full overflow-y-auto rounded-md border border-gray-300 bg-white py-2 shadow-lg">
             {searchResults.length > 0
               ? searchResults.map((customer) => (
                   <div
                     key={customer.id}
-                    className="cursor-pointer px-3 py-2 text-sm hover:bg-gray-100"
-                    // Use onMouseDown to prevent input blur before click
+                    className="cursor-pointer px-3 py-2 text-sm transition-colors hover:bg-gray-100"
                     onMouseDown={(e) => {
-                      e.preventDefault(); // Prevent input blur
-                      handleSelecting(customer); // Handle selection
+                      e.preventDefault();
+                      handleSelecting(customer);
                     }}
-                    // onTouchStart is good for touch devices, preventing passive listeners issues
                     onTouchStart={() => handleSelecting(customer)}
                   >
                     <span className="font-medium text-gray-900">
@@ -344,7 +355,6 @@ export default function CustomerInput({
                 ))
               : debouncedQuery.trim() !== "" &&
                 !isFetching && (
-                  // Message displayed when no results are found and fetching is not in progress
                   <div className="px-3 py-2 text-sm italic text-gray-500">
                     No customers found.
                   </div>

@@ -1,10 +1,10 @@
 // lib/authOptions.ts
 import type { NextAuthOptions } from "next-auth";
 import CredentialsProvider from "next-auth/providers/credentials";
-import { PrismaClient, Role } from "@prisma/client";
+import { Role } from "@prisma/client";
 import { compare } from "bcryptjs";
+import prisma from "@/lib/prisma"; // Use the singleton Prisma client instead of creating a new instance
 
-const prisma = new PrismaClient();
 const isDevelopment = process.env.NODE_ENV === "development";
 
 export const authOptions: NextAuthOptions = {

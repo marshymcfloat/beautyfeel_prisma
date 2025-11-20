@@ -6,6 +6,7 @@ import React, {
   useCallback,
   useMemo,
   useRef,
+  useTransition,
 } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import { useRouter } from "next/navigation";
@@ -80,6 +81,7 @@ export default function CashierInterceptedModal() {
   const dispatch = useDispatch<AppDispatch>();
 
   const hasFetchedRules = useRef(false);
+  const [isPending, startTransition] = useTransition();
 
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [formErrors, setFormErrors] = useState<Record<string, string>>({});
@@ -121,7 +123,7 @@ export default function CashierInterceptedModal() {
 
   const isOverallLoading = itemsLoading || branchesLoading;
   const isAnyProcessLoading =
-    isSubmitting || isOverallLoading || !!isCancellingRa;
+    isSubmitting || isOverallLoading || !!isCancellingRa || isPending;
 
   useEffect(() => {
     if (!services && !itemsLoading && !itemsError) {
@@ -135,11 +137,9 @@ export default function CashierInterceptedModal() {
     }
 
     if (!hasFetchedRules.current) {
-      console.log("Attempting to fetch active discount rules...");
       hasFetchedRules.current = true;
       getActiveDiscountRules()
         .then((rules) => {
-          console.log("Fetched rules:", rules);
           dispatch(
             cashierActions.applyDiscounts({
               rules: Array.isArray(rules)
@@ -148,9 +148,7 @@ export default function CashierInterceptedModal() {
             }),
           );
         })
-        .catch((e) => {
-          console.error("Error fetching rules:", e);
-
+        .catch(() => {
           dispatch(cashierActions.applyDiscounts({ rules: [] }));
         });
     }
@@ -245,19 +243,23 @@ export default function CashierInterceptedModal() {
 
   const handleSelectChanges = useCallback(
     (key: string, value: string) => {
-      if (key === "serviceType")
-        dispatch(
-          cashierActions.setServiceType(value as CashierState["serviceType"]),
-        );
-      else if (key === "serveTime")
-        dispatch(
-          cashierActions.setServeTime(value as CashierState["serveTime"]),
-        );
-      else if (key === "paymentMethod")
-        dispatch(
-          cashierActions.setPaymentMethod(value as PrismaPaymentMethod | null),
-        );
-      else if (key === "branchFilter") setSelectedBranchId(value);
+      startTransition(() => {
+        if (key === "serviceType")
+          dispatch(
+            cashierActions.setServiceType(value as CashierState["serviceType"]),
+          );
+        else if (key === "serveTime")
+          dispatch(
+            cashierActions.setServeTime(value as CashierState["serveTime"]),
+          );
+        else if (key === "paymentMethod")
+          dispatch(
+            cashierActions.setPaymentMethod(
+              value as PrismaPaymentMethod | null,
+            ),
+          );
+        else if (key === "branchFilter") setSelectedBranchId(value);
+      });
     },
     [dispatch],
   );
@@ -335,11 +337,15 @@ export default function CashierInterceptedModal() {
       try {
         const result =
           await cancelRecommendedAppointmentAction(recommendationId);
-        if (result.success)
+        if (result.success) {
           dispatch(cashierActions.removeRecommendation(recommendationId));
-        else setCancellationError(result.message || "Failed to cancel.");
-      } catch (e: any) {
-        setCancellationError(e.message || "Error cancelling.");
+        } else {
+          setCancellationError(result.message || "Failed to cancel.");
+        }
+      } catch (e: unknown) {
+        setCancellationError(
+          e instanceof Error ? e.message : "Error cancelling.",
+        );
       } finally {
         setIsCancellingRa(null);
       }
@@ -347,20 +353,15 @@ export default function CashierInterceptedModal() {
     [dispatch],
   );
 
-  const handleConfirmClick = async () => {
+  const handleConfirmClick = useCallback(async () => {
     setIsSubmitting(true);
     setFormErrors({});
-    let localErrors: Record<string, string> = {};
+    const localErrors: Record<string, string> = {};
 
-    // Name is still required
+    // Name validation
     if (!name.trim()) localErrors.name = "Customer name required.";
 
-    // *** REMOVE the old email requirement check: ***
-    // if (customerId === null && (!email || !email.trim())) {
-    //   localErrors.email = "Email is required for new customers.";
-    // }
-
-    // *** KEEP the email format validation if email IS provided: ***
+    // Email format validation if provided
     if (
       email &&
       email.trim() &&
@@ -369,14 +370,27 @@ export default function CashierInterceptedModal() {
       localErrors.email = "Invalid email format.";
     }
 
-    // Services are still required
+    // Services validation
     if (!servicesAvailed.length)
       localErrors.servicesAvailed = "Select at least one service.";
-    // Payment method is still required
+
+    // Payment method validation
     if (!paymentMethod) localErrors.paymentMethod = "Payment method required.";
-    // Date/time required for later booking
-    if (serveTime === "later" && (!date || !time))
-      localErrors.serveTime = "Date and time required for later booking.";
+
+    // Date/time validation for later booking
+    if (serveTime === "later") {
+      if (!date || !time) {
+        localErrors.serveTime = "Date and time required for later booking.";
+      } else {
+        // Validate that booking date is not in the past
+        const bookingDate = new Date(`${date}T${time}`);
+        const now = new Date();
+        if (bookingDate < now) {
+          localErrors.serveTime =
+            "Booking date and time cannot be in the past.";
+        }
+      }
+    }
 
     if (Object.keys(localErrors).length > 0) {
       setFormErrors({ general: "Please correct the errors.", ...localErrors });
@@ -386,20 +400,36 @@ export default function CashierInterceptedModal() {
 
     try {
       const response = await transactionSubmission(cashierForm);
-      if (response.success) router.back();
-      else
+      if (response.success) {
+        router.back();
+      } else {
         setFormErrors({
           general: response.message || "Submission failed.",
           ...(response.errors || {}),
         });
-    } catch (e: any) {
-      setFormErrors({ general: e.message || "Unexpected error." });
+      }
+    } catch (e: unknown) {
+      setFormErrors({
+        general: e instanceof Error ? e.message : "Unexpected error.",
+      });
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [
+    name,
+    email,
+    servicesAvailed,
+    paymentMethod,
+    serveTime,
+    date,
+    time,
+    cashierForm,
+    router,
+  ]);
 
-  const handleCancel = () => router.back();
+  const handleCancel = useCallback(() => {
+    router.back();
+  }, [router]);
 
   const isEmailInputDisabled = customerId !== null;
 

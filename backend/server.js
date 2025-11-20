@@ -155,8 +155,13 @@ const prisma = new PrismaClient({
     maxWait: 10000,
     timeout: 15000,
   },
+  log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
 });
 const app = express();
+
+// Add Express middleware for better performance
+app.use(express.json({ limit: "10mb" })); // Parse JSON bodies
+app.use(express.urlencoded({ extended: true, limit: "10mb" })); // Parse URL-encoded bodies
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: {
@@ -979,74 +984,16 @@ async function completeTransactionAndCalculateSalary(transactionId) {
           );
         }
 
-        // Step 6: Return the fetched data (or a subset) for broadcasting and post-treatment emails.
-        // This second fetch ensures we have the latest state after updates within the transaction
-        const dataForPostOps = await tx.transaction.findUnique({
-          where: { id: transactionId },
-          select: {
-            id: true,
-            status: true, // Should be DONE now
-            bookedFor: true,
-            grandTotal: true,
-            discount: true,
-            customer: { select: { id: true, name: true, email: true } },
-            createdAt: true,
-            updatedAt: true, // Include if it exists in your schema
-            customerId: true,
-            voucherId: true,
-            giftCertificateId: true,
-            branchId: true,
-
-            availedServices: {
-              select: {
-                id: true,
-                quantity: true,
-                price: true,
-                commissionValue: true, // This should now be the updated value
-                originatingSetId: true,
-                originatingSetTitle: true,
-                serviceSetId: true,
-                createdAt: true,
-                updatedAt: true,
-                postTreatmentEmailSentAt: true,
-                service: {
-                  select: {
-                    id: true,
-                    title: true,
-                    price: true,
-                    recommendFollowUp: true,
-                    recommendedFollowUpDays: true,
-                    followUpPolicy: true,
-                    sendPostTreatmentEmail: true,
-                    postTreatmentEmailSubject: true,
-                    postTreatmentInstructions: true,
-                  },
-                },
-                units: {
-                  select: {
-                    // Select fields for units
-                    id: true,
-                    status: true,
-                    completedAt: true,
-                    unitIndex: true,
-                    checkedAt: true, // Include checkedAt
-                    servedAt: true, // Include servedAt
-                    availedServiceId: true, // Include scalar AS ID for relation reference
-                    checkedBy: { select: { id: true, name: true } },
-                    servedBy: { select: { id: true, name: true } },
-                  },
-                  orderBy: { unitIndex: "asc" },
-                },
-              },
-              orderBy: { createdAt: "asc" },
-            },
-            voucherUsed: { select: { code: true, value: true } },
-            branch: { select: { id: true, title: true, code: true } },
-            giftCertificateUsed: { select: { id: true, code: true } },
-
-            bookingReminderSentAt: true,
-          },
-        });
+        // Step 6: Optimized - Construct data from existing query instead of re-fetching
+        // Update commissionValue in the existing data structure with calculated values
+        const dataForPostOps = {
+          ...transactionDataForCoreOps,
+          status: Status.DONE, // Status is now DONE after update
+          availedServices: transactionDataForCoreOps.availedServices.map((as) => ({
+            ...as,
+            commissionValue: availedServiceTotalCommissions.get(as.id) || as.commissionValue || 0,
+          })),
+        };
 
         return dataForPostOps; // Return the updated transaction data
       },
@@ -2365,6 +2312,26 @@ async function checkAndSendFollowUpReminders() {
     }),
   );
 
+  // Optimized: Fetch email template once before the loop instead of in each iteration
+  let followUpTemplate = null;
+  try {
+    followUpTemplate = await prisma.emailTemplate.findUnique({
+      where: { name: "Follow-up Reminder" },
+    });
+    if (!followUpTemplate || !followUpTemplate.isActive) {
+      console.warn(
+        `[Cron FollowUp] Template "Follow-up Reminder" not found or inactive. Skipping all reminders.`,
+      );
+      return;
+    }
+  } catch (templateError) {
+    console.error(
+      `[Cron FollowUp] Error fetching email template:`,
+      templateError,
+    );
+    return;
+  }
+
   try {
     const rAsToConsider = await prisma.recommendedAppointment.findMany({
       where: {
@@ -2479,17 +2446,8 @@ async function checkAndSendFollowUpReminders() {
             "It's not too late to get back on track! Contact us to schedule your next visit.";
         }
 
-        // Fetch the Follow-up Reminder email template
-        const followUpTemplate = await prisma.emailTemplate.findUnique({
-          where: { name: "Follow-up Reminder" },
-        });
-
-        if (!followUpTemplate || !followUpTemplate.isActive) {
-          console.warn(
-            `[Cron FollowUp] Template "Follow-up Reminder" not found or inactive for RA ${ra.id}. Skipping email.`,
-          );
-          continue; // Skip to the next RA
-        }
+        // Email template is fetched once before the loop for optimization
+        // (See optimization at the start of the function)
 
         // Replace placeholders in the template body
         let processedContentBodyHtml = followUpTemplate.body;
@@ -2642,6 +2600,26 @@ async function checkAndSendBookingReminders() {
     `[Cron BookingReminder] Reminder Window in ${PHILIPPINES_TIMEZONE}: ${formatInTimeZone(reminderWindowStartUTC, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")} to ${formatInTimeZone(reminderWindowEndUTC, PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ss")}`,
   );
 
+  // Optimized: Fetch email template once before the loop instead of in each iteration
+  let bookingReminderTemplate = null;
+  try {
+    bookingReminderTemplate = await prisma.emailTemplate.findUnique({
+      where: { name: "Booking Reminder (1-Hour)" },
+    });
+    if (!bookingReminderTemplate || !bookingReminderTemplate.isActive) {
+      console.warn(
+        `[Cron BookingReminder] Template "Booking Reminder (1-Hour)" not found or inactive. Skipping all reminders.`,
+      );
+      return;
+    }
+  } catch (templateError) {
+    console.error(
+      `[Cron BookingReminder] Error fetching email template:`,
+      templateError,
+    );
+    return;
+  }
+
   try {
     const transactionsToConsider = await prisma.transaction.findMany({
       where: {
@@ -2712,17 +2690,7 @@ async function checkAndSendBookingReminders() {
         .filter(Boolean) // Remove any null/undefined/empty strings
         .join(", ");
 
-      const bookingReminderTemplate = await prisma.emailTemplate.findUnique({
-        where: { name: "Booking Reminder (1-Hour)" },
-      });
-
-      if (!bookingReminderTemplate || !bookingReminderTemplate.isActive) {
-        console.warn(
-          `[Cron BookingReminder] Template "Booking Reminder (1-Hour)" not found or inactive for TXN ${txn.id}. SKIPPING email.`,
-        );
-        continue;
-      }
-
+      // Email template is already fetched once before the loop (optimized)
       // Replace placeholders in the template body
       let processedContentBodyHtml = bookingReminderTemplate.body;
       processedContentBodyHtml = processedContentBodyHtml.replace(

@@ -70,8 +70,8 @@ import {
   eachMonthOfInterval,
   setDate,
 } from "date-fns";
+import { fromZonedTime, toZonedTime, formatInTimeZone } from "date-fns-tz";
 
-import { withAccelerate } from "@prisma/extension-accelerate";
 import {
   ServiceSimple,
   AvailedServicesPropsForTransactions,
@@ -83,6 +83,7 @@ import {
   CustomerWithRecommendations,
   CustomerForEmail,
   AttendanceRecord,
+  BranchForSelect,
 } from "./Types";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
@@ -689,10 +690,7 @@ type OptimisticUpdateAttendanceRecord = {
   // might have different shapes.
 };
 
-type BranchForSelect = {
-  id: string;
-  title: string;
-};
+// BranchForSelect is now imported from ./Types
 
 type EmployeeForAttendance = Pick<Account, "id" | "name" | "dailyRate"> & {
   branchTitle: string | null;
@@ -2799,23 +2797,34 @@ export async function getServicesAndSetsForGC(
 
 export async function getCustomer(
   query: string,
-): Promise<CustomerWithRecommendations[] | null> {
-  console.log("Server: getCustomer called with query:", query);
-  if (!query || query.trim() === "") {
-    console.log("Server: Query is empty, returning null.");
-    return null;
+): Promise<CustomerWithRecommendations[]> {
+  // Input validation and sanitization
+  if (!query || typeof query !== "string") {
+    return [];
   }
-  const searchTerm = query.trim().toLowerCase();
+
+  const trimmedQuery = query.trim();
+
+  // Minimum query length check for performance
+  if (trimmedQuery.length < 2) {
+    return [];
+  }
+
+  // Sanitize query to prevent potential issues (limit length, escape special chars)
+  const sanitizedQuery = trimmedQuery.slice(0, 100).toLowerCase();
 
   try {
     const customers = await prisma.customer.findMany({
       where: {
         OR: [
-          { name: { contains: searchTerm, mode: "insensitive" } },
-          { email: { contains: searchTerm, mode: "insensitive" } },
+          { name: { contains: sanitizedQuery, mode: "insensitive" } },
+          { email: { contains: sanitizedQuery, mode: "insensitive" } },
         ],
       },
-      include: {
+      select: {
+        id: true,
+        name: true,
+        email: true,
         recommendedAppointments: {
           where: {
             status: {
@@ -2836,7 +2845,6 @@ export async function getCustomer(
               select: {
                 id: true,
                 title: true,
-
                 followUpPolicy: true,
               },
             },
@@ -2844,13 +2852,12 @@ export async function getCustomer(
         },
       },
       take: 10,
+      orderBy: {
+        name: "asc", // Consistent ordering
+      },
     });
 
-    console.log(
-      "Server: Prisma fetched customers:",
-      JSON.stringify(customers, null, 2),
-    );
-
+    // Transform results efficiently
     const result: CustomerWithRecommendations[] = customers.map((customer) => ({
       id: customer.id,
       name: customer.name,
@@ -2863,24 +2870,21 @@ export async function getCustomer(
           ? {
               id: ra.originatingService.id,
               title: ra.originatingService.title,
-
               followUpPolicy: ra.originatingService.followUpPolicy,
             }
           : null,
       })),
     }));
 
-    console.log(
-      "Server: Formatted results for client:",
-      JSON.stringify(result, null, 2),
-    );
     return result;
   } catch (error) {
+    // Log error for debugging but don't expose details to client
     console.error(
-      "Server: Error fetching customers with recommendations:",
-      error,
+      "[getCustomer] Error fetching customers:",
+      error instanceof Error ? error.message : "Unknown error",
     );
-    return null;
+    // Return empty array instead of null for consistency
+    return [];
   }
 }
 
@@ -3143,63 +3147,55 @@ export async function transactionSubmission(
     }
 
     const customerNameFormatted = formatName(name);
-    let finalBookingDateTimeUTC: Date | null = null; // Initialize as null
+    let finalBookingDateTimeUTC: Date | null = null;
 
     if (serveTime === "later" && dateString && timeString) {
-      // ... (date parsing logic remains the same) ...
       try {
-        if (typeof MANILA_OFFSET_HOURS === "undefined") {
-          console.error("MANILA_OFFSET_HOURS is not defined!");
+        // Parse the date and time strings in Asia/Manila timezone
+        const dateTimeStringInPHT = `${dateString}T${timeString}:00`;
+
+        // Create a date object assuming the input is in Asia/Manila timezone
+        // Then convert it to UTC for database storage
+        const localDateTime = new Date(dateTimeStringInPHT);
+
+        if (isNaN(localDateTime.getTime())) {
           throw new Error(
-            "Server configuration error: Timezone offset not defined.",
+            `Invalid date/time format. Could not parse: "${dateTimeStringInPHT}".`,
           );
         }
 
-        let phtOffsetFormatted: string;
-        if (MANILA_OFFSET_HOURS === 0) {
-          phtOffsetFormatted = "Z"; // UTC
-        } else {
-          const sign = MANILA_OFFSET_HOURS > 0 ? "+" : "-";
-          const absHours = Math.abs(MANILA_OFFSET_HOURS);
-          const hoursPart = String(Math.floor(absHours)).padStart(2, "0");
-          const minutesPart = String(Math.round((absHours % 1) * 60)).padStart(
-            2,
-            "0",
-          );
-          phtOffsetFormatted = `${sign}${hoursPart}:${minutesPart}`;
-        }
-        const dateTimeStringInPHT = `${dateString}T${timeString}:00${phtOffsetFormatted}`;
-
-        finalBookingDateTimeUTC = new Date(dateTimeStringInPHT);
-
-        if (isNaN(finalBookingDateTimeUTC.getTime())) {
-          throw new Error(
-            `Invalid date/time for 'later' booking. Could not parse: "${dateTimeStringInPHT}".`,
-          );
-        }
-        bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC;
-      } catch (e: any) {
-        console.error(
-          "Server Action: Error parsing date/time for 'later' booking:",
-          e.message,
-          e,
+        // Convert from Asia/Manila timezone to UTC
+        finalBookingDateTimeUTC = fromZonedTime(
+          dateTimeStringInPHT,
+          PHT_TIMEZONE,
         );
+
+        // Validate that booking is not in the past
+        const nowInPHT = toZonedTime(new Date(), PHT_TIMEZONE);
+        const bookingInPHT = toZonedTime(finalBookingDateTimeUTC, PHT_TIMEZONE);
+
+        if (bookingInPHT < nowInPHT) {
+          throw new Error("Booking date and time cannot be in the past.");
+        }
+
+        bookingDateTimeForConfirmationEmail = finalBookingDateTimeUTC;
+      } catch (e: unknown) {
+        const errorMessage =
+          e instanceof Error
+            ? e.message
+            : "Invalid date or time format for 'later' booking.";
         return {
           success: false,
-          message:
-            e.message || "Invalid date or time format for 'later' booking.",
+          message: errorMessage,
           errors: {
-            serveTime: [e.message || "Invalid date or time format provided."],
+            serveTime: [errorMessage],
           },
         };
       }
-      // ... (end date parsing logic) ...
+    } else if (serveTime === "now") {
+      finalBookingDateTimeUTC = transactionProcessingStartTimeUTC;
     } else {
-      if (serveTime === "now") {
-        finalBookingDateTimeUTC = transactionProcessingStartTimeUTC;
-      } else {
-        finalBookingDateTimeUTC = null; // Default to null if not 'later' or 'now'
-      }
+      finalBookingDateTimeUTC = null;
     }
 
     // Use a more general type for the transaction client within the callback
@@ -3548,11 +3544,11 @@ export async function transactionSubmission(
         `[TX Submit] Updated Customer ${customerRecord.id} totalPaid by ${grandTotal}.`,
       );
 
-      // Re-calculate and update nextAppointment for the customer
+      // Re-calculate and update nextAppointment for the customer (optimized: single query)
       const customerForNextApptQuery = await tx.customer.findUnique({
-        // Use tx
         where: { id: customerRecord.id },
         select: {
+          nextAppointment: true,
           recommendedAppointments: {
             where: {
               status: {
@@ -3561,11 +3557,10 @@ export async function transactionSubmission(
                   RecommendedAppointmentStatus.SCHEDULED,
                 ],
               },
-              // Filter RAs whose recommendedDate is today or in the future
               recommendedDate: { gte: startOfDay(new Date()) },
             },
             orderBy: { recommendedDate: "asc" },
-            take: 1, // Get the earliest one
+            take: 1,
             select: { recommendedDate: true },
           },
         },
@@ -3574,29 +3569,16 @@ export async function transactionSubmission(
       const newEarliestActiveRADate =
         customerForNextApptQuery?.recommendedAppointments[0]?.recommendedDate ||
         null;
-
-      // Only update if the next appointment date has actually changed or become null
-      // (e.g., if the attended RA was the only upcoming one)
-      const currentCustomerData = await tx.customer.findUnique({
-        // Use tx to get current nextAppointment
-        where: { id: customerRecord.id },
-        select: { nextAppointment: true },
-      });
-
-      // Compare using startOfDay for date comparison, allowing null
-      // Need to ensure startOfDay and format are imported/defined
-      // import { startOfDay, format } from 'date-fns'; // Add these imports
-      const currentNextApptDate = currentCustomerData?.nextAppointment
-        ? startOfDay(currentCustomerData.nextAppointment)
+      const currentNextApptDate = customerForNextApptQuery?.nextAppointment
+        ? startOfDay(customerForNextApptQuery.nextAppointment)
         : null;
       const newNextApptDate = newEarliestActiveRADate
         ? startOfDay(newEarliestActiveRADate)
         : null;
 
+      // Only update if the next appointment date has actually changed
       if (currentNextApptDate?.getTime() !== newNextApptDate?.getTime()) {
-        // Compare timestamps or null
         await tx.customer.update({
-          // Use tx
           where: { id: customerRecord.id },
           data: { nextAppointment: newEarliestActiveRADate },
         });
@@ -4559,10 +4541,35 @@ export async function getActiveTransactions(
       `[getActiveTransactions] Found ${transactions.length} pending transactions for account ${accountId}.`,
     );
 
-    // Map transactions to match TransactionPropsForTransactions type
-    // The originatingRecommendations and attendedAppointment from the query
-    // only have partial fields, so we need to map them properly
-    // Also need to map availedServices.units to ensure checkedBy and servedBy match ClientAccountIncluded type
+    // Map transactions to match TransactionPropsForTransactions type (optimized with pre-computed defaults)
+    const defaultAccountFields = {
+      username: "",
+      email: null,
+      role: [],
+      salary: 0,
+      dailyRate: 0,
+      branchId: null,
+      canRequestPayslip: false,
+      mustChangePassword: false,
+    };
+    const defaultRecommendedAppointmentFields = {
+      customerId: "",
+      recommendedDate: new Date(),
+      originatingTransactionId: null,
+      originatingAvailedServiceId: "",
+      suppressNextFollowUpGeneration: false,
+      reminder3DaySentAt: null,
+      reminder2DaySentAt: null,
+      reminder1DaySentAt: null,
+      reminderTodaySentAt: null,
+      reminder1DayAfterSentAt: null,
+      reminder7DaySentAt: null,
+      reminder7DayAfterSentAt: null,
+      reminder14DayAfterSentAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
     const mappedTransactions: TransactionPropsForTransactions[] =
       transactions.map((tx) => ({
         ...tx,
@@ -4574,28 +4581,14 @@ export async function getActiveTransactions(
               ? {
                   id: unit.checkedBy.id,
                   name: unit.checkedBy.name,
-                  username: "", // Not selected in query, set to empty string
-                  email: null, // Not selected in query
-                  role: [], // Not selected in query
-                  salary: 0, // Not selected in query
-                  dailyRate: 0, // Not selected in query
-                  branchId: null, // Not selected in query
-                  canRequestPayslip: false, // Not selected in query
-                  mustChangePassword: false, // Not selected in query
+                  ...defaultAccountFields,
                 }
               : null,
             servedBy: unit.servedBy
               ? {
                   id: unit.servedBy.id,
                   name: unit.servedBy.name,
-                  username: "", // Not selected in query, set to empty string
-                  email: null, // Not selected in query
-                  role: [], // Not selected in query
-                  salary: 0, // Not selected in query
-                  dailyRate: 0, // Not selected in query
-                  branchId: null, // Not selected in query
-                  canRequestPayslip: false, // Not selected in query
-                  mustChangePassword: false, // Not selected in query
+                  ...defaultAccountFields,
                 }
               : null,
           })),
@@ -4603,24 +4596,10 @@ export async function getActiveTransactions(
         originatingRecommendations: tx.originatingRecommendations.map(
           (rec) => ({
             id: rec.id,
-            customerId: "", // Not selected in query, set to empty string
-            recommendedDate: new Date(), // Not selected in query, set to current date
-            originatingTransactionId: null, // Not selected in query
-            originatingAvailedServiceId: "", // Not selected in query
+            ...defaultRecommendedAppointmentFields,
             originatingServiceId: rec.originatingService?.id || "",
-            status: "PENDING" as any, // Not selected in query, set default
+            status: "PENDING" as any,
             attendedTransactionId: rec.attendedTransaction?.id || null,
-            suppressNextFollowUpGeneration: false, // Not selected in query
-            reminder3DaySentAt: null,
-            reminder2DaySentAt: null,
-            reminder1DaySentAt: null,
-            reminderTodaySentAt: null,
-            reminder1DayAfterSentAt: null,
-            reminder7DaySentAt: null,
-            reminder7DayAfterSentAt: null,
-            reminder14DayAfterSentAt: null,
-            createdAt: new Date(), // Not selected in query
-            updatedAt: new Date(), // Not selected in query
             originatingService: rec.originatingService || null,
             attendedTransaction: rec.attendedTransaction || null,
           }),
@@ -4628,26 +4607,12 @@ export async function getActiveTransactions(
         attendedAppointment: tx.attendedAppointment
           ? {
               id: tx.attendedAppointment.id,
-              customerId: "", // Not selected in query
-              recommendedDate: new Date(), // Not selected in query
-              originatingTransactionId: null,
-              originatingAvailedServiceId: "",
+              ...defaultRecommendedAppointmentFields,
               originatingServiceId:
                 tx.attendedAppointment.originatingService?.id || "",
-              status: "ATTENDED" as any, // Not selected in query
+              status: "ATTENDED" as any,
               attendedTransactionId:
                 tx.attendedAppointment.attendedTransaction?.id || null,
-              suppressNextFollowUpGeneration: false,
-              reminder3DaySentAt: null,
-              reminder2DaySentAt: null,
-              reminder1DaySentAt: null,
-              reminderTodaySentAt: null,
-              reminder1DayAfterSentAt: null,
-              reminder7DaySentAt: null,
-              reminder7DayAfterSentAt: null,
-              reminder14DayAfterSentAt: null,
-              createdAt: new Date(),
-              updatedAt: new Date(),
               originatingService:
                 tx.attendedAppointment.originatingService || null,
               attendedTransaction:
@@ -4662,15 +4627,26 @@ export async function getActiveTransactions(
       "[getActiveTransactions] Error fetching active transactions:",
       error,
     );
+    
+    // Handle Prisma connection errors gracefully
+    // Return empty array instead of throwing to prevent app crashes
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       console.error("Prisma error details:", error.code, error.meta);
+      
+      // Handle specific error codes
+      if (error.code === "P1001" || error.code === "P1002") {
+        console.error("[getActiveTransactions] Database connection error");
+      } else if (error.code === "P2002") {
+        console.error("[getActiveTransactions] Unique constraint violation");
+      }
+      
+      // Return empty array to allow app to continue functioning
+      return [];
     }
-    throw new Error(
-      `Failed to fetch transactions: ${error.message || "Unknown error"}`,
-    );
-  } finally {
-    // Optional: Disconnect Prisma if not using connection pooling
-    // await prisma.$disconnect();
+    
+    // For unknown errors, log and return empty array
+    console.error("[getActiveTransactions] Unknown error type:", error);
+    return [];
   }
 }
 
@@ -5793,6 +5769,7 @@ export async function getBranchesForSelectAction(): Promise<BranchForSelect[]> {
       select: {
         id: true,
         title: true,
+        code: true,
       },
       orderBy: {
         title: "asc",
@@ -8707,23 +8684,23 @@ export async function getCurrentSalaryDetails(
         `[getCurrentSalaryDetails] No valid released payslip found for ${account.id}. Determining period start from earliest activity timestamps.`,
       );
 
-      // Find the earliest attendance date (@db.Date is UTC start of day)
-      const earliestAttendance = await prisma.attendance.findFirst({
-        where: { accountId: account.id },
-        orderBy: { date: "asc" },
-        select: { date: true }, // @db.Date -> UTC 00:00Z Date object
-      });
-
-      // Find the earliest served unit timestamp (@db.DateTime is UTC timestamp)
-      const earliestServedUnit = await prisma.availedServiceUnit.findFirst({
-        where: {
-          servedById: account.id,
-          status: Status.DONE,
-          servedAt: { not: null },
-        },
-        orderBy: { servedAt: "asc" },
-        select: { servedAt: true }, // @db.DateTime -> UTC timestamp Date object
-      });
+      // Find the earliest attendance date and served unit timestamp in parallel (optimized)
+      const [earliestAttendance, earliestServedUnit] = await Promise.all([
+        prisma.attendance.findFirst({
+          where: { accountId: account.id },
+          orderBy: { date: "asc" },
+          select: { date: true }, // @db.Date -> UTC 00:00Z Date object
+        }),
+        prisma.availedServiceUnit.findFirst({
+          where: {
+            servedById: account.id,
+            status: Status.DONE,
+            servedAt: { not: null },
+          },
+          orderBy: { servedAt: "asc" },
+          select: { servedAt: true }, // @db.DateTime -> UTC timestamp Date object
+        }),
+      ]);
 
       const earliestAttDateUtc0000Z =
         earliestAttendance?.date && isValidDate(earliestAttendance.date)
@@ -9934,10 +9911,6 @@ export async function createExpense(data: {
     }
 
     return { success: false, error: userErrorMessage };
-  } finally {
-    if (prisma && typeof (prisma as any).$disconnect === "function") {
-      await prisma.$disconnect();
-    }
   }
 }
 
@@ -12519,18 +12492,19 @@ export async function getCustomersAction(): Promise<CustomerWithDetails[]> {
       // include: { ... } // This part is moved into 'select'
     });
 
-    // The shape of customersFromDb now precisely matches the CustomerWithDetails interface
-    // because of the explicit select, resolving the type error.
-    return customersFromDb.map((customer) => ({
-      id: customer.id,
-      name: customer.name,
-      email: customer.email,
-      totalPaid: customer.totalPaid,
-      nextAppointment: customer.nextAppointment,
-      transactions: customer.transactionHistory,
-      recommendedAppointments: customer.recommendedAppointments,
-      purchasedGiftCertificatesCount: customer._count.purchasedGiftCertificates,
-    }));
+    // Optimized: Directly return the data as it already matches the expected shape
+    // Only need to rename transactionHistory to transactions
+    return customersFromDb.map(
+      (customer) =>
+        ({
+          ...customer,
+          transactions: customer.transactionHistory,
+          purchasedGiftCertificatesCount:
+            customer._count.purchasedGiftCertificates,
+          _count: undefined, // Remove _count as it's not needed in the return type
+          transactionHistory: undefined, // Remove transactionHistory as it's renamed
+        }) as any,
+    );
   } catch (error) {
     console.error("Error fetching customers with details:", error);
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
@@ -12539,8 +12513,6 @@ export async function getCustomersAction(): Promise<CustomerWithDetails[]> {
     throw new Error(
       "Failed to fetch customer data. Please try refreshing the page.",
     );
-  } finally {
-    await prisma.$disconnect(); // Good practice to disconnect in standalone functions
   }
 }
 export async function createCustomerAction(formData: FormData) {

@@ -1717,6 +1717,7 @@ export type OptimisticUpdateAttendanceRecord = {
 export type BranchForSelect = {
   id: string;
   title: string;
+  code: string;
 };
 
 export type EmployeeForAttendance = Pick<

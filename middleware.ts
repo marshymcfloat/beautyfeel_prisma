@@ -4,69 +4,78 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 // Define paths that are always accessible, regardless of authentication state.
-// If your root ("/") is a public landing page, include it here.
 const ALWAYS_ACCESSIBLE_PATHS = [
-  "/", // Assuming root page is accessible to everyone (e.g., public landing)
+  "/", // Root page is accessible to everyone
   "/login",
-  // Add other specific public paths like "/about", "/pricing", etc.
 ];
 
-// Helper to check if a path is an API auth route for NextAuth
-const isApiAuthRoute = (pathname: string) => pathname.startsWith("/api/auth/");
+// Cache for static asset patterns (optimized)
+const STATIC_PATTERN = /\.(ico|png|jpg|jpeg|gif|svg|css|js|webmanifest|txt|xml|well-known)$/i;
 
-// Helper to check for static assets, Next.js internals, or common image/file types
-const isStaticAssetOrInternal = (pathname: string) =>
-  pathname.startsWith("/_next/") || // Next.js internal assets
-  pathname.startsWith("/static/") || // Your static assets in /public/static (if any)
-  pathname.match(
-    /\.(ico|png|jpg|jpeg|gif|svg|css|js|webmanifest|txt|xml|well-known)$/i,
-  ); // Common file extensions and .well-known
+// Helper to check if a path is an API auth route for NextAuth
+const isApiAuthRoute = (pathname: string): boolean => 
+  pathname.startsWith("/api/auth/");
+
+// Helper to check for static assets, Next.js internals
+const isStaticAssetOrInternal = (pathname: string): boolean =>
+  pathname.startsWith("/_next/") ||
+  pathname.startsWith("/static/") ||
+  STATIC_PATTERN.test(pathname);
+
+// Optimized: Only log in development
+const isDevelopment = process.env.NODE_ENV === "development";
+const log = (message: string) => {
+  if (isDevelopment) {
+    console.log(message);
+  }
+};
+
+/**
+ * Get the default dashboard path for a user
+ */
+const getDashboardPath = (accountId: string | undefined): string => {
+  return accountId ? `/${accountId}` : "/";
+};
 
 export async function middleware(request: NextRequest) {
   const { pathname, search, origin } = request.nextUrl;
-  console.log(`[MIDDLEWARE] Request to: ${pathname}`);
+  log(`[MIDDLEWARE] Request to: ${pathname}`);
 
-  // 1. Allow static assets, Next.js internals, and NextAuth API routes to pass through immediately.
+  // 1. Early return for static assets, Next.js internals, and NextAuth API routes
   if (isStaticAssetOrInternal(pathname) || isApiAuthRoute(pathname)) {
-    // A more specific check for .well-known if it's giving false positives for directories
-    if (pathname.startsWith("/.well-known/") && !pathname.includes(".")) {
-      // Potentially a directory-like request to .well-known, let it pass to token check if not a file
-    } else {
-      console.log(
-        `[MIDDLEWARE] Allowing asset/internal/api-auth path: ${pathname}`,
-      );
-      return NextResponse.next();
-    }
+    return NextResponse.next();
   }
 
+  // 2. Get authentication token (optimized with cache)
   const token = await getToken({
     req: request,
-    secret: process.env.NEXTAUTH_SECRET, // Ensure this is set in your .env
+    secret: process.env.NEXTAUTH_SECRET,
   });
 
   // --- Logic for Authenticated Users (token exists) ---
   if (token) {
-    const isDevelopment = process.env.NODE_ENV === "development";
-    
-    if (isDevelopment) {
-      console.log(
-        `[MIDDLEWARE] Token found - ID: ${token.id}, mustChangePassword: ${token.mustChangePassword}`,
-      );
-    }
+    log(
+      `[MIDDLEWARE] Token found - ID: ${token.id}, mustChangePassword: ${token.mustChangePassword}`,
+    );
 
-    // 2. Enforce `mustChangePassword` - highest priority
+    const dashboardPath = getDashboardPath(token.id);
+
+    // 3. Enforce `mustChangePassword` - highest priority
     if (token.mustChangePassword === true) {
       // If user must change password and is NOT on the change-password page
       if (pathname !== "/auth/change-password") {
-        if (isDevelopment) {
-          console.log(
-            `[MIDDLEWARE] mustChangePassword is TRUE. Redirecting to /auth/change-password.`,
-          );
-        }
+        log(
+          `[MIDDLEWARE] mustChangePassword is TRUE. Redirecting to /auth/change-password.`,
+        );
         const changePasswordUrl = new URL("/auth/change-password", origin);
-        // Preserve callbackUrl if it exists
-        if (search) {
-          changePasswordUrl.search = search;
+        // Preserve callbackUrl for after password change
+        const currentUrl = new URL(request.url);
+        const callbackUrl = currentUrl.searchParams.get("callbackUrl");
+        if (callbackUrl) {
+          changePasswordUrl.searchParams.set("callbackUrl", callbackUrl);
+        } else if (pathname !== "/" && pathname !== "/login") {
+          // Preserve current path as callbackUrl if not already set
+          changePasswordUrl.searchParams.set("callbackUrl", `${pathname}${search}`);
         }
         return NextResponse.redirect(changePasswordUrl);
       }
@@ -76,42 +85,41 @@ export async function middleware(request: NextRequest) {
 
     // --- User is authenticated, and mustChangePassword is FALSE ---
 
-    // 3. If `mustChangePassword` is false, and user tries to access change-password page, redirect them away.
+    // 4. If `mustChangePassword` is false, and user tries to access change-password page, redirect to dashboard
     if (pathname === "/auth/change-password") {
-      const userDashboardPath = token.id ? `/${token.id}` : "/";
-      return NextResponse.redirect(new URL(userDashboardPath, origin));
+      // Get callbackUrl if it exists, otherwise use dashboard
+      const currentUrl = new URL(request.url);
+      const callbackUrl = currentUrl.searchParams.get("callbackUrl") || dashboardPath;
+      return NextResponse.redirect(new URL(callbackUrl, origin));
     }
 
-    // 4. If authenticated user (MCP=false) tries to access /login, redirect to dashboard
+    // 5. If authenticated user tries to access /login, redirect to dashboard or callbackUrl
     if (pathname === "/login") {
-      const userDashboardPath = token.id ? `/${token.id}` : "/";
-      return NextResponse.redirect(new URL(userDashboardPath, origin));
+      const currentUrl = new URL(request.url);
+      const callbackUrl = currentUrl.searchParams.get("callbackUrl") || dashboardPath;
+      return NextResponse.redirect(new URL(callbackUrl, origin));
     }
 
-    // 5. Authenticated user (MCP=false), allow access to other routes
+    // 6. Authenticated user (MCP=false), allow access to other routes
     return NextResponse.next();
   }
 
   // --- Logic for Unauthenticated Users (no token) ---
-  const isDevelopment = process.env.NODE_ENV === "development";
-  
-  if (isDevelopment) {
-    console.log(`[MIDDLEWARE] No token for path: ${pathname}`);
-  }
+  log(`[MIDDLEWARE] No token for path: ${pathname}`);
 
-  // 6. Allow access to explicitly public/always accessible paths.
+  // 7. Allow access to explicitly public/always accessible paths
   if (ALWAYS_ACCESSIBLE_PATHS.includes(pathname)) {
     return NextResponse.next();
   }
 
-  // 7. For all other paths, redirect to login.
+  // 8. For all other paths, redirect to login with callbackUrl
   const loginUrl = new URL("/login", origin);
-  // Preserve original destination in callbackUrl
   const fullPath = `${pathname}${search}`;
-  if (fullPath !== "/login") {
+  // Only add callbackUrl if it's not already the login page
+  if (fullPath !== "/login" && !fullPath.startsWith("/login?")) {
     loginUrl.searchParams.set("callbackUrl", fullPath);
   }
-  
+
   return NextResponse.redirect(loginUrl);
 }
 

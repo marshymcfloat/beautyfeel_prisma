@@ -188,7 +188,7 @@ export default function ManageBranches() {
             <thead className="bg-customGray/10">
               <tr>
                 <th className={thStyleBase}>Title</th>
-                <th className={`${thStyleBase} hidden sm:table-cell`}>Code</th>
+                <th className={thStyleBase}>Code</th>
                 <th className={`${thStyleBase} text-right`}>Actions</th>
               </tr>
             </thead>
@@ -196,11 +196,8 @@ export default function ManageBranches() {
               {branches.map((b) => (
                 <tr key={b.id} className="hover:bg-customLightBlue/10">
                   <td className={`${tdStyleBase} font-medium`}>{b.title}</td>
-                  <td
-                    className={`${tdStyleBase} hidden font-mono uppercase sm:table-cell`}
-                  >
-                    {" "}
-                    {b.code}{" "}
+                  <td className={`${tdStyleBase} font-mono uppercase`}>
+                    {b.code}
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
                     <button

@@ -1,20 +1,27 @@
 import { PrismaClient } from "@prisma/client";
-import { withAccelerate } from "@prisma/extension-accelerate";
 
 declare global {
   var prisma: PrismaClient | undefined;
 }
 
 const prismaClientSingleton = () => {
-  // Add the transactionOptions object here
-  return new PrismaClient({
-    // Configure interactive transaction timeout
+  // Optimized Prisma Client configuration for better performance
+  // Removed Accelerate extension - it was causing connection failures (P5010 errors)
+  // Direct connection is faster and more reliable for most applications
+  const client = new PrismaClient({
+    // Optimized transaction options
     transactionOptions: {
-      timeout: 10000,
+      maxWait: 5000, // 5 seconds max wait
+      timeout: 10000, // 10 seconds timeout
     },
-    // Optional: Add logging if you want more visibility
-    // log: ['query', 'info', 'warn', 'error'],
-  }).$extends(withAccelerate());
+    // Optimized logging - only errors in production
+    log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
+  });
+
+  // Connection pooling is handled automatically by Prisma
+  // Direct connections are typically faster than Accelerate for most use cases
+  
+  return client;
 };
 
 type PrismaClientSingleton = ReturnType<typeof prismaClientSingleton>;

@@ -1,36 +1,34 @@
 "use client";
 
 import { X, Loader2 } from "lucide-react";
-import {
-  ChangeEvent,
-  useState,
-  useCallback,
-  FormEvent,
-  useEffect,
-} from "react";
+import { ChangeEvent, useState, useCallback, FormEvent } from "react";
 import Button from "@/components/Buttons/Button";
-import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { useAuth } from "@/lib/hooks/useAuth";
 
 export default function InterceptedLoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-
-  const [callbackUrl, setCallbackUrl] = useState("/");
-
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [inputs, setInputs] = useState({
     username: "",
     password: "",
   });
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    const cbUrlFromParams = searchParams?.get("callbackUrl");
-    if (cbUrlFromParams) {
-      setCallbackUrl(cbUrlFromParams);
-    }
-  }, [searchParams]);
+  // Use optimized shared authentication hook
+  const { isSubmitting, errorMessage, handleLogin, clearError } = useAuth({
+    onSuccess: (redirectUrl) => {
+      // Clear form on success
+      setInputs({ username: "", password: "" });
+
+      // Optimized: Close modal first, then navigate
+      // Use replace to avoid adding to history stack
+      router.refresh();
+      router.back();
+      setTimeout(() => {
+        router.push(redirectUrl);
+      }, 150);
+    },
+  });
 
   const handleInputChange = useCallback(
     (identifier: string, e: ChangeEvent<HTMLInputElement>) => {
@@ -40,62 +38,18 @@ export default function InterceptedLoginPage() {
       }));
 
       if (errorMessage) {
-        setErrorMessage(null);
+        clearError();
       }
     },
-    [errorMessage],
+    [errorMessage, clearError],
   );
 
   const handleLoginSubmit = useCallback(
     async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-
-      setIsSubmitting(true);
-      setErrorMessage(null);
-
-      if (inputs.username.trim() === "" || inputs.password.trim() === "") {
-        setErrorMessage("Username and password are required.");
-        setIsSubmitting(false);
-        return;
-      }
-
-      try {
-        const result = await signIn("credentials", {
-          username: inputs.username.trim(),
-          password: inputs.password,
-          redirect: false,
-        });
-
-        if (result?.ok && !result.error) {
-          // Clear form on success
-          setInputs({ username: "", password: "" });
-          setErrorMessage(null);
-          
-          // Close modal and navigate
-          router.back();
-          router.push(callbackUrl);
-          router.refresh(); // Refresh to get updated session
-          return;
-        } else {
-          // Handle different error types gracefully
-          if (result?.error === "CredentialsSignin") {
-            setErrorMessage("Invalid username or password. Please try again.");
-          } else if (result?.error === "Configuration") {
-            setErrorMessage("Server configuration error. Please contact support.");
-          } else {
-            setErrorMessage("Login failed. Please check your credentials and try again.");
-          }
-        }
-      } catch (error) {
-        console.error("[LOGIN_MODAL] Unexpected error:", error);
-        setErrorMessage(
-          "An unexpected error occurred. Please check your connection and try again.",
-        );
-      } finally {
-        setIsSubmitting(false);
-      }
+      await handleLogin(inputs.username, inputs.password);
     },
-    [inputs, callbackUrl],
+    [inputs.username, inputs.password, handleLogin],
   );
 
   const closeModal = () => {
@@ -184,6 +138,7 @@ export default function InterceptedLoginPage() {
               id="error-message-modal"
               className="mb-4 rounded-md bg-red-50 p-3 text-center text-sm text-red-600 ring-1 ring-inset ring-red-200"
               role="alert"
+              aria-live="polite"
             >
               {errorMessage}
             </p>
