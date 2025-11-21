@@ -71,6 +71,7 @@ import {
   setDate,
 } from "date-fns";
 import { fromZonedTime, toZonedTime, formatInTimeZone } from "date-fns-tz";
+import { getUtcForPhtStartOfDay, getUtcForPhtStartOfNextDay } from "./timezoneHelpers";
 
 import {
   ServiceSimple,
@@ -1113,10 +1114,16 @@ const CUSTOMERS_CACHE_KEY: CacheKey = "customers_SendEmail";
 const TEMPLATES_CACHE_KEY: CacheKey = "emailTemplates_ManageEmailTemplates";
 const MANAGE_CUSTOMERS_CACHE_KEY: CacheKey = "customers_ManageCustomers";
 
+// Helper function to get the start of today in the target timezone as UTC
+// This ensures consistency with attendance date calculations
+// Helper function to get the start of today in the target timezone as UTC
+// This ensures consistency with attendance date calculations
+// Note: TARGET_TIMEZONE and PHT_TIMEZONE both reference "Asia/Manila"
 const getStartOfTodayTargetTimezoneUtc = () => {
   const nowUtc = new Date();
+  // Use PHT_TIMEZONE consistently with payslip calculations (both are "Asia/Manila")
   const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TARGET_TIMEZONE,
+    timeZone: PHT_TIMEZONE, // Use same timezone as payslip calculations
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -2307,112 +2314,6 @@ const TARGET_TIMEZONE = "Asia/Manila";
   }
 } */
 
-const getPhtEpochStartAsUtc = (): Date => {
-  try {
-    const jan11970Utc = new Date(Date.UTC(1970, 0, 1)); // Standard UTC epoch moment
-    const phtFormatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone: PHT_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      // Explicitly specify 24 hour format and include timezone to reconstruct correctly
-      hour12: false,
-      timeZoneName: "shortOffset", // Get "+08:00" format if possible
-    });
-
-    // Get the formatted PHT components for UTC 1970-01-01
-    const parts = phtFormatter.formatToParts(jan11970Utc);
-    const year = parts.find((p) => p.type === "year")?.value;
-    const month = parts.find((p) => p.type === "month")?.value;
-    const day = parts.find((p) => p.type === "day")?.value;
-
-    // Need to figure out what day/month/year 1970-01-01 UTC 00:00:00 corresponds to *in PHT*.
-    // This can be complex, Intl formatter format *outputs* the local time parts for a UTC moment.
-    // A simpler way: Directly format *the date we want the start of day for* (1970-01-01 in PHT concept)
-    // and then parse the formatted string with offset.
-    const targetDatePhtFormatter = new Intl.DateTimeFormat("en-CA", {
-      timeZone: PHT_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-    const targetPhtDateString = targetDatePhtFormatter.format(jan11970Utc); // This will format the UTC moment into the *corresponding PHT date* parts. E.g., if UTC is 1970-01-01 00:00:00Z, in PHT (+8) it's 1970-01-01 08:00:00. So this formats 1970-01-01.
-
-    // Now construct a string for 1970-01-01 00:00:00 IN PHT and parse it to get its UTC equivalent Date object.
-    const epochPhtMidnightString = `${targetPhtDateString.replace(/\//g, "-")}T00:00:00+08:00`; // Assuming YYYY/MM/DD or similar from en-CA format, converting to YYYY-MM-DD
-    const epochPhtStartUtc = new Date(epochPhtMidnightString);
-
-    if (!isValid(epochPhtStartUtc)) {
-      console.error(
-        "[getPhtEpochStartAsUtc] Failed to calculate accurate PHT epoch start.",
-      );
-      // Fallback if Intl approach fails (less reliable method, may need adjustment)
-      return new Date(Date.UTC(1970, 0, 1, -8)); // Simple UTC offset approximation (start of PHT 1970-01-01 00:00 is UTC 1969-12-31 16:00)
-    }
-    //console.log("[getPhtEpochStartAsUtc] Calculated:", formatISO(epochPhtStartUtc));
-    return epochPhtStartUtc;
-  } catch (e) {
-    console.error("[getPhtEpochStartAsUtc] Error during calculation:", e);
-    // Fallback to the simple UTC offset approximation if any error occurs
-    return new Date(Date.UTC(1970, 0, 1, -8)); // Approx. start of PHT 1970-01-01 as UTC
-  }
-};
-
-const PHT_EPOCH_START_UTC: Date = getPhtEpochStartAsUtc();
-const STANDARD_EPOCH_UTC: Date = new Date(0); // Standard 1970-01-01T00:00:00.000Z UTC
-
-const getUtcForPhtStartOfDay = (date: Date): Date => {
-  if (!isValid(date)) {
-    console.warn("[getUtcForPhtStartOfDay] Received invalid date:", date);
-    return PHT_EPOCH_START_UTC; // Fallback to calculated PHT epoch start
-  }
-  try {
-    // Format the input date to get its year, month, and day components in PHT
-    const phtDateFormatter = new Intl.DateTimeFormat("en-CA", {
-      // en-CA gives reliable YYYY-MM-DD parts
-      timeZone: PHT_TIMEZONE,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    });
-    const dateParts = phtDateFormatter.formatToParts(date);
-    const year = dateParts.find((p) => p.type === "year")?.value;
-    const month = dateParts.find((p) => p.type === "month")?.value;
-    const day = dateParts.find((p) => p.type === "day")?.value;
-
-    if (!year || !month || !day) {
-      console.error(
-        "[getUtcForPhtStartOfDay] Failed to extract PHT date parts for:",
-        date,
-      );
-      throw new Error("Failed to get PHT date parts");
-    }
-
-    // Construct a Date string that explicitly defines the start of that day in PHT using its offset (+08:00).
-    // Parsing this string creates a Date object whose internal timestamp represents the UTC equivalent.
-    const phtDateString = `${year}-${month}-${day}T00:00:00+08:00`;
-    const utcDate = new Date(phtDateString);
-
-    if (!isValid(utcDate)) {
-      console.error(
-        "[getUtcForPhtStartOfDay] Invalid Date created from string:",
-        phtDateString,
-        "Input Date:",
-        date,
-      );
-      return PHT_EPOCH_START_UTC; // Fallback
-    }
-
-    return utcDate;
-  } catch (e) {
-    console.error("[getUtcForPhtStartOfDay] Error:", e, "Input Date:", date);
-    return PHT_EPOCH_START_UTC; // Fallback to calculated PHT epoch start
-  }
-};
-
 const startOfDayInPHT = (date: Date): Date => {
   const phtDate = new Date(
     date.toLocaleString("en-US", { timeZone: PHT_TIMEZONE }),
@@ -2438,23 +2339,6 @@ const startOfDayInPHT = (date: Date): Date => {
 function isValidDate(date: any): date is Date {
   return date instanceof Date && isValid(date) && !isNaN(date.getTime());
 }
-
-const getUtcForPhtStartOfNextDay = (date: Date): Date => {
-  if (!isValid(date)) {
-    console.warn("[getUtcForPhtStartOfNextDay] Received invalid date:", date);
-    // Fallback to the start of the PHT day AFTER epoch day
-    return getUtcForPhtStartOfDay(addDays(STANDARD_EPOCH_UTC, 1)); // Add a day to the standard epoch UTC 00:00:00Z, then find its PHT start.
-  }
-  // Add 1 day to the input date's UTC value to conceptually get the "next day".
-  // `addDays` works on the internal timestamp.
-  const nextDayFromInputUtc = addDays(date, 1);
-  // Now find the start of the PHT day corresponding to that "next day".
-  return getUtcForPhtStartOfDay(nextDayFromInputUtc);
-};
-
-// Using a slightly different name or clearly indicating this uses Intl method for start of day.
-const getUtcForPhtStartOfDayIntl = (date: Date): Date =>
-  getUtcForPhtStartOfDay(date);
 
 // Helper to get the UTC Date object corresponding to the START OF THE *NEXT* DAY in PHT for a given Date.
 // Useful for setting an exclusive upper bound (`lt`) in UTC for queries aiming to include activity up to
@@ -7111,33 +6995,96 @@ export async function requestPayslipGeneration(
       `[requestPayslipGeneration] Account: ${account.name}, Daily Rate: ${dailyRate}`,
     );
 
-    // --- Calculate Base Salary from Attendance (Logic unchanged, adjust date range) ---
-    const attendanceRecords = await prisma.attendance.findMany({
+    // --- Find the last released payslip to determine calculation cutoffs ---
+    const lastReleasedPayslip = await prisma.payslip.findFirst({
       where: {
         accountId: accountId,
-        date: {
-          // Use startOfDay and endOfDay for the query date range
-          gte: startOfDay(periodStartDate),
-          lte: endOfDay(periodEndDate),
-        },
-        isPresent: true,
+        status: PayslipStatus.RELEASED,
       },
-      select: { date: true },
+      orderBy: { releasedDate: "desc" },
+      select: {
+        periodEndDate: true, // @db.Date (UTC 00:00Z)
+        releasedDate: true, // @db.DateTime (UTC timestamp)
+      },
     });
 
-    const presentDaysCount = attendanceRecords.length;
-    const baseSalary = dailyRate * presentDaysCount; // Use dailyRate from fetched account
-    console.log(
-      `[requestPayslipGeneration] Found ${presentDaysCount} present days. Calculated Base Salary: ${baseSalary}`,
+    // Determine the TRUE start dates/times for fetching data based on last payslip
+    let trueAttendanceCalculationStartDateUtc: Date;
+    let commissionCalculationStartTimeUtc: Date;
+
+    if (
+      lastReleasedPayslip?.releasedDate &&
+      isValid(new Date(lastReleasedPayslip.releasedDate)) &&
+      lastReleasedPayslip?.periodEndDate &&
+      isValid(new Date(lastReleasedPayslip.periodEndDate))
+    ) {
+      const lastPeriodEndDate = new Date(lastReleasedPayslip.periodEndDate); // @db.Date -> UTC 00:00Z
+      const lastReleaseTimestamp = new Date(lastReleasedPayslip.releasedDate); // @db.DateTime -> UTC timestamp
+
+      // Attendance starts the day AFTER the last released period end date *in PHT*
+      trueAttendanceCalculationStartDateUtc =
+        getUtcForPhtStartOfNextDay(lastPeriodEndDate);
+
+      // Commission period starts *exactly* at the moment the last payslip was released (UTC timestamp)
+      commissionCalculationStartTimeUtc = lastReleaseTimestamp;
+
+      console.log(
+        `[requestPayslipGeneration] Last released payslip period end: ${lastPeriodEndDate.toISOString()}. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()} (UTC for PHT next day).`,
+      );
+      console.log(
+        `[requestPayslipGeneration] Last released payslip timestamp: ${lastReleaseTimestamp.toISOString()}. Commission calculation starts: ${commissionCalculationStartTimeUtc.toISOString()} (exact UTC).`,
+      );
+    } else {
+      // If no released payslip, calculation starts from the start of the nominal request period day in PHT
+      trueAttendanceCalculationStartDateUtc = getUtcForPhtStartOfDay(
+        normalizedStartDate,
+      );
+      // If no released timestamp, start commissions from epoch timestamp
+      commissionCalculationStartTimeUtc = new Date(0); // Epoch start (UTC)
+
+      console.log(
+        `[requestPayslipGeneration] No prior release. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()} (UTC for PHT start of request day).`,
+      );
+      console.log(
+        `[requestPayslipGeneration] No prior released timestamp. Commission calculation starts from epoch: ${commissionCalculationStartTimeUtc.toISOString()}.`,
+      );
+    }
+
+    // Determine the upper boundary for calculation (exclusive boundary) - End of Payslip Nominal Period in PHT
+    const calculationPeriodEndExclusive = getUtcForPhtStartOfNextDay(
+      normalizedEndDate,
     );
 
-    // --- MODIFIED: Calculate Total Commissions from AvailedServiceUnit ---
-    // We need to find all AvailedServiceUnit records served by this account within the period,
-    // that are marked as DONE, and have commission potential.
-
-    const inclusiveEndDate = endOfDay(periodEndDate); // Use end of day for the time-based filter
     console.log(
-      `[requestPayslipGeneration] Fetching served units for commission calculation between ${startOfDay(periodStartDate).toISOString()} and ${inclusiveEndDate.toISOString()}`,
+      `[requestPayslipGeneration] Calculation period end (exclusive UTC boundary for end of PHT period end date): ${calculationPeriodEndExclusive.toISOString()}`,
+    );
+
+    // --- Calculate Base Salary from Attendance ---
+    // Calculate attendance based on the TRUE calculation start date up to the exclusive end boundary
+    const relevantAttendanceRecords = await prisma.attendance.findMany({
+      where: {
+        accountId: accountId,
+        isPresent: true,
+        date: {
+          // @db.Date are UTC 00:00Z Date objects
+          gte: trueAttendanceCalculationStartDateUtc, // Use calculated PHT start boundary (UTC)
+          lt: calculationPeriodEndExclusive, // Use calculated PHT end boundary (exclusive UTC)
+        },
+      },
+      select: { id: true, date: true, isPresent: true },
+      orderBy: { date: "asc" },
+    });
+
+    const presentDaysCount = relevantAttendanceRecords.length;
+    const baseSalary = dailyRate * presentDaysCount;
+    console.log(
+      `[requestPayslipGeneration] Found ${presentDaysCount} present days within calculated range (${trueAttendanceCalculationStartDateUtc.toISOString()} - ${calculationPeriodEndExclusive.toISOString()}). Calculated Base Salary: ${baseSalary}`,
+    );
+
+    // --- Calculate Total Commissions from AvailedServiceUnit ---
+    // Only include commissions from units served AFTER the last payslip release
+    console.log(
+      `[requestPayslipGeneration] Fetching served units for commission calculation between ${commissionCalculationStartTimeUtc.toISOString()} and ${calculationPeriodEndExclusive.toISOString()}`,
     );
 
     const servedUnits = await prisma.availedServiceUnit.findMany({
@@ -7146,13 +7093,14 @@ export async function requestPayslipGeneration(
         status: Status.DONE, // Only include units marked as DONE
         servedAt: {
           // Use servedAt timestamp for filtering
-          gte: startOfDay(periodStartDate), // Greater than or equal to the start of the period day
-          lte: inclusiveEndDate, // Less than or equal to the end of the period end day
+          gt: commissionCalculationStartTimeUtc, // Strictly after the exact UTC timestamp start
+          lt: calculationPeriodEndExclusive, // Strictly BEFORE the exclusive UTC end boundary
           not: null, // servedAt must be set
         },
         availedService: {
+          commissionValue: { gt: 0 }, // Only include units that potentially earn commission
           transaction: {
-            // Optionally filter out cancelled transactions
+            // Filter out cancelled transactions
             status: { not: Status.CANCELLED },
           },
         },

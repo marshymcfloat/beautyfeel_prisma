@@ -324,7 +324,6 @@ export default function ManagePayslips() {
           status: PayslipStatus.RELEASED,
         });
 
-        // Find the latest released payslip
         const lastReleasedPayslip = releasedPayslipsForEmployee.sort(
           (a, b) =>
             new Date(b.releasedDate!).getTime() -

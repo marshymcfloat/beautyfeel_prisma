@@ -2850,10 +2850,9 @@ const shutdown = (signal) => {
     else console.log("HTTP server closed.");
 
     console.log("Closing Socket.IO server...");
-    io.close((errIo) => {
-      if (errIo) console.error("Error closing Socket.IO server:", errIo);
-      else console.log("Socket.IO server closed.");
-
+    // Socket.IO server may already be closed when HTTP server closes
+    // Handle this gracefully by catching the error
+    const handleFinalCleanup = () => {
       console.log("Disconnecting Prisma Client...");
       prisma
         .$disconnect()
@@ -2865,7 +2864,31 @@ const shutdown = (signal) => {
           console.error("Error disconnecting Prisma Client:", errPrisma);
           process.exit(1);
         });
-    });
+    };
+
+    try {
+      io.close((errIo) => {
+        if (errIo) {
+          // Ignore ERR_SERVER_NOT_RUNNING as it means the server is already closed
+          if (errIo.code === "ERR_SERVER_NOT_RUNNING") {
+            console.log("Socket.IO server already closed.");
+          } else {
+            console.error("Error closing Socket.IO server:", errIo);
+          }
+        } else {
+          console.log("Socket.IO server closed.");
+        }
+        handleFinalCleanup();
+      });
+    } catch (error) {
+      // If io.close() throws synchronously, handle it gracefully
+      if (error.code === "ERR_SERVER_NOT_RUNNING") {
+        console.log("Socket.IO server already closed.");
+      } else {
+        console.error("Error attempting to close Socket.IO server:", error);
+      }
+      handleFinalCleanup();
+    }
   });
 
   setTimeout(() => {

@@ -16,7 +16,13 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import { revalidatePath } from "next/cache";
-import { startOfDay, addDays, endOfDay, eachDayOfInterval } from "date-fns";
+import {
+  startOfDay,
+  addDays,
+  endOfDay,
+  eachDayOfInterval,
+  isValid,
+} from "date-fns";
 
 import { toZonedTime, toDate, formatInTimeZone, format } from "date-fns-tz";
 const SALARY_COMMISSION_RATE = parseFloat(
@@ -1065,71 +1071,291 @@ export async function getPayslipBreakdownForPeriod(requestId: string): Promise<{
 
     const { accountId, account, periodStartDate, periodEndDate } = request;
 
-    // --- Base Salary Calculation (remains unchanged) ---
-    // This should always be based on the exact period requested by the payslip.
-    const attendanceInPeriod = await prisma.attendance.findMany({
-      where: {
-        accountId,
-        // The 'date' field in attendance is a Date-only field.
-        // We ensure we cover the full days.
-        date: { gte: periodStartDate, lte: periodEndDate },
-      },
-      select: { date: true, isPresent: true },
-    });
-
-    const allDatesInRange = eachDayOfInterval({
-      start: periodStartDate,
-      end: periodEndDate,
-    });
-
-    const attendanceMap = new Map(
-      attendanceInPeriod.map((r) => [
-        format(r.date, "yyyy-MM-dd"),
-        r.isPresent,
-      ]),
-    );
-    const fullAttendanceRecords = allDatesInRange.map((date) => ({
-      date,
-      isPresent: attendanceMap.get(format(date, "yyyy-MM-dd")) ?? false,
-      hasRecord: attendanceMap.has(format(date, "yyyy-MM-dd")),
-    }));
-
-    const attendedDaysCount = fullAttendanceRecords.filter(
-      (a) => a.isPresent,
-    ).length;
-    const baseSalaryForPeriod = account.dailyRate * attendedDaysCount;
-
-    // --- Commission Calculation (MODIFIED FOR ALIGNMENT) ---
-
-    // Step 1: Find the most recent RELEASED payslip for this account
-    // that ENDED *before* the current request's periodStartDate.
-    // This ensures we're looking for the genuinely previous payout.
+    // --- Find the last released payslip to determine calculation cutoffs ---
     const lastReleasedPayslip = await prisma.payslip.findFirst({
       where: {
         accountId,
         status: "RELEASED",
-        periodEndDate: { lt: periodStartDate }, // Only consider payslips whose period ended *before* this request's period begins
       },
-      orderBy: { periodEndDate: "desc" }, // Get the most recent one
+      orderBy: { releasedDate: "desc" },
       select: {
-        releasedDate: true,
+        periodEndDate: true, // @db.Date (UTC 00:00Z)
+        releasedDate: true, // @db.DateTime (UTC timestamp)
       },
     });
 
-    // Step 2: Determine the effective start date/time for commissions for this request.
-    // If a previous payslip was released, commissions should start *strictly after* its release date/time.
-    // Otherwise, they start from the requested periodStartDate (inclusive).
-    let commissionCutoffStart: Date;
+    // Determine the TRUE start dates/times for fetching data based on last payslip
+    let trueAttendanceCalculationStartDateUtc: Date;
+    let commissionCalculationStartTimeUtc: Date;
+
+    if (
+      lastReleasedPayslip?.releasedDate &&
+      isValid(new Date(lastReleasedPayslip.releasedDate)) &&
+      lastReleasedPayslip?.periodEndDate &&
+      isValid(new Date(lastReleasedPayslip.periodEndDate))
+    ) {
+      const lastPeriodEndDate = new Date(lastReleasedPayslip.periodEndDate); // @db.Date -> UTC 00:00Z
+      const lastReleaseTimestamp = new Date(lastReleasedPayslip.releasedDate); // @db.DateTime -> UTC timestamp
+
+      // Import timezone helper functions from timezoneHelpers.ts
+      // Attendance starts the day AFTER the last released period end date *in PHT*
+      const { getUtcForPhtStartOfNextDay } = await import("./timezoneHelpers");
+
+      trueAttendanceCalculationStartDateUtc =
+        getUtcForPhtStartOfNextDay(lastPeriodEndDate);
+
+      // Commission period starts *exactly* at the moment the last payslip was released (UTC timestamp)
+      commissionCalculationStartTimeUtc = lastReleaseTimestamp;
+
+      console.log(
+        `[getPayslipBreakdownForPeriod] Last released payslip period end: ${lastPeriodEndDate.toISOString()}. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()} (UTC for PHT next day).`,
+      );
+      console.log(
+        `[getPayslipBreakdownForPeriod] Last released payslip timestamp: ${lastReleaseTimestamp.toISOString()}. Commission calculation starts: ${commissionCalculationStartTimeUtc.toISOString()} (exact UTC).`,
+      );
+    } else {
+      // If no released payslip, calculation starts from the start of the nominal request period day in PHT
+      const { getUtcForPhtStartOfDay } = await import("./timezoneHelpers");
+      trueAttendanceCalculationStartDateUtc =
+        getUtcForPhtStartOfDay(periodStartDate);
+      // If no released timestamp, start commissions from epoch timestamp
+      commissionCalculationStartTimeUtc = new Date(0); // Epoch start (UTC)
+
+      console.log(
+        `[getPayslipBreakdownForPeriod] No prior release. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()} (UTC for PHT start of request day).`,
+      );
+      console.log(
+        `[getPayslipBreakdownForPeriod] No prior released timestamp. Commission calculation starts from epoch: ${commissionCalculationStartTimeUtc.toISOString()}.`,
+      );
+    }
+
+    // Determine the upper boundary for calculation
+    // periodEndDate is a DateTime (request timestamp), we need to get the end of that day in PHT
+    const { getUtcForPhtStartOfDay, getUtcForPhtStartOfNextDay } = await import(
+      "./timezoneHelpers"
+    );
+
+    // Convert periodEndDate (DateTime) to the end of that day in PHT (exclusive boundary)
+    // First get the start of the day containing periodEndDate in PHT, then add one day
+    const periodEndDateInPht = getUtcForPhtStartOfDay(periodEndDate);
+    const calculationPeriodEndExclusive =
+      getUtcForPhtStartOfNextDay(periodEndDateInPht);
+
+    console.log(
+      `[getPayslipBreakdownForPeriod] Period end DateTime: ${periodEndDate.toISOString()}`,
+    );
+    console.log(
+      `[getPayslipBreakdownForPeriod] Period end date in PHT: ${periodEndDateInPht.toISOString()}`,
+    );
+    console.log(
+      `[getPayslipBreakdownForPeriod] Calculation period end (exclusive UTC boundary): ${calculationPeriodEndExclusive.toISOString()}`,
+    );
+
+    // --- Base Salary Calculation ---
+    // Calculate attendance based on the TRUE calculation start date up to the exclusive end boundary
+    // Attendance records use @db.Date which are UTC 00:00Z Date objects
+    // IMPORTANT: We need to normalize the boundaries to UTC 00:00:00.000Z (date-only)
+    // because attendance.date is @db.Date, stored as UTC midnight
+
+    // Convert PHT boundaries to UTC date-only for comparison with @db.Date fields
+    // IMPORTANT: Attendance dates are stored using getStartOfTodayTargetTimezoneUtc() logic
+    // which converts a PHT date to UTC by extracting year/month/day in PHT and creating UTC date
+    // We need to do the same conversion here to match the stored format
+
+    // The attendance.date field stores dates as UTC 00:00:00.000Z for the PHT day
+    // For example: Nov 21, 2025 in PHT is stored as 2025-11-21T00:00:00.000Z (not 2025-11-20T16:00:00.000Z)
+    // This is because getStartOfTodayTargetTimezoneUtc() extracts the PHT date parts and creates a UTC date
+
+    // So we need to extract the PHT date components from our boundaries and create UTC dates
+    // This matches exactly how attendance dates are stored in the database
+    const PHT_TIMEZONE_FOR_ATTENDANCE = "Asia/Manila";
+    const phtStartFormatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: PHT_TIMEZONE_FOR_ATTENDANCE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    const phtEndFormatter = new Intl.DateTimeFormat("en-CA", {
+      timeZone: PHT_TIMEZONE_FOR_ATTENDANCE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+
+    const startPhtDateString = phtStartFormatter.format(
+      trueAttendanceCalculationStartDateUtc,
+    );
+    const endPhtDateString = phtEndFormatter.format(
+      calculationPeriodEndExclusive,
+    );
+
+    const [startYear, startMonth, startDay] = startPhtDateString
+      .split("-")
+      .map(Number);
+    const [endYear, endMonth, endDay] = endPhtDateString.split("-").map(Number);
+
+    // Create UTC dates using the PHT date components (same as getStartOfTodayTargetTimezoneUtc)
+    // This ensures we're comparing dates in the same format as they're stored
+    const attendanceStartDateOnly = new Date(
+      Date.UTC(startYear, startMonth - 1, startDay, 0, 0, 0, 0),
+    );
+    const attendanceEndDateOnly = new Date(
+      Date.UTC(endYear, endMonth - 1, endDay, 0, 0, 0, 0),
+    );
+
+    console.log(`[getPayslipBreakdownForPeriod] Attendance query parameters:`);
+    console.log(
+      `  - PHT Start boundary: ${trueAttendanceCalculationStartDateUtc.toISOString()}`,
+    );
+    console.log(
+      `  - PHT End boundary (exclusive): ${calculationPeriodEndExclusive.toISOString()}`,
+    );
+    console.log(
+      `  - UTC Date-only start: ${attendanceStartDateOnly.toISOString()}`,
+    );
+    console.log(
+      `  - UTC Date-only end (exclusive): ${attendanceEndDateOnly.toISOString()}`,
+    );
+
+    const relevantAttendanceRecords = await prisma.attendance.findMany({
+      where: {
+        accountId,
+        isPresent: true,
+        date: {
+          // @db.Date are UTC 00:00Z Date objects - compare as date-only
+          gte: attendanceStartDateOnly, // Use normalized date-only start boundary
+          lt: attendanceEndDateOnly, // Use normalized date-only end boundary (exclusive)
+        },
+      },
+      select: { date: true, isPresent: true },
+      orderBy: { date: "asc" },
+    });
+
+    console.log(
+      `[getPayslipBreakdownForPeriod] Found ${relevantAttendanceRecords.length} attendance records in calculated range`,
+    );
+    if (relevantAttendanceRecords.length > 0) {
+      console.log(
+        `[getPayslipBreakdownForPeriod] Attendance dates found:`,
+        relevantAttendanceRecords
+          .map((r) => r.date.toISOString().split("T")[0])
+          .join(", "),
+      );
+    } else {
+      console.warn(
+        `[getPayslipBreakdownForPeriod] No attendance records found! This might indicate a timezone or date comparison issue.`,
+      );
+      // Debug: Let's also check what attendance records exist for this account
+      const allAttendanceForAccount = await prisma.attendance.findMany({
+        where: { accountId },
+        select: { date: true, isPresent: true },
+        orderBy: { date: "desc" },
+        take: 10,
+      });
+      console.log(
+        `[getPayslipBreakdownForPeriod] Recent attendance records for account (last 10):`,
+        allAttendanceForAccount.map((r) => ({
+          date: r.date.toISOString().split("T")[0],
+          isPresent: r.isPresent,
+        })),
+      );
+    }
+
+    // Generate all dates in the requested period for display
+    // Convert DateTime period dates to date-only for display
+    // IMPORTANT: We need to use the same logic as getStartOfTodayTargetTimezoneUtc
+    // to ensure dates match what's stored in the database
+    const periodStartDateOnly = getUtcForPhtStartOfDay(periodStartDate);
+    const periodEndDateOnly = getUtcForPhtStartOfDay(periodEndDate);
+
+    console.log(`[getPayslipBreakdownForPeriod] Display period dates:`);
+    console.log(
+      `  - Period start (PHT day start): ${periodStartDateOnly.toISOString()}`,
+    );
+    console.log(
+      `  - Period end (PHT day start): ${periodEndDateOnly.toISOString()}`,
+    );
+
+    const allDatesInRange = eachDayOfInterval({
+      start: periodStartDateOnly,
+      end: periodEndDateOnly,
+    });
+
+    console.log(
+      `[getPayslipBreakdownForPeriod] Generated ${allDatesInRange.length} dates for display`,
+    );
+
+    // Create a map of actual attendance records
+    // Use UTC date string for consistent comparison (attendance.date is UTC 00:00:00.000Z)
+    const attendanceMap = new Map(
+      relevantAttendanceRecords.map((r) => {
+        // r.date is already a UTC 00:00:00.000Z Date object from @db.Date
+        const dateKey = r.date.toISOString().split("T")[0]; // "YYYY-MM-DD" format
+        return [dateKey, r.isPresent];
+      }),
+    );
+
+    console.log(
+      `[getPayslipBreakdownForPeriod] Attendance map keys:`,
+      Array.from(attendanceMap.keys()).join(", "),
+    );
+
+    // Create full attendance records for display (all dates in period)
+    // Convert each date in the range to UTC date string for comparison
+    // IMPORTANT: eachDayOfInterval returns dates, but we need to match them with attendance records
+    // which are stored as UTC 00:00:00.000Z. We need to convert the display dates to the same format.
+    const fullAttendanceRecords = allDatesInRange.map((date) => {
+      // date from eachDayOfInterval is a Date object
+      // We need to convert it to UTC date string to match attendance records
+      // The attendance records are stored using getStartOfTodayTargetTimezoneUtc() which returns UTC dates
+      // So we need to get the UTC date string from the display date
+
+      // Convert the date to UTC date string (YYYY-MM-DD)
+      // Since date might have time components, we normalize it to UTC midnight first
+      const dateAsUtc = new Date(
+        Date.UTC(
+          date.getUTCFullYear(),
+          date.getUTCMonth(),
+          date.getUTCDate(),
+          0,
+          0,
+          0,
+          0,
+        ),
+      );
+      const dateKey = dateAsUtc.toISOString().split("T")[0]; // "YYYY-MM-DD" format
+
+      const isPresent = attendanceMap.get(dateKey) ?? false;
+      const hasRecord = attendanceMap.has(dateKey);
+
+      // Return the original date for display, but use UTC date string for matching
+      return {
+        date,
+        isPresent,
+        hasRecord,
+      };
+    });
+
+    console.log(
+      `[getPayslipBreakdownForPeriod] Generated ${fullAttendanceRecords.length} display records`,
+    );
+    console.log(
+      `[getPayslipBreakdownForPeriod] Present days in display:`,
+      fullAttendanceRecords.filter((r) => r.isPresent).length,
+    );
+
+    // Count only present days within the calculated range (not the full period display)
+    const attendedDaysCount = relevantAttendanceRecords.length;
+    const baseSalaryForPeriod = account.dailyRate * attendedDaysCount;
+
+    // --- Commission Calculation ---
+    // Commissions should start *strictly after* the last payslip release timestamp
     let commissionFilterCondition: { gt?: Date; gte?: Date };
 
     if (lastReleasedPayslip?.releasedDate) {
-      // Commissions should be counted *after* the previous payslip was released.
-      commissionCutoffStart = lastReleasedPayslip.releasedDate;
-      commissionFilterCondition = { gt: commissionCutoffStart };
+      commissionFilterCondition = { gt: commissionCalculationStartTimeUtc };
     } else {
-      // If no previous released payslip, commissions start from the request's period start date.
-      commissionCutoffStart = periodStartDate;
-      commissionFilterCondition = { gte: commissionCutoffStart };
+      commissionFilterCondition = { gte: commissionCalculationStartTimeUtc };
     }
 
     // LOGGING FOR DEBUGGING (Optional)
@@ -1148,13 +1374,21 @@ export async function getPayslipBreakdownForPeriod(requestId: string): Promise<{
     // console.log(`  Commission Cutoff End (lt): ${formatInTimeZone(addDays(periodEndDate, 1), PHILIPPINES_TIMEZONE, "yyyy-MM-dd HH:mm:ssXXX")}`);
 
     // Step 3: Fetch served units based on the determined commission cutoff and the request's end date.
+    // Use servedAt instead of completedAt for consistency with approvePayslipRequest
     const servedUnitsInPeriod = (await prisma.availedServiceUnit.findMany({
       where: {
         servedById: accountId,
         status: Status.DONE,
-        completedAt: {
+        servedAt: {
           ...commissionFilterCondition, // Apply the dynamically determined start condition (gt or gte)
-          lt: addDays(periodEndDate, 1), // Commissions must be completed *on or before* the request's periodEndDate day
+          lt: calculationPeriodEndExclusive, // Strictly BEFORE the exclusive UTC end boundary
+          not: null, // servedAt must be set
+        },
+        availedService: {
+          commissionValue: { gt: 0 }, // Only include units that potentially earn commission
+          transaction: {
+            status: { not: Status.CANCELLED }, // Filter out units from cancelled transactions
+          },
         },
       },
       include: {
@@ -1177,7 +1411,7 @@ export async function getPayslipBreakdownForPeriod(requestId: string): Promise<{
           },
         },
       },
-      orderBy: { completedAt: "asc" },
+      orderBy: { servedAt: "asc" },
     })) as AvailedServiceUnitWithRelations[];
 
     let totalCommissionsForPeriod = 0;
