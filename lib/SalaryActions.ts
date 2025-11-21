@@ -815,7 +815,7 @@ export async function processAndReleasePayslipAction(
       const employeeDailyRate = request.account.dailyRate;
 
       // 1. Determine local timezone boundaries for the *requested period*
-      // These are used for attendance and the general "period" of the payslip.
+      // These are used for display and the general "period" of the payslip.
       const localizedPeriodStartDate = startOfDayInTimezone(
         periodStartDate,
         PHILIPPINES_TIMEZONE,
@@ -825,16 +825,105 @@ export async function processAndReleasePayslipAction(
         PHILIPPINES_TIMEZONE,
       );
 
+      // 1a. Find the last released payslip to determine attendance cutoff
+      // Attendance should only be counted from AFTER the last payslip's period end date
+      const lastReleasedPayslipForAttendance = await tx.payslip.findFirst({
+        where: {
+          accountId: employeeAccountId,
+          status: PayslipStatus.RELEASED,
+          // Only consider payslips whose period ENDED before this request's period begins
+          periodEndDate: { lt: periodStartDate },
+        },
+        orderBy: { periodEndDate: "desc" },
+        select: { periodEndDate: true, releasedDate: true },
+      });
+
+      // 1b. Determine the TRUE attendance calculation start date
+      // Import timezone helper functions from timezoneHelpers.ts
+      const { getUtcForPhtStartOfDay, getUtcForPhtStartOfNextDay } = await import(
+        "./timezoneHelpers"
+      );
+
+      let trueAttendanceCalculationStartDateUtc: Date;
+      if (
+        lastReleasedPayslipForAttendance?.periodEndDate &&
+        isValid(new Date(lastReleasedPayslipForAttendance.periodEndDate))
+      ) {
+        // Attendance starts the day AFTER the last released payslip's period end date (in PHT)
+        const lastPeriodEndDate = new Date(
+          lastReleasedPayslipForAttendance.periodEndDate,
+        );
+        trueAttendanceCalculationStartDateUtc =
+          getUtcForPhtStartOfNextDay(lastPeriodEndDate);
+
+        console.log(
+          `[processAndReleasePayslipAction] Last payslip period end: ${lastPeriodEndDate.toISOString()}. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()}`,
+        );
+      } else {
+        // No previous payslip, start from the request's period start date
+        trueAttendanceCalculationStartDateUtc =
+          getUtcForPhtStartOfDay(periodStartDate);
+
+        console.log(
+          `[processAndReleasePayslipAction] No previous payslip. Attendance calculation starts: ${trueAttendanceCalculationStartDateUtc.toISOString()}`,
+        );
+      }
+
+      // Convert attendance start date to date-only format for comparison with @db.Date
+      // Attendance dates are stored using getStartOfTodayTargetTimezoneUtc() logic
+      const PHT_TIMEZONE_FOR_ATTENDANCE = "Asia/Manila";
+      const attendanceStartFormatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: PHT_TIMEZONE_FOR_ATTENDANCE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+      const attendanceEndFormatter = new Intl.DateTimeFormat("en-CA", {
+        timeZone: PHT_TIMEZONE_FOR_ATTENDANCE,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      });
+
+      const attendanceStartPhtDateString = attendanceStartFormatter.format(
+        trueAttendanceCalculationStartDateUtc,
+      );
+      const attendanceEndPhtDateString = attendanceEndFormatter.format(
+        localizedPeriodEndDate,
+      );
+
+      const [attStartYear, attStartMonth, attStartDay] =
+        attendanceStartPhtDateString.split("-").map(Number);
+      const [attEndYear, attEndMonth, attEndDay] =
+        attendanceEndPhtDateString.split("-").map(Number);
+
+      const attendanceStartDateOnly = new Date(
+        Date.UTC(attStartYear, attStartMonth - 1, attStartDay, 0, 0, 0, 0),
+      );
+      const attendanceEndDateOnly = new Date(
+        Date.UTC(attEndYear, attEndMonth - 1, attEndDay, 0, 0, 0, 0),
+      );
+
       // 2. Calculate Base Salary for the period
       // Attendance.date is @db.Date (date-only), so comparison is date-based.
-      // We use the start/end of the day of the period, as defined by the PayslipRequest.
+      // IMPORTANT: Only count attendance from AFTER the last payslip's period end date
       const attendanceInPeriod = await tx.attendance.findMany({
         where: {
           accountId: employeeAccountId,
-          date: { gte: localizedPeriodStartDate, lte: localizedPeriodEndDate }, // Use localized date boundaries
+          isPresent: true, // Only count present days
+          date: {
+            // Use the TRUE calculation start date (after last payslip) up to the period end
+            gte: attendanceStartDateOnly,
+            lte: attendanceEndDateOnly,
+          },
         },
         select: { date: true, isPresent: true },
+        orderBy: { date: "asc" },
       });
+
+      console.log(
+        `[processAndReleasePayslipAction] Found ${attendanceInPeriod.length} attendance records in calculated range (excluding previous payslip periods).`,
+      );
 
       const allDatesInRange = eachDayOfInterval({
         start: localizedPeriodStartDate, // Use localized boundaries for date-fns iteration
@@ -967,19 +1056,33 @@ export async function processAndReleasePayslipAction(
       // 4. Calculate Net Pay
       const netPay = baseSalaryForPeriod + totalCommissionsForPeriod;
 
-      // 5. Create the Payslip record
+      // 5. Check for existing payslip with exact period dates (including time)
+      // Use the exact DateTime values from the request to respect time precision
+      const existingPayslip = await tx.payslip.findUnique({
+        where: {
+          accountId_periodStartDate_periodEndDate: {
+            accountId: employeeAccountId,
+            periodStartDate: periodStartDate, // Use exact DateTime from request
+            periodEndDate: periodEndDate, // Use exact DateTime from request
+          },
+        },
+      });
+
+      if (existingPayslip) {
+        throw new Error(
+          `A payslip for this exact period (${format(periodStartDate, "yyyy-MM-dd HH:mm:ss")} to ${format(periodEndDate, "yyyy-MM-dd HH:mm:ss")}) already exists for this employee.`,
+        );
+      }
+
+      // 6. Create the Payslip record with exact period dates (including time)
+      // Store the exact DateTime values from the request to respect time precision
       const newPayslip = await tx.payslip.create({
         data: {
           accountId: employeeAccountId,
-          // Store the period dates as provided in the request
-          // Note: If you want these stored as the exact *localized* boundaries, use them here.
-          // For consistency with request.periodStartDate/periodEndDate (which are UTC timestamps)
-          // and to avoid confusion, it's often better to store the exact same timestamps
-          // as the request. However, if the intent is to show the *computed* boundaries,
-          // then storing localizedPeriodStartDate/EndDate here is correct.
-          // I will keep localized for explicit clarity of what was used for calculation.
-          periodStartDate: localizedPeriodStartDate,
-          periodEndDate: localizedPeriodEndDate,
+          // Store exact DateTime values from the request (including time)
+          // This allows multiple payslips for the same date if they have different times
+          periodStartDate: periodStartDate, // Exact DateTime from request
+          periodEndDate: periodEndDate, // Exact DateTime from request
           baseSalary: baseSalaryForPeriod,
           totalCommissions: totalCommissionsForPeriod,
           netPay,
@@ -988,7 +1091,7 @@ export async function processAndReleasePayslipAction(
         },
       });
 
-      // 6. Update the Payslip Request status and link it
+      // 7. Update the Payslip Request status and link it
       await tx.payslipRequest.update({
         where: { id: requestId },
         data: {
@@ -999,7 +1102,7 @@ export async function processAndReleasePayslipAction(
         },
       });
 
-      // 7. Decrement Account's Running Salary
+      // 8. Decrement Account's Running Salary
       await tx.account.update({
         where: { id: employeeAccountId },
         data: {
