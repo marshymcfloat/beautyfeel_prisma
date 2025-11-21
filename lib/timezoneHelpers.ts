@@ -47,8 +47,8 @@ const getPhtEpochStartAsUtc = (): Date => {
   }
 };
 
-const PHT_EPOCH_START_UTC: Date = getPhtEpochStartAsUtc();
-const STANDARD_EPOCH_UTC: Date = new Date(0); // Standard 1970-01-01T00:00:00.000Z UTC
+export const PHT_EPOCH_START_UTC: Date = getPhtEpochStartAsUtc();
+export const STANDARD_EPOCH_UTC: Date = new Date(0); // Standard 1970-01-01T00:00:00.000Z UTC
 
 /**
  * Get the UTC Date object corresponding to the start of a given day in PHT (Philippines Time)
