@@ -14,18 +14,32 @@ import {
   deleteEmailTemplateAction,
 } from "@/lib/ServerAction";
 import { CacheKey, invalidateCache } from "@/lib/cache";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "sonner";
 import {
   PlusCircle,
   Edit3,
   Trash2,
   RefreshCw,
   AlertTriangle,
+  Loader2,
 } from "lucide-react";
 import { EmailTemplate as EmailTemplateType } from "@prisma/client";
-
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
 
 const inputStyle = (hasError?: boolean) =>
   `mt-1 block w-full rounded border ${hasError ? "border-red-500" : "border-customGray"} p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed`;
@@ -55,6 +69,9 @@ export default function ManageEmailTemplates() {
     useState<EmailTemplateType | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string[]>>({});
   const [isPending, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteTemplateId, setPendingDeleteTemplateId] = useState<string | null>(null);
+  const [pendingDeleteTemplateName, setPendingDeleteTemplateName] = useState<string | null>(null);
 
   const [isTemplateActive, setIsTemplateActive] = useState(true);
 
@@ -195,18 +212,24 @@ export default function ManageEmailTemplates() {
         }
 
         if (response.success) {
-          setSuccessMessage(
-            response.message ||
-              `Template ${modalMode === "add" ? "created" : "updated"} successfully!`,
-          );
+          const successMsg = response.message ||
+            `Template ${modalMode === "add" ? "created" : "updated"} successfully!`;
+          toast.success(`Template ${modalMode === "add" ? "created" : "updated"}`, {
+            description: successMsg,
+          });
           setFormError(null);
+          setSuccessMessage(null);
           invalidateCache(TEMPLATES_CACHE_KEY);
           loadTemplates();
           closeModal();
         } else {
-          setFormError(response.message || "An error occurred.");
+          const errorMsg = response.message || "An error occurred.";
+          setFormError(errorMsg);
           setSuccessMessage(null);
           if (response.errors) setFieldErrors(response.errors);
+          toast.error("Failed to save template", {
+            description: errorMsg,
+          });
         }
       } catch (err: any) {
         setFormError(err.message || "An unexpected error occurred.");
@@ -215,40 +238,52 @@ export default function ManageEmailTemplates() {
     });
   };
 
-  const handleDelete = (templateId: string, templateName: string) => {
-    if (
-      !window.confirm(
-        `Are you sure you want to delete the template "${templateName}"? This action cannot be undone.`,
-      )
-    ) {
+  const handleDeleteClick = (templateId: string, templateName: string) => {
+    setPendingDeleteTemplateId(templateId);
+    setPendingDeleteTemplateName(templateName);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteTemplateId) {
+      setDeleteDialogOpen(false);
       return;
     }
     setListError(null);
     setSuccessMessage(null);
     setFormError(null);
+    setDeleteDialogOpen(false);
 
     startTransition(async () => {
       try {
-        const response = await deleteEmailTemplateAction(templateId);
+        const response = await deleteEmailTemplateAction(pendingDeleteTemplateId);
         if (response.success) {
-          setSuccessMessage(
-            response.message || "Template deleted successfully!",
-          );
+          const successMsg = response.message || "Template deleted successfully!";
+          toast.success("Template deleted", {
+            description: successMsg,
+          });
           setListError(null);
           invalidateCache(TEMPLATES_CACHE_KEY);
           loadTemplates();
         } else {
-          setListError(response.message || "Failed to delete template.");
-          setSuccessMessage(null);
+          const errorMsg = response.message || "Failed to delete template.";
+          setListError(errorMsg);
+          toast.error("Failed to delete template", {
+            description: errorMsg,
+          });
         }
       } catch (err: any) {
-        setListError(
-          err.message || "An unexpected error occurred while deleting.",
-        );
-        setSuccessMessage(null);
+        const errorMsg = err.message || "An unexpected error occurred while deleting.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteTemplateId(null);
+        setPendingDeleteTemplateName(null);
       }
     });
-  };
+  }, [pendingDeleteTemplateId, loadTemplates]);
 
   const thStyleBase =
     "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
@@ -278,13 +313,11 @@ export default function ManageEmailTemplates() {
             variant="outline"
             size="sm"
             className="w-full sm:w-auto"
-            icon={
-              <RefreshCw
-                size={16}
-                className={`${isLoading ? "animate-spin" : ""}`}
-              />
-            }
           >
+            <RefreshCw
+              size={16}
+              className={`mr-2 ${isLoading ? "animate-spin" : ""}`}
+            />
             Refresh
           </Button>
           <Button
@@ -292,22 +325,25 @@ export default function ManageEmailTemplates() {
             size="sm"
             disabled={isSaving}
             className="w-full sm:w-auto"
-            icon={<PlusCircle size={16} />}
           >
+            <PlusCircle size={16} className="mr-2" />
             Add New Template
           </Button>
         </div>
       </div>
 
-      {}
-      {listError && <p className={errorMsgStyle}>{listError}</p>}
-      {successMessage && <p className={successMsgStyle}>{successMessage}</p>}
+      {listError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
+      )}
 
-      {}
       {isLoading && templates.length === 0 ? (
-        <p className="py-4 text-center text-customBlack/70">
-          Loading templates...
-        </p>
+        <div className="p-4 space-y-3">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
       ) : !listError && templates.length === 0 ? (
         <div className="my-8 rounded-md border border-yellow-400 bg-yellow-50 p-4 text-center">
           <AlertTriangle className="mx-auto mb-2 h-12 w-12 text-yellow-500" />
@@ -350,34 +386,38 @@ export default function ManageEmailTemplates() {
                   <td className={tdStyleBase}>{template.subject}</td>
                   {}
                   <td className={`${tdStyleBase} hidden md:table-cell`}>
-                    <span
-                      className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${
+                    <Badge
+                      variant={template.isActive ? "default" : "secondary"}
+                      className={
                         template.isActive
                           ? "bg-green-100 text-green-800"
                           : "bg-red-100 text-red-800"
-                      }`}
+                      }
                     >
                       {template.isActive ? "Yes" : "No"}
-                    </span>
+                    </Badge>
                   </td>
-                  {}
                   <td className={`${tdStyleBase} text-right`}>
-                    <button
+                    <Button
                       onClick={() => openModal("edit", template)}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="mr-2 h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       title="Edit Template"
                       disabled={isSaving}
                     >
-                      <Edit3 size={16} /> {}
-                    </button>
-                    <button
-                      onClick={() => handleDelete(template.id, template.name)}
-                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      <Edit3 size={16} />
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(template.id, template.name)}
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       title="Delete Template"
                       disabled={isSaving}
                     >
-                      <Trash2 size={16} /> {}
-                    </button>
+                      <Trash2 size={16} />
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -386,40 +426,43 @@ export default function ManageEmailTemplates() {
         </div>
       )}
 
-      {}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {modalMode === "add" ? "Add New" : "Edit"} Email Template
-          </DialogTitle>
-        }
-        containerClassName={modalContainerStyle}
-      >
-        {}
-        <form
-          key={editingTemplate?.id ?? "new-template-form"}
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()}
-          className="space-y-4"
-        >
-          {}
-          {formError && <p className={modalErrorStyle}>{formError}</p>}
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {modalMode === "add" ? "Add New" : "Edit"} Email Template
+            </DialogTitle>
+            <DialogDescription>
+              {modalMode === "add"
+                ? "Fill in the form below to create a new email template."
+                : "Update the email template details below."}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            key={editingTemplate?.id ?? "new-template-form"}
+            ref={formRef}
+            onSubmit={(e) => e.preventDefault()}
+            className="space-y-4"
+          >
+            {formError && (
+              <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
 
           {}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="name" className={labelStyle}>
-                Template Name*
-              </label>
-              <input
+              <Label htmlFor="name">
+                Template Name <span className="text-red-500">*</span>
+              </Label>
+              <Input
                 type="text"
                 id="name"
                 name="name"
                 defaultValue={editingTemplate?.name ?? ""}
                 required
-                className={inputStyle(!!fieldErrors.name)}
+                className={!!fieldErrors.name ? "border-destructive" : ""}
                 disabled={isSaving}
                 aria-invalid={!!fieldErrors.name}
                 aria-describedby={fieldErrors.name ? "name-error" : undefined}
@@ -431,16 +474,16 @@ export default function ManageEmailTemplates() {
               )}
             </div>
             <div>
-              <label htmlFor="subject" className={labelStyle}>
-                Subject*
-              </label>
-              <input
+              <Label htmlFor="subject">
+                Subject <span className="text-red-500">*</span>
+              </Label>
+              <Input
                 type="text"
                 id="subject"
                 name="subject"
                 defaultValue={editingTemplate?.subject ?? ""}
                 required
-                className={inputStyle(!!fieldErrors.subject)}
+                className={!!fieldErrors.subject ? "border-destructive" : ""}
                 disabled={isSaving}
                 aria-invalid={!!fieldErrors.subject}
                 aria-describedby={
@@ -455,18 +498,17 @@ export default function ManageEmailTemplates() {
             </div>
           </div>
 
-          {}
           <div>
-            <label htmlFor="body" className={labelStyle}>
-              Body* (HTML allowed)
-            </label>
-            <textarea
+            <Label htmlFor="body">
+              Body <span className="text-red-500">*</span> (HTML allowed)
+            </Label>
+            <Textarea
               rows={10}
               id="body"
               name="body"
               defaultValue={editingTemplate?.body ?? ""}
               required
-              className={`${inputStyle(!!fieldErrors.body)} resize-y`}
+              className={`resize-y ${!!fieldErrors.body ? "border-destructive" : ""}`}
               disabled={isSaving}
               aria-invalid={!!fieldErrors.body}
               aria-describedby={fieldErrors.body ? "body-error" : undefined}
@@ -476,17 +518,17 @@ export default function ManageEmailTemplates() {
                 {fieldErrors.body.join(", ")}
               </p>
             )}
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-muted-foreground">
               You can use placeholders like <code>{"{{customerName}}"}</code>,{" "}
               <code>{"{{customerEmail}}"}</code>, etc. These will be replaced
               with actual data when sending.
             </p>
           </div>
           <div>
-            <label htmlFor="placeholders" className={labelStyle}>
+            <Label htmlFor="placeholders">
               Suggested Placeholders (comma-separated, for your reference)
-            </label>
-            <input
+            </Label>
+            <Input
               type="text"
               id="placeholders"
               name="placeholders"
@@ -494,7 +536,7 @@ export default function ManageEmailTemplates() {
                 editingTemplate?.placeholders.join(", ") ??
                 defaultPlaceholdersString
               }
-              className={inputStyle(!!fieldErrors.placeholders)}
+              className={!!fieldErrors.placeholders ? "border-destructive" : ""}
               disabled={isSaving}
               aria-invalid={!!fieldErrors.placeholders}
               aria-describedby={
@@ -506,7 +548,7 @@ export default function ManageEmailTemplates() {
                 {fieldErrors.placeholders.join(", ")}
               </p>
             )}
-            <p className="mt-1 text-xs text-gray-500">
+            <p className="mt-1 text-xs text-muted-foreground">
               Example:{" "}
               <code>
                 {"{{customerName}}, {{customerEmail}}, {{bookingDate}}"}
@@ -514,29 +556,22 @@ export default function ManageEmailTemplates() {
               . This helps you remember what placeholders this template uses.
             </p>
           </div>
-          {}
-          <div className="flex items-center">
-            <input
+          <div className="flex items-center space-x-2">
+            <Switch
               id="isActive"
-              name="isActive"
-              type="checkbox"
               checked={isTemplateActive}
-              onChange={handleCheckboxChange}
+              onCheckedChange={(checked) => setIsTemplateActive(checked)}
               disabled={isSaving}
-              className="h-4 w-4 rounded border-customGray text-customDarkPink focus:ring-customDarkPink"
             />
-            <label
+            <Label
               htmlFor="isActive"
-              className="ml-2 block text-sm text-customBlack/90"
+              className="text-sm font-normal cursor-pointer"
             >
               Active
-            </label>
+            </Label>
           </div>
-
-          {}
-          <div className="mt-8 flex justify-end space-x-3 border-t border-customGray/30 pt-4">
-            {" "}
-            {}
+          </form>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
@@ -546,13 +581,68 @@ export default function ManageEmailTemplates() {
               Cancel
             </Button>
             <Button type="button" onClick={handleSave} disabled={isSaving}>
-              {isSaving
-                ? `${modalMode === "add" ? "Creating" : "Updating"}...`
-                : `${modalMode === "add" ? "Create" : "Update"} Template`}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {modalMode === "add" ? "Creating" : "Updating"}...
+                </>
+              ) : (
+                `${modalMode === "add" ? "Create" : "Update"} Template`
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteTemplateId(null);
+          setPendingDeleteTemplateName(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Email Template</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the template{" "}
+              <span className="font-semibold">{pendingDeleteTemplateName}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteTemplateId(null);
+                setPendingDeleteTemplateName(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Template
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

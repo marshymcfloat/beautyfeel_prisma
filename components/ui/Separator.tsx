@@ -1,18 +1,31 @@
-import clsx from "clsx";
+"use client"
 
-export default function Separator({
-  orientation = "horizontal",
-  className = "",
-}: {
-  orientation?: "horizontal" | "vertical";
-  className?: string;
-}) {
-  const baseStyle = "rounded-2xl bg-gray-800 shadow-2xl";
+import * as React from "react"
+import * as SeparatorPrimitive from "@radix-ui/react-separator"
 
-  const orientationStyle =
-    orientation === "horizontal"
-      ? "w-[90%] mx-auto h-[5px]"
-      : "w-[5px] h-[90%] my-auto mx-auto";
+import { cn } from "@/lib/utils"
 
-  return <div className={clsx(baseStyle, orientationStyle, className)} />;
-}
+const Separator = React.forwardRef<
+  React.ElementRef<typeof SeparatorPrimitive.Root>,
+  React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>
+>(
+  (
+    { className, orientation = "horizontal", decorative = true, ...props },
+    ref
+  ) => (
+    <SeparatorPrimitive.Root
+      ref={ref}
+      decorative={decorative}
+      orientation={orientation}
+      className={cn(
+        "shrink-0 bg-border",
+        orientation === "horizontal" ? "h-[1px] w-full" : "h-full w-[1px]",
+        className
+      )}
+      {...props}
+    />
+  )
+)
+Separator.displayName = SeparatorPrimitive.Root.displayName
+
+export { Separator }

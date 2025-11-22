@@ -3,6 +3,7 @@ import "./globals.css";
 
 import { Lora, Montserrat, Lato } from "next/font/google";
 import AuthProvider from "@/components/Providers/SessionProvider";
+import { Toaster } from "sonner";
 
 export const metadata = {
   title: "BeautyFeel",
@@ -50,7 +51,10 @@ export default function RootLayout({
       className={`${lora.variable} ${montserrat.variable} ${lato.variable}`}
     >
       <body className="flex min-h-screen w-full flex-col overflow-x-hidden">
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <Toaster />
+          {children}
+        </AuthProvider>
 
         <div id="modal-root"></div>
       </body>

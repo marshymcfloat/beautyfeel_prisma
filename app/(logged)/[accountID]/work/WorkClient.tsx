@@ -13,9 +13,23 @@ import {
   ListChecks,
   X,
   CircleDashed,
+  RefreshCw,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/Separator";
+import { toast } from "sonner";
 import { getActiveTransactions } from "@/lib/ServerAction";
-import { TransactionPropsForTransactions, AvailedServicesProps, AvailedServicesPropsForTransactions } from "@/lib/Types";
+import {
+  TransactionPropsForTransactions,
+  AvailedServicesProps,
+  AvailedServicesPropsForTransactions,
+} from "@/lib/Types";
 import { Status } from "@prisma/client";
 
 interface WorkClientProps {
@@ -95,15 +109,28 @@ export default function WorkClient({
       console.log("WorkPage: Socket connected:", newSocket.id);
       setSocketConnected(true);
       setError(null);
+      toast.success("Connected to server", {
+        description: "Real-time updates are now active.",
+        duration: 2000,
+      });
     });
     newSocket.on("disconnect", (reason) => {
       console.log("WorkPage: Socket disconnected:", reason);
       setSocketConnected(false);
+      if (reason === "io server disconnect") {
+        toast.error("Disconnected from server", {
+          description: "Please refresh the page to reconnect.",
+        });
+      }
     });
     newSocket.on("connect_error", (err) => {
       console.error("WorkPage: Socket connection error:", err);
-      setError("Connection failed. Please check network or refresh.");
+      const errorMsg = "Connection failed. Please check network or refresh.";
+      setError(errorMsg);
       setSocketConnected(false);
+      toast.error("Connection error", {
+        description: errorMsg,
+      });
     });
 
     return () => {
@@ -140,6 +167,7 @@ export default function WorkClient({
         next.delete(updatedAvailedService.id);
         return next;
       });
+
       const updateList = (
         list: AvailedServicesPropsForTransactions[] = [],
       ): AvailedServicesPropsForTransactions[] =>
@@ -148,6 +176,7 @@ export default function WorkClient({
             ? { ...s, ...updatedAvailedService }
             : s,
         );
+
       setFetchedTransactions(
         (prev) =>
           prev?.map((tx) =>
@@ -156,11 +185,22 @@ export default function WorkClient({
               : tx,
           ) ?? null,
       );
+
       setSelectedTransaction((prev) =>
         prev?.id === updatedAvailedService.transactionId
           ? { ...prev, availedServices: updateList(prev.availedServices ?? []) }
           : prev,
       );
+
+      // Show success toast
+      const serviceTitle =
+        updatedAvailedService.service?.title ||
+        updatedAvailedService.originatingSet?.title ||
+        "Service";
+      toast.success("Service updated", {
+        description: `${serviceTitle} has been updated successfully.`,
+        duration: 2000,
+      });
     },
     [],
   );
@@ -168,6 +208,12 @@ export default function WorkClient({
   const handleTransactionCompletion = useCallback(
     (completedTransaction: TransactionPropsForTransactions) => {
       if (!completedTransaction?.id) return;
+
+      const customerName = completedTransaction.customer?.name || "Customer";
+      toast.success("Transaction completed", {
+        description: `Transaction for ${customerName} has been completed.`,
+      });
+
       setFetchedTransactions(
         (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
       );
@@ -181,11 +227,20 @@ export default function WorkClient({
   const handleCheckError = useCallback(
     (errorData: { availedServiceId?: string; message?: string }) => {
       if (!errorData?.availedServiceId && !errorData?.message) {
-        setError("An unknown action error occurred.");
+        const errorMsg = "An unknown action error occurred.";
+        setError(errorMsg);
+        toast.error("Action failed", {
+          description: errorMsg,
+        });
         return;
       }
+
       const message = `Action Failed: ${errorData.message || "Unknown error"}`;
       setError(message);
+      toast.error("Action failed", {
+        description: errorData.message || "Unknown error occurred.",
+      });
+
       if (errorData.availedServiceId) {
         setProcessingCheckActions((prev) => {
           if (!prev.has(errorData.availedServiceId!)) return prev;
@@ -226,10 +281,17 @@ export default function WorkClient({
       if (!Array.isArray(data)) {
         throw new Error("Invalid data received from server.");
       }
-      // getActiveTransactions already returns TransactionPropsForTransactions[] with proper types
       setFetchedTransactions(data);
+      toast.success("Refreshed", {
+        description: "Work queue has been refreshed.",
+        duration: 2000,
+      });
     } catch (err: any) {
-      setError(`Fetch error: ${err.message || "Unknown error"}`);
+      const errorMsg = `Fetch error: ${err.message || "Unknown error"}`;
+      setError(errorMsg);
+      toast.error("Failed to refresh", {
+        description: err.message || "Unknown error occurred.",
+      });
     } finally {
       setLoading(false);
     }
@@ -253,8 +315,10 @@ export default function WorkClient({
         }
       }
     });
-    const sortByBookedFor = (a: TransactionPropsForTransactions, b: TransactionPropsForTransactions) =>
-      (a.bookedFor?.getTime() ?? 0) - (b.bookedFor?.getTime() ?? 0);
+    const sortByBookedFor = (
+      a: TransactionPropsForTransactions,
+      b: TransactionPropsForTransactions,
+    ) => (a.bookedFor?.getTime() ?? 0) - (b.bookedFor?.getTime() ?? 0);
     serveNowItems.sort(sortByBookedFor);
     futureItems.sort(sortByBookedFor);
     return {
@@ -263,17 +327,23 @@ export default function WorkClient({
     };
   }, [fetchedTransactions]);
 
-  const handleSelectTransaction = (transaction: TransactionPropsForTransactions) => {
+  const handleSelectTransaction = (
+    transaction: TransactionPropsForTransactions,
+  ) => {
     setError(null);
     setSelectedTransaction(transaction);
   };
+
   const handleCloseDetails = () => {
     setSelectedTransaction(null);
     setError(null);
   };
 
   const handleServiceCheckToggle = useCallback(
-    (availedService: AvailedServicesPropsForTransactions, wantsToBecomeChecked: boolean) => {
+    (
+      availedService: AvailedServicesPropsForTransactions,
+      wantsToBecomeChecked: boolean,
+    ) => {
       if (
         !socket ||
         !socket.connected ||
@@ -281,10 +351,17 @@ export default function WorkClient({
         !accountId ||
         processingCheckActions.has(availedService.id)
       ) {
+        if (!socket || !socket.connected) {
+          toast.error("Not connected", {
+            description: "Please wait for connection to server.",
+          });
+        }
         return;
       }
+
       setProcessingCheckActions((prev) => new Set(prev).add(availedService.id));
       setError(null);
+
       const eventName = wantsToBecomeChecked
         ? "checkService"
         : "uncheckService";
@@ -293,6 +370,7 @@ export default function WorkClient({
         transactionId: availedService.transactionId,
         accountId,
       };
+
       socket.emit(eventName, payload);
     },
     [socket, accountId, processingCheckActions],
@@ -300,18 +378,16 @@ export default function WorkClient({
 
   const isCheckboxDisabled = useCallback(
     (service: AvailedServicesPropsForTransactions): boolean => {
-      // Check if any unit is being processed
       if (processingCheckActions.has(service.id)) return true;
-      
-      // Check if any unit is checked by someone else or served
+
       if (service.units && service.units.length > 0) {
         return service.units.some(
           (unit) =>
             (unit.checkedById && unit.checkedById !== accountId) ||
-            !!unit.servedById
+            !!unit.servedById,
         );
       }
-      
+
       return false;
     },
     [accountId, processingCheckActions],
@@ -322,76 +398,98 @@ export default function WorkClient({
     title: string,
   ) => (
     <div className="mb-1">
-      <h3 className="sticky top-0 z-20 border-b border-t border-customGray bg-customOffWhite px-4 py-2.5 text-sm font-semibold text-customDarkPink">
-        {title} ({transactions.length})
-      </h3>
-      {transactions.length > 0 ? (
-        <table className="min-w-full table-fixed">
-          <thead className="bg-customOffWhite/70">
-            <tr>
-              <th className="w-[30%] border-b border-customGray px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                Date/Time
-              </th>
-              <th className="w-[45%] border-b border-customGray px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                Customer
-              </th>
-              <th className="w-[25%] border-b border-customGray px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-gray-500">
-                Status
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-customGray bg-white">
-            {transactions.map((transaction) => (
-              <tr
-                className="cursor-pointer transition-colors duration-100 hover:bg-customDarkPink/10"
-                key={transaction.id}
-                onClick={() => handleSelectTransaction(transaction)}
-                tabIndex={0}
-                onKeyDown={(e) =>
-                  e.key === "Enter" && handleSelectTransaction(transaction)
-                }
-              >
-                <td className="whitespace-nowrap px-3 py-2.5 text-xs text-customBlack/80">
-                  <div>
-                    {transaction.bookedFor?.toLocaleDateString() ?? "N/A"}
-                  </div>
-                  <div className="text-[10px] text-gray-500">
-                    {transaction.bookedFor?.toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    }) ?? ""}
-                  </div>
-                </td>
-                <td className="truncate px-3 py-2.5 text-sm font-medium text-customBlack">
-                  {transaction.customer?.name ?? "Unknown"}
-                </td>
-                <td className="px-3 py-2.5 text-sm">
-                  <span
-                    className={`inline-block rounded-full px-2 py-0.5 text-[10px] font-semibold lowercase leading-tight ${transaction.status === "PENDING" ? `bg-orange-100 text-orange-700` : ""} ${transaction.status === "DONE" ? `bg-green-100 text-green-800` : ""} ${transaction.status !== "PENDING" && transaction.status !== "DONE" ? "bg-red-100 text-red-700" : ""}`}
-                  >
-                    {transaction.status.toLowerCase()}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      ) : (
-        <p className="bg-white px-4 py-4 text-center text-sm italic text-gray-500">
-          {title.includes("Ready to Serve")
-            ? "No transactions for immediate service."
-            : "No upcoming bookings."}
-        </p>
-      )}
+      <Card className="mb-2">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">
+            {title} ({transactions.length})
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          {transactions.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="min-w-full table-fixed divide-y divide-border">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="w-[30%] px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Date/Time
+                    </th>
+                    <th className="w-[45%] px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Customer
+                    </th>
+                    <th className="w-[25%] px-3 py-2 text-left text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Status
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border bg-background">
+                  {transactions.map((transaction) => (
+                    <tr
+                      className="cursor-pointer transition-colors hover:bg-muted/50"
+                      key={transaction.id}
+                      onClick={() => handleSelectTransaction(transaction)}
+                      tabIndex={0}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        handleSelectTransaction(transaction)
+                      }
+                    >
+                      <td className="whitespace-nowrap px-3 py-2.5 text-xs">
+                        <div>
+                          {transaction.bookedFor?.toLocaleDateString() ?? "N/A"}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {transaction.bookedFor?.toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          }) ?? ""}
+                        </div>
+                      </td>
+                      <td className="truncate px-3 py-2.5 text-sm font-medium">
+                        {transaction.customer?.name ?? "Unknown"}
+                      </td>
+                      <td className="px-3 py-2.5 text-sm">
+                        <Badge
+                          variant={
+                            transaction.status === "PENDING"
+                              ? "default"
+                              : transaction.status === "DONE"
+                                ? "default"
+                                : "destructive"
+                          }
+                          className={
+                            transaction.status === "PENDING"
+                              ? "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                              : transaction.status === "DONE"
+                                ? "bg-green-100 text-green-800 hover:bg-green-200"
+                                : ""
+                          }
+                        >
+                          {transaction.status.toLowerCase()}
+                        </Badge>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+              {title.includes("Ready to Serve")
+                ? "No transactions for immediate service."
+                : "No upcoming bookings."}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 
   const renderContent = () => {
     if (loading)
       return (
-        <div className="flex h-full items-center justify-center p-10 text-gray-500">
-          <Loader2 className="mr-2 h-5 w-5 animate-spin text-customDarkPink" />{" "}
-          Loading Work Queue...
+        <div className="flex h-full flex-col items-center justify-center space-y-4 p-10">
+          <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          <p className="text-muted-foreground">Loading Work Queue...</p>
         </div>
       );
 
@@ -401,138 +499,213 @@ export default function WorkClient({
       (!fetchedTransactions || fetchedTransactions.length === 0)
     )
       return (
-        <div className="flex h-full flex-col items-center justify-center p-10 text-center text-red-600">
-          <AlertCircle className="mb-2 h-8 w-8" />
-          <p className="font-medium">{error}</p>
-          <p className="mt-1 text-sm">
-            Try refreshing the page or check your connection.
-          </p>
-        </div>
+        <Card className="m-4">
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <AlertCircle className="mb-4 h-12 w-12 text-destructive" />
+            <h3 className="mb-2 text-lg font-semibold">Connection Error</h3>
+            <p className="mb-4 text-muted-foreground">{error}</p>
+            <p className="mb-4 text-sm text-muted-foreground">
+              Try refreshing the page or check your connection.
+            </p>
+            <Button onClick={refreshTransactions} variant="outline">
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Retry
+            </Button>
+          </CardContent>
+        </Card>
       );
 
     if (selectedTransaction) {
+      const serviceTitle =
+        selectedTransaction.customer?.name ?? "N/A";
+      const isAnyServiceChecked = selectedTransaction.availedServices?.some(
+        (service) =>
+          service.units?.some((unit) => unit.checkedById === accountId),
+      );
+
       return (
         <div className="flex h-full flex-col">
-          <div className="flex-shrink-0 border-b border-customGray bg-white p-3 shadow-sm">
-            <h2 className="mb-1 truncate text-base font-semibold text-customBlack">
-              Customer: {selectedTransaction.customer?.name ?? "N/A"}
-            </h2>
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-customBlack/70">
-              <span className="flex items-center gap-1">
-                <Clock size={12} className="text-customGray" /> Created:{" "}
-                {selectedTransaction.createdAt?.toLocaleDateString() ?? "N/A"}
-              </span>
-              <span className="flex items-center gap-1">
-                <Clock size={12} className="text-customGray" /> Booked:{" "}
-                {selectedTransaction.bookedFor?.toLocaleDateString() ?? "N/A"} @{" "}
-                {selectedTransaction.bookedFor?.toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }) ?? ""}
-              </span>
-              <span className="flex items-center gap-1">
-                Status:
-                <span
-                  className={`font-medium ${selectedTransaction.status === "PENDING" ? `text-orange-600` : selectedTransaction.status === "DONE" ? `text-green-600` : `text-red-600`}`}
+          <Card className="m-4 mb-0">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle className="mb-2 truncate">
+                    Customer: {serviceTitle}
+                  </CardTitle>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1">
+                      <Clock size={12} /> Created:{" "}
+                      {selectedTransaction.createdAt?.toLocaleDateString() ??
+                        "N/A"}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Clock size={12} /> Booked:{" "}
+                      {selectedTransaction.bookedFor?.toLocaleDateString() ??
+                        "N/A"}{" "}
+                      @{" "}
+                      {selectedTransaction.bookedFor?.toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }) ?? ""}
+                    </span>
+                    <Badge
+                      variant={
+                        selectedTransaction.status === "PENDING"
+                          ? "default"
+                          : selectedTransaction.status === "DONE"
+                            ? "default"
+                            : "destructive"
+                      }
+                      className={
+                        selectedTransaction.status === "PENDING"
+                          ? "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                          : selectedTransaction.status === "DONE"
+                            ? "bg-green-100 text-green-800 hover:bg-green-200"
+                            : ""
+                      }
+                    >
+                      {selectedTransaction.status}
+                    </Badge>
+                  </div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleCloseDetails}
+                  className="h-8 w-8"
                 >
-                  {selectedTransaction.status}
-                </span>
-              </span>
-            </div>
-          </div>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+          </Card>
 
           {error && (
-            <div className="flex flex-shrink-0 items-center gap-2 border-b border-red-200 bg-red-100 p-2 text-sm text-red-700">
-              <AlertCircle size={16} />
-              <span>{error}</span>
+            <div className="mx-4 mb-0 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              <div className="flex items-center gap-2">
+                <AlertCircle size={16} />
+                <span>{error}</span>
+              </div>
             </div>
           )}
 
-          <div className="flex-grow space-y-2 overflow-y-auto bg-customOffWhite/50 p-3">
-            {selectedTransaction.availedServices?.map((service) => (
-              <div
-                key={service.id}
-                className="rounded-lg border border-customGray/30 bg-white p-3 shadow-sm"
-              >
-                <div className="mb-2 flex items-start justify-between">
-                  <div className="flex-1">
-                    <h4 className="font-semibold text-customBlack">
-                      {service.service?.title ||
-                        service.originatingSet?.title ||
-                        "Unknown Service"}
-                    </h4>
-                    <p className="text-sm text-gray-600">
-                      Quantity: {service.quantity} ×{" "}
-                      {formatCurrency(service.price / (service.quantity || 1))}
-                    </p>
-                    <p className="text-sm font-medium text-customDarkPink">
-                      Total: {formatCurrency(service.price)}
-                    </p>
-                  </div>
-                  <div className="ml-4 flex items-center gap-2">
-                    {service.units && service.units.some((unit) => unit.checkedById === accountId) ? (
-                      <button
-                        onClick={() => handleServiceCheckToggle(service, false)}
-                        disabled={isCheckboxDisabled(service)}
-                        className="flex items-center gap-1 rounded bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700 hover:bg-orange-200 disabled:opacity-50"
-                      >
-                        <UserCheck size={14} />
-                        Checked In
-                      </button>
-                    ) : (
-                      <button
-                        onClick={() => handleServiceCheckToggle(service, true)}
-                        disabled={isCheckboxDisabled(service)}
-                        className="flex items-center gap-1 rounded bg-gray-100 px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
-                      >
-                        <CircleDashed size={14} />
-                        Check In
-                      </button>
-                    )}
-                  </div>
-                </div>
+          <ScrollArea className="flex-grow">
+            <div className="space-y-3 p-4">
+              {selectedTransaction.availedServices?.map((service) => {
+                const isChecked =
+                  service.units?.some(
+                    (unit) => unit.checkedById === accountId,
+                  ) ?? false;
+                const isDisabled = isCheckboxDisabled(service);
+                const isProcessing = processingCheckActions.has(service.id);
 
-                {service.units && service.units.length > 0 && (
-                  <div className="mt-2 space-y-1 border-t border-customGray/30 pt-2">
-                    {service.units.map((unit, idx) => (
-                      <div
-                        key={unit.id || idx}
-                        className="flex items-center justify-between text-xs"
-                      >
-                        <span className="text-gray-600">
-                          Unit {unit.unitIndex + 1}
-                        </span>
-                        <span
-                          className={`font-medium ${
-                            unit.status === Status.DONE
-                              ? "text-green-600"
-                              : unit.status === Status.PENDING &&
-                                  unit.checkedById === accountId
-                                ? "text-orange-600"
-                              : "text-gray-500"
-                          }`}
+                return (
+                  <Card key={service.id}>
+                    <CardHeader className="pb-3">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <CardTitle className="text-base">
+                            {service.service?.title ||
+                              service.originatingSet?.title ||
+                              "Unknown Service"}
+                          </CardTitle>
+                          <CardDescription className="mt-1">
+                            Quantity: {service.quantity} ×{" "}
+                            {formatCurrency(
+                              service.price / (service.quantity || 1),
+                            )}
+                          </CardDescription>
+                          <p className="mt-1 text-sm font-medium text-primary">
+                            Total: {formatCurrency(service.price)}
+                          </p>
+                        </div>
+                        <Button
+                          onClick={() =>
+                            handleServiceCheckToggle(service, !isChecked)
+                          }
+                          disabled={isDisabled}
+                          variant={isChecked ? "default" : "outline"}
+                          size="sm"
+                          className={
+                            isChecked
+                              ? "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                              : ""
+                          }
                         >
-                          {unit.status === Status.DONE
-                            ? "Served"
-                            : unit.checkedById === accountId
-                              ? "Checked In"
-                              : "Pending"}
-                        </span>
+                          {isProcessing ? (
+                            <>
+                              <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                              Processing...
+                            </>
+                          ) : isChecked ? (
+                            <>
+                              <UserCheck className="mr-1 h-3 w-3" />
+                              Checked In
+                            </>
+                          ) : (
+                            <>
+                              <CircleDashed className="mr-1 h-3 w-3" />
+                              Check In
+                            </>
+                          )}
+                        </Button>
                       </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
+                    </CardHeader>
+                    <CardContent>
+                      {service.units && service.units.length > 0 && (
+                        <>
+                          <Separator className="mb-3" />
+                          <div className="space-y-2">
+                            {service.units.map((unit, idx) => (
+                              <div
+                                key={unit.id || idx}
+                                className="flex items-center justify-between rounded-md bg-muted/50 px-3 py-2 text-xs"
+                              >
+                                <span className="text-muted-foreground">
+                                  Unit {unit.unitIndex + 1}
+                                </span>
+                                <Badge
+                                  variant={
+                                    unit.status === Status.DONE
+                                      ? "default"
+                                      : unit.checkedById === accountId
+                                        ? "secondary"
+                                        : "outline"
+                                  }
+                                  className={
+                                    unit.status === Status.DONE
+                                      ? "bg-green-100 text-green-800 hover:bg-green-200"
+                                      : unit.checkedById === accountId
+                                        ? "bg-orange-100 text-orange-700 hover:bg-orange-200"
+                                        : ""
+                                  }
+                                >
+                                  {unit.status === Status.DONE
+                                    ? "Served"
+                                    : unit.checkedById === accountId
+                                      ? "Checked In"
+                                      : "Pending"}
+                                </Badge>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          </ScrollArea>
 
-          <div className="flex-shrink-0 border-t border-customGray bg-white p-3">
-            <button
+          <div className="border-t bg-background p-4">
+            <Button
               onClick={handleCloseDetails}
-              className="w-full rounded bg-customDarkPink px-4 py-2 text-sm font-medium text-white hover:bg-customDarkPink/90"
+              variant="outline"
+              className="w-full"
             >
               Close Details
-            </button>
+            </Button>
           </div>
         </div>
       );
@@ -540,30 +713,47 @@ export default function WorkClient({
 
     return (
       <div className="flex h-full flex-col">
-        <div className="flex-shrink-0 border-b border-customGray bg-white p-3 shadow-sm">
-          <div className="flex items-center justify-between">
-            <h1 className="text-lg font-semibold text-customBlack">
-              Work Queue
-            </h1>
-            <div className="flex items-center gap-2">
-              {!socketConnected && (
-                <span className="text-xs text-orange-600">
-                  Connecting...
-                </span>
-              )}
-              <button
-                onClick={refreshTransactions}
-                disabled={loading}
-                className="rounded bg-customDarkPink px-3 py-1 text-xs text-white hover:bg-customDarkPink/90 disabled:opacity-50"
-              >
-                {loading ? "Refreshing..." : "Refresh"}
-              </button>
+        <Card className="m-4 mb-0">
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <CardTitle>Work Queue</CardTitle>
+              <div className="flex items-center gap-2">
+                {socketConnected ? (
+                  <Badge variant="outline" className="bg-green-50 text-green-700">
+                    <Wifi className="mr-1 h-3 w-3" />
+                    Connected
+                  </Badge>
+                ) : (
+                  <Badge variant="outline" className="bg-orange-50 text-orange-700">
+                    <WifiOff className="mr-1 h-3 w-3" />
+                    Connecting...
+                  </Badge>
+                )}
+                <Button
+                  onClick={refreshTransactions}
+                  disabled={loading}
+                  variant="outline"
+                  size="sm"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                      Refreshing...
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="mr-2 h-3 w-3" />
+                      Refresh
+                    </>
+                  )}
+                </Button>
+              </div>
             </div>
-          </div>
-        </div>
+          </CardHeader>
+        </Card>
 
         {error && !selectedTransaction && (
-          <div className="flex-shrink-0 border-b border-red-200 bg-red-100 p-2 text-sm text-red-700">
+          <div className="mx-4 mb-0 rounded-lg border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
             <div className="flex items-center gap-2">
               <AlertCircle size={16} />
               <span>{error}</span>
@@ -571,30 +761,29 @@ export default function WorkClient({
           </div>
         )}
 
-        <div className="flex-grow overflow-y-auto bg-customOffWhite">
-          {renderTransactionTable(
-            serveNowTransactions,
-            "Ready to Serve Now",
-          )}
-          {renderTransactionTable(futureTransactions, "Upcoming Bookings")}
-        </div>
+        <ScrollArea className="flex-grow">
+          <div className="space-y-2 p-4">
+            {renderTransactionTable(serveNowTransactions, "Ready to Serve Now")}
+            {renderTransactionTable(futureTransactions, "Upcoming Bookings")}
+          </div>
+        </ScrollArea>
       </div>
     );
   };
 
   return (
-    <div className="flex h-screen flex-col bg-customOffWhite">
-      <div className="flex-shrink-0 border-b border-customGray bg-white p-3">
-        <button
+    <div className="flex h-screen flex-col bg-background">
+      <div className="border-b bg-background p-3">
+        <Button
+          variant="ghost"
           onClick={() => router.push(`/${accountId}`)}
-          className="flex items-center gap-2 text-customDarkPink hover:text-customDarkPink/70"
+          className="flex items-center gap-2"
         >
           <ChevronLeft size={20} />
           <span>Back to Dashboard</span>
-        </button>
+        </Button>
       </div>
       <div className="flex-grow overflow-hidden">{renderContent()}</div>
     </div>
   );
 }
-

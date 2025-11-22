@@ -14,9 +14,22 @@ import {
   updatePayslipRequestStatusAction,
   processAndReleasePayslipAction,
 } from "@/lib/SalaryActions"; // Adjust import path
-import Button from "@/components/Buttons/Button"; // Assuming this Button component exists
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
 import { PayslipRequestStatus, Role } from "@prisma/client"; // Import enums and types
-import { RefreshCw, CheckCircle, XCircle, DollarSign, Eye } from "lucide-react"; // Icons
+import { RefreshCw, CheckCircle, XCircle, DollarSign, Eye, Loader2, AlertCircle } from "lucide-react"; // Icons
 import { format } from "date-fns"; // For date formatting
 import { useRouter } from "next/navigation"; // For potential navigation to Payslip details
 
@@ -26,10 +39,6 @@ import {
   invalidateCache,
   CacheKey,
 } from "@/lib/cache"; // Cache utilities
-
-// Assuming a loading spinner widget or styling is available
-// import LoadingSpinner from '@/components/ui/LoadingSpinner';
-import { Loader2, AlertCircle } from "lucide-react";
 
 // Type matching the data structure returned by getPayslipRequestsAction
 // Must be the same type structure exported from lib/SalaryActions
@@ -69,6 +78,11 @@ export default function ManagePayslips({
   const [isLoading, setIsLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition(); // Global pending state for any action
+  const [confirmApproveOpen, setConfirmApproveOpen] = useState(false);
+  const [confirmRejectOpen, setConfirmRejectOpen] = useState(false);
+  const [confirmReleaseOpen, setConfirmReleaseOpen] = useState(false);
+  const [pendingActionRequestId, setPendingActionRequestId] = useState<string | null>(null);
+  const [pendingActionType, setPendingActionType] = useState<"APPROVE" | "REJECT" | "RELEASE" | null>(null);
 
   const loadRequests = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
@@ -89,9 +103,18 @@ export default function ManagePayslips({
       if (error) {
         setListError(error);
         setRequests(cachedData || []); // Fallback to cache data on refresh error
+        toast.error("Failed to load payslip requests", {
+          description: error,
+        });
       } else {
         setRequests(data);
         setCachedData(PAYSLIP_REQUESTS_CACHE_KEY, data);
+        if (forceRefresh) {
+          toast.success("List refreshed", {
+            description: "Payslip requests have been updated.",
+            duration: 2000,
+          });
+        }
       }
     } catch (err: any) {
       // This catch is for unexpected errors not caught by the action's return object
@@ -124,181 +147,202 @@ export default function ManagePayslips({
 
   // --- Action Handlers ---
 
-  const handleUpdateStatus = useCallback(
-    async (
-      requestId: string,
-      newStatus: "APPROVED" | "REJECTED",
-      notes?: string | null,
-    ) => {
+  const handleUpdateStatusClick = useCallback(
+    (requestId: string, newStatus: "APPROVED" | "REJECTED") => {
       if (!loggedInAdminId || isPending || !isOwner) {
-        // Prevent actions if loading, pending, or not owner
         console.warn("Action blocked: Loading, Pending, or Not Owner.");
         return;
       }
 
-      const actionText = newStatus.toLowerCase();
-      if (
-        !window.confirm(`Are you sure you want to ${actionText} this request?`)
-      ) {
-        return; // Cancelled by user
+      setPendingActionRequestId(requestId);
+      setPendingActionType(newStatus === "APPROVED" ? "APPROVE" : "REJECT");
+      if (newStatus === "APPROVED") {
+        setConfirmApproveOpen(true);
+      } else {
+        setConfirmRejectOpen(true);
       }
+    },
+    [loggedInAdminId, isPending, isOwner],
+  );
 
-      setListError(null); // Clear list error before new action
+  const handleConfirmUpdateStatus = useCallback(
+    async (notes?: string | null) => {
+      if (!pendingActionRequestId || !pendingActionType) return;
+
+      const newStatus = pendingActionType === "APPROVE" ? "APPROVED" : "REJECTED";
+      const actionText = pendingActionType.toLowerCase();
+      const requestId = pendingActionRequestId;
+
+      setConfirmApproveOpen(false);
+      setConfirmRejectOpen(false);
+      setListError(null);
+
       startTransition(async () => {
-        const result = await updatePayslipRequestStatusAction(
-          requestId,
-          newStatus,
-          loggedInAdminId,
-          notes,
-        );
-        if (!result.success) {
-          // Update state immediately to show potential local error messages? Or rely on full reload?
-          // For simplicity, reload or show a general error message on the list.
-          setListError(
-            result.error ||
+        try {
+          const result = await updatePayslipRequestStatusAction(
+            requestId,
+            newStatus,
+            loggedInAdminId,
+            notes,
+          );
+          if (!result.success) {
+            const errorMsg =
+              result.error ||
               result.message ||
-              `Failed to ${actionText} request ${requestId}.`,
-          );
-          // Could potentially refresh here even on error to show latest status, or maybe not to preserve error context.
-          // Let's refresh on success only, and show the error message above the table.
-        } else {
-          console.log(
-            `Successfully updated request ${requestId} status to ${newStatus}. Refreshing list.`,
-          );
-          invalidateCache(PAYSLIP_REQUESTS_CACHE_KEY);
-          loadRequests(true); // Refetch data to show updated status and processedBy info
+              `Failed to ${actionText} request ${requestId}.`;
+            setListError(errorMsg);
+            toast.error(`Failed to ${actionText} request`, {
+              description: errorMsg,
+            });
+          } else {
+            toast.success(`Request ${actionText}ed successfully`, {
+              description: "The list will now refresh.",
+              duration: 3000,
+            });
+            invalidateCache(PAYSLIP_REQUESTS_CACHE_KEY);
+            loadRequests(true);
+          }
+        } catch (error: any) {
+          const errorMsg = error.message || `Failed to ${actionText} request.`;
+          setListError(errorMsg);
+          toast.error(`Error ${actionText}ing request`, {
+            description: errorMsg,
+          });
+        } finally {
+          setPendingActionRequestId(null);
+          setPendingActionType(null);
         }
       });
     },
-    [loggedInAdminId, isPending, isOwner, loadRequests],
-  ); // Added isOwner and loadRequests dependency
+    [pendingActionRequestId, pendingActionType, loggedInAdminId, loadRequests],
+  );
 
-  const handleProcessAndRelease = useCallback(
-    async (requestId: string) => {
+  const handleProcessAndReleaseClick = useCallback(
+    (requestId: string) => {
       if (!loggedInAdminId || isPending || !isOwner) {
-        // Prevent actions if loading, pending, or not owner
         console.warn("Release action blocked: Loading, Pending, or Not Owner.");
         return;
       }
 
-      if (
-        !window.confirm(
-          "Are you sure you want to process and release this payslip? This action cannot be undone and will finalize earnings for the requested period.",
-        )
-      ) {
-        return; // Cancelled by user
-      }
+      setPendingActionRequestId(requestId);
+      setPendingActionType("RELEASE");
+      setConfirmReleaseOpen(true);
+    },
+    [loggedInAdminId, isPending, isOwner],
+  );
 
-      setListError(null); // Clear list error
-      startTransition(async () => {
+  const handleConfirmProcessAndRelease = useCallback(async () => {
+    if (!pendingActionRequestId) return;
+
+    const requestId = pendingActionRequestId;
+    setConfirmReleaseOpen(false);
+    setListError(null);
+
+    startTransition(async () => {
+      try {
         const result = await processAndReleasePayslipAction(
           requestId,
           loggedInAdminId,
-        ); // Call the release action
+        );
         if (!result.success) {
-          setListError(
+          const errorMsg =
             result.error ||
-              result.message ||
-              `Failed to process/release payslip for request ${requestId}.`,
-          );
-          // Maybe refresh on error too? Or just show error and wait for manual refresh? Let's not refresh on error.
+            result.message ||
+            `Failed to process/release payslip for request ${requestId}.`;
+          setListError(errorMsg);
+          toast.error("Failed to release payslip", {
+            description: errorMsg,
+          });
         } else {
-          console.log(
-            `Successfully processed request ${requestId} and released payslip ${result.relatedPayslipId}. Refreshing list.`,
-          );
+          toast.success("Payslip released successfully", {
+            description: result.message || "The list will now refresh.",
+            duration: 3000,
+          });
           invalidateCache(PAYSLIP_REQUESTS_CACHE_KEY);
-          // Invalidate the employee's own history page cache as well if you want it to show the new payslip immediately
-          // This is already handled within the server action `revalidatePath`.
-          loadRequests(true); // Refetch data to show PROCESSED status, payslip link etc.
-          // Optional: show a success toast or message beyond the basic listError
+          loadRequests(true);
         }
-      });
-    },
-    [loggedInAdminId, isPending, isOwner, loadRequests],
-  ); // Added isOwner and loadRequests dependency
-
-  // Helper to determine status color classes
-  const getStatusClass = (status: PayslipRequestStatus) => {
-    switch (status) {
-      case "PENDING":
-        return "bg-yellow-100 text-yellow-800";
-      case "APPROVED":
-        return "bg-blue-100 text-blue-800";
-      case "REJECTED":
-        return "bg-red-100 text-red-800";
-      case "PROCESSED":
-        return "bg-green-100 text-green-800";
-      case "FAILED":
-        return "bg-red-200 text-red-900"; // More severe failed color
-      default:
-        return "bg-gray-100 text-gray-800";
-    }
-  };
-
-  // Helper to format currency (optional, if not already global)
-  const formatCurrency = (amount: number | null | undefined): string =>
-    (amount ?? 0).toLocaleString("en-PH", {
-      style: "currency",
-      currency: "PHP",
-      minimumFractionDigits: 0, // Or 2 if cents are tracked
-      maximumFractionDigits: 0, // Or 2
+      } catch (error: any) {
+        const errorMsg = error.message || "Failed to release payslip.";
+        setListError(errorMsg);
+        toast.error("Error releasing payslip", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingActionRequestId(null);
+        setPendingActionType(null);
+      }
     });
+  }, [pendingActionRequestId, loggedInAdminId, loadRequests]);
+
+  const selectedRequest = pendingActionRequestId
+    ? requests.find((r) => r.id === pendingActionRequestId)
+    : null;
 
   // Base styles
   const thStyleBase =
-    "px-3 py-2 text-left text-xs font-medium text-customBlack/80 uppercase tracking-wider";
-  const tdStyleBase = "px-3 py-2 text-sm text-customBlack/90 align-top"; // Align top for cells with multiline content
+    "px-3 py-2 text-left text-xs font-medium text-foreground/80 uppercase tracking-wider";
+  const tdStyleBase = "px-3 py-2 text-sm text-foreground/90 align-top"; // Align top for cells with multiline content
 
   if (!isOwner) {
     return (
-      <div className="flex items-center justify-center gap-2 p-4 text-center text-red-600">
-        <AlertCircle size={20} /> Access Denied. This page is for Owners only.
-      </div>
+      <Card className="m-4">
+        <CardContent className="flex min-h-[200px] flex-col items-center justify-center p-12 text-center">
+          <AlertCircle className="h-12 w-12 text-destructive" />
+          <h2 className="mt-4 text-2xl font-semibold">Access Denied</h2>
+          <p className="mt-2 text-muted-foreground">
+            This page is for Owners only.
+          </p>
+        </CardContent>
+      </Card>
     );
   }
 
   return (
-    <div className="p-1">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-lg font-semibold text-customBlack">
-          Manage Payslip Requests
-        </h2>
-        <div className="flex">
-          <Button
-            onClick={handleRefresh}
-            disabled={isLoading || isPending} // Disable refresh while loading or action pending
-            size="sm"
-            variant="outline"
-            className={`w-full sm:w-auto ${isLoading || isPending ? "cursor-not-allowed opacity-60" : ""}`}
-          >
-            <RefreshCw
-              size={16}
-              className={`mr-1 ${isLoading ? "animate-spin" : ""}`}
-            />{" "}
-            Refresh List
-          </Button>
-        </div>
-      </div>
+    <div className="space-y-6 p-4">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+            <CardTitle>Manage Payslip Requests</CardTitle>
+            <Button
+              onClick={handleRefresh}
+              disabled={isLoading || isPending}
+              size="sm"
+              variant="outline"
+            >
+              {isLoading || isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Refreshing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Refresh List
+                </>
+              )}
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {listError && (
+            <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {listError}
+            </div>
+          )}
 
-      {listError && (
-        <p className="mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700">
-          {listError}
-        </p>
-      )}
-
-      {isLoading && requests.length === 0 ? (
-        <div className="flex min-h-[200px] items-center justify-center">
-          <Loader2 className="text-customBlue h-8 w-8 animate-spin" />
-          <p className="ml-2 text-customBlack/70">
-            Loading payslip requests...
-          </p>
-        </div>
-      ) : !listError && requests.length === 0 ? (
-        <div className="flex min-h-[200px] items-center justify-center">
-          <p className="text-customBlack/60">No payslip requests found.</p>
-        </div>
-      ) : (
-        <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
+          {isLoading && requests.length === 0 ? (
+            <div className="space-y-4 py-8">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
+          ) : !listError && requests.length === 0 ? (
+            <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
+              <p className="text-muted-foreground">No payslip requests found.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-md border">
+              <ScrollArea className="h-[600px]">
           <table className="min-w-full divide-y divide-customGray/30">
             <thead className="bg-customGray/10">
               <tr>
@@ -327,7 +371,7 @@ export default function ManagePayslips({
                     {/* <a href={`/account/${req.accountId}`} className="text-customBlue hover:underline"> */}
                     {req.account.name}
                     {/* </a> */}
-                    <span className="block text-xs italic text-customBlack/60">
+                    <span className="block text-xs italic text-muted-foreground">
                       ({req.account.role.map((r) => r.toLowerCase()).join(", ")}
                       )
                     </span>
@@ -335,7 +379,7 @@ export default function ManagePayslips({
                   {/* Period */}
                   <td className={`${tdStyleBase} whitespace-nowrap`}>
                     {format(req.periodStartDate, "MMM d, yyyy")}
-                    <span className="block text-customBlack/60">
+                    <span className="block text-muted-foreground">
                       to {format(req.periodEndDate, "MMM d, yyyy")}
                     </span>
                   </td>
@@ -347,11 +391,24 @@ export default function ManagePayslips({
                   </td>
                   {/* Status */}
                   <td className={`${tdStyleBase}`}>
-                    <span
-                      className={`inline-flex rounded-full px-2 text-xs font-semibold leading-5 ${getStatusClass(req.status)}`}
+                    <Badge
+                      variant={
+                        req.status === "PENDING"
+                          ? "secondary"
+                          : req.status === "APPROVED"
+                            ? "default"
+                            : req.status === "REJECTED" || req.status === "FAILED"
+                              ? "destructive"
+                              : "default"
+                      }
+                      className={
+                        req.status === "PROCESSED"
+                          ? "bg-green-100 text-green-800 hover:bg-green-200"
+                          : ""
+                      }
                     >
                       {req.status.replace("_", " ")}
-                    </span>
+                    </Badge>
                   </td>
                   {/* Processed By */}
                   <td className={`${tdStyleBase} hidden md:table-cell`}>
@@ -390,41 +447,42 @@ export default function ManagePayslips({
                     ) : (
                       <>
                         {req.status === PayslipRequestStatus.PENDING && (
-                          <Button
-                            onClick={() =>
-                              handleUpdateStatus(req.id, "APPROVED")
-                            }
-                            disabled={isPending}
-                            size="xs"
-                            className="mr-2"
-                            title="Approve Request"
-                          >
-                            <CheckCircle size={14} className="mr-1" /> Approve
-                          </Button>
-                        )}
-                        {req.status === PayslipRequestStatus.PENDING && (
-                          <Button
-                            onClick={() =>
-                              handleUpdateStatus(req.id, "REJECTED")
-                            }
-                            disabled={isPending}
-                            size="xs"
-                            variant="outline"
-                            className="mr-2 border-red-300 text-red-600 hover:bg-red-50 hover:text-red-800"
-                            title="Reject Request"
-                          >
-                            <XCircle size={14} className="mr-1" /> Reject
-                          </Button>
+                          <>
+                            <Button
+                              onClick={() =>
+                                handleUpdateStatusClick(req.id, "APPROVED")
+                              }
+                              disabled={isPending}
+                              size="sm"
+                              variant="default"
+                              className="mr-2"
+                              title="Approve Request"
+                            >
+                              <CheckCircle className="mr-1 h-4 w-4" /> Approve
+                            </Button>
+                            <Button
+                              onClick={() =>
+                                handleUpdateStatusClick(req.id, "REJECTED")
+                              }
+                              disabled={isPending}
+                              size="sm"
+                              variant="destructive"
+                              className="mr-2"
+                              title="Reject Request"
+                            >
+                              <XCircle className="mr-1 h-4 w-4" /> Reject
+                            </Button>
+                          </>
                         )}
                         {req.status === PayslipRequestStatus.APPROVED && (
                           <Button
-                            onClick={() => handleProcessAndRelease(req.id)}
+                            onClick={() => handleProcessAndReleaseClick(req.id)}
                             disabled={isPending}
-                            size="xs"
+                            size="sm"
                             className="bg-green-600 text-white hover:bg-green-700"
                             title="Process and Release Payslip"
                           >
-                            <DollarSign size={14} className="mr-1" /> Release
+                            <DollarSign className="mr-1 h-4 w-4" /> Release
                             Payslip
                           </Button>
                         )}
@@ -434,18 +492,13 @@ export default function ManagePayslips({
                             <Button
                               onClick={() => {
                                 /* Implement navigation or modal to view payslip using req.relatedPayslipId */
-                                console.log(
-                                  "View Payslip button clicked for:",
-                                  req.relatedPayslipId,
-                                );
-                                // Example: router.push(`/admin/payslips/${req.relatedPayslipId}`); or open modal
-                                alert(
-                                  "View Payslip feature not yet implemented. Payslip ID: " +
-                                    req.relatedPayslipId,
-                                );
+                                toast.info("View Payslip", {
+                                  description: `Feature not yet implemented. Payslip ID: ${req.relatedPayslipId}`,
+                                  duration: 5000,
+                                });
                               }}
                               disabled={isPending}
-                              size="xs"
+                              size="sm"
                               variant="outline"
                               title="View Generated Payslip"
                             >
@@ -454,7 +507,7 @@ export default function ManagePayslips({
                           )}
                         {(req.status === PayslipRequestStatus.REJECTED ||
                           req.status === PayslipRequestStatus.FAILED) && (
-                          <span className="text-sm text-customBlack/60">
+                          <span className="text-sm text-muted-foreground">
                             - No actions -
                           </span>
                         )}
@@ -465,8 +518,149 @@ export default function ManagePayslips({
               ))}
             </tbody>
           </table>
-        </div>
-      )}
+              </ScrollArea>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirm Approve Dialog */}
+      <Dialog open={confirmApproveOpen} onOpenChange={setConfirmApproveOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Approve Payslip Request</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to approve this payslip request for{" "}
+              <span className="font-semibold">
+                {selectedRequest?.account.name}
+              </span>
+              ? This will allow the payslip to be processed and released.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmApproveOpen(false);
+                setPendingActionRequestId(null);
+                setPendingActionType(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => handleConfirmUpdateStatus()}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Approving...
+                </>
+              ) : (
+                <>
+                  <CheckCircle className="mr-2 h-4 w-4" />
+                  Approve
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Reject Dialog */}
+      <Dialog open={confirmRejectOpen} onOpenChange={setConfirmRejectOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Payslip Request</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to reject this payslip request for{" "}
+              <span className="font-semibold">
+                {selectedRequest?.account.name}
+              </span>
+              ? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmRejectOpen(false);
+                setPendingActionRequestId(null);
+                setPendingActionType(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => handleConfirmUpdateStatus()}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Rejecting...
+                </>
+              ) : (
+                <>
+                  <XCircle className="mr-2 h-4 w-4" />
+                  Reject
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm Release Dialog */}
+      <Dialog open={confirmReleaseOpen} onOpenChange={setConfirmReleaseOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Process and Release Payslip</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to process and release this payslip for{" "}
+              <span className="font-semibold">
+                {selectedRequest?.account.name}
+              </span>
+              ? This action cannot be undone and will finalize earnings for the
+              requested period.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setConfirmReleaseOpen(false);
+                setPendingActionRequestId(null);
+                setPendingActionType(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmProcessAndRelease}
+              disabled={isPending}
+              className="bg-green-600 text-white hover:bg-green-700"
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Processing...
+                </>
+              ) : (
+                <>
+                  <DollarSign className="mr-2 h-4 w-4" />
+                  Release Payslip
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

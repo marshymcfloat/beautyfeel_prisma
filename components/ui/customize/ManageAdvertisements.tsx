@@ -15,25 +15,27 @@ import {
 } from "@/lib/ServerAction";
 import { CacheKey } from "@/lib/cache";
 import { CustomerForEmail, EmailTemplateForSelection } from "@/lib/Types";
-import Button from "@/components/Buttons/Button";
-import { RefreshCw, Send } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { toast } from "sonner";
+import { RefreshCw, Send, Loader2 } from "lucide-react";
 import { invalidateCache } from "@/lib/cache";
 
 const CUSTOMERS_CACHE_KEY: CacheKey = "customers_SendEmail";
-
-const inputStyle = (hasError?: boolean) =>
-  `mt-1 block w-full rounded border ${hasError ? "border-red-500" : "border-customGray"} p-2 shadow-sm sm:text-sm focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink disabled:bg-gray-100 disabled:cursor-not-allowed`;
-const labelStyle = "block text-sm font-medium text-customBlack/80";
-const checkboxStyle =
-  "h-4 w-4 rounded border-customGray text-customDarkPink focus:ring-customDarkPink";
-const checkboxLabelStyle = "ml-2 block text-sm text-customBlack";
-const errorMsgStyle =
-  "mb-4 rounded border border-red-400 bg-red-100 p-3 text-sm text-red-700";
-const successMsgStyle =
-  "mb-4 rounded border border-green-400 bg-green-100 p-3 text-sm text-green-700";
-const fieldErrorStyle = "mt-1 text-xs text-red-600";
-const sectionTitleStyle =
-  "text-md font-semibold text-customBlack mb-3 border-b border-customGray/30 pb-2";
 
 export default function ManageAdvertisements() {
   const [customers, setCustomers] = useState<CustomerForEmail[]>([]);
@@ -43,11 +45,10 @@ export default function ManageAdvertisements() {
   const [isLoadingCustomers, setIsLoadingCustomers] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [isSending, startSendingTransition] = useTransition();
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [sendSuccess, setSendSuccess] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<
     Record<string, string[] | undefined>
   >({});
+  const [confirmSendOpen, setConfirmSendOpen] = useState(false);
 
   const selectAllRef = useRef<HTMLInputElement>(null);
 
@@ -119,19 +120,16 @@ export default function ManageAdvertisements() {
     loadCustomers(true);
   }, [loadCustomers]);
 
-  const handleSelectAll = (event: ChangeEvent<HTMLInputElement>) => {
-    if (event.target.checked) {
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
       setSelectedCustomerIds(customers.map((c) => c.id));
     } else {
       setSelectedCustomerIds([]);
     }
   };
 
-  const handleCustomerSelect = (
-    customerId: string,
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
-    if (event.target.checked) {
+  const handleCustomerSelect = (customerId: string, checked: boolean) => {
+    if (checked) {
       setSelectedCustomerIds((prev) => [...prev, customerId]);
     } else {
       setSelectedCustomerIds((prev) => prev.filter((id) => id !== customerId));
@@ -169,231 +167,343 @@ export default function ManageAdvertisements() {
     return Object.keys(errors).length === 0;
   };
 
-  const handleSendEmail = () => {
-    setSendError(null);
-    setSendSuccess(null);
+  const handleSendEmailClick = () => {
     setFieldErrors({});
 
     if (!validateForm()) {
-      setSendError("Please fix the errors before sending.");
+      toast.error("Please fix the errors before sending.", {
+        description: "Check the form fields for validation errors.",
+      });
       return;
     }
 
     if (selectedCustomerIds.length === 0) {
-      setSendError("Please select at least one recipient.");
+      toast.error("Please select at least one recipient.", {
+        description: "You must select at least one customer to send the email.",
+      });
       return;
     }
 
-    if (
-      !window.confirm(
-        `Are you sure you want to send this email to ${selectedCustomerIds.length} customer(s)?`,
-      )
-    ) {
-      return;
-    }
+    setConfirmSendOpen(true);
+  };
+
+  const handleConfirmSend = () => {
+    setConfirmSendOpen(false);
 
     startSendingTransition(async () => {
-      const res = await sendEmailsAction(selectedCustomerIds, subject, body);
-      if (res.success) {
-        setSendSuccess(res.message);
-      } else {
-        setSendError(res.message);
+      try {
+        const res = await sendEmailsAction(selectedCustomerIds, subject, body);
+        if (res.success) {
+          toast.success("Email sent successfully", {
+            description:
+              res.message ||
+              `Email sent to ${selectedCustomerIds.length} customer(s).`,
+          });
+          // Clear form after successful send
+          setSelectedCustomerIds([]);
+          setSubject("");
+          setBody("");
+          setSelectedTemplateId("");
+          setFieldErrors({});
+        } else {
+          toast.error("Failed to send email", {
+            description: res.message || "An unexpected error occurred.",
+          });
+        }
+      } catch (error: any) {
+        toast.error("Error sending email", {
+          description: error.message || "An unexpected error occurred.",
+        });
       }
     });
   };
 
   return (
-    <div className="mx-auto max-w-4xl rounded-lg bg-customOffWhite p-4 shadow-md">
-      <div className="mb-6 flex flex-col items-start justify-between sm:flex-row sm:items-center">
-        <h2 className="text-xl font-bold text-customBlack">
-          Send Customer Email
-        </h2>
-        <Button
-          onClick={handleRefresh}
-          disabled={isLoadingCustomers || isSending}
-          size="sm"
-          variant="outline"
-          className="mt-3 w-full sm:mt-0 sm:w-auto"
-        >
-          <RefreshCw
-            size={16}
-            className={`mr-1 ${isLoadingCustomers ? "animate-spin" : ""}`}
-          />
-          Refresh Customer List
-        </Button>
-      </div>
-
-      {listError && <p className={errorMsgStyle}>{listError}</p>}
-      {templateError && <p className={errorMsgStyle}>{templateError}</p>}
-      {sendError && <p className={errorMsgStyle}>{sendError}</p>}
-      {sendSuccess && <p className={successMsgStyle}>{sendSuccess}</p>}
-
-      {}
-      <div className="mb-6 rounded border border-customGray/30 bg-white p-4">
-        <h3 className={sectionTitleStyle}>Select Recipients</h3>
-        {fieldErrors.recipients && (
-          <p className={fieldErrorStyle}>{fieldErrors.recipients.join(", ")}</p>
-        )}
-        {isLoadingCustomers ? (
-          <p className="py-4 text-center text-customBlack/70">
-            Loading customers...
-          </p>
-        ) : customers.length === 0 ? (
-          <p className="py-4 text-center text-customBlack/60">
-            No customers with email addresses found.
-          </p>
-        ) : (
-          <div className="max-h-60 overflow-y-auto pr-2">
-            <div className="sticky top-0 z-10 mb-2 flex items-center border-b border-customGray/30 bg-white pb-2">
-              <input
-                id="selectAll"
-                type="checkbox"
-                ref={selectAllRef}
-                checked={allSelected}
-                onChange={handleSelectAll}
-                className={checkboxStyle}
-                disabled={isLoadingCustomers || isSending}
-              />
-              <label
-                htmlFor="selectAll"
-                className={`${checkboxLabelStyle} font-semibold`}
-              >
-                Select All ({selectedCustomerIds.length}/{customers.length})
-              </label>
-            </div>
-            <ul className="space-y-1">
-              {customers.map((customer) => (
-                <li
-                  key={customer.id}
-                  className={`flex items-center rounded p-1 ${selectedCustomerIds.includes(customer.id) ? "bg-customLightBlue/20" : ""}`}
-                >
-                  <input
-                    id={`customer-${customer.id}`}
-                    type="checkbox"
-                    checked={selectedCustomerIds.includes(customer.id)}
-                    onChange={(e) => handleCustomerSelect(customer.id, e)}
-                    className={checkboxStyle}
-                    disabled={isLoadingCustomers || isSending}
-                  />
-                  <label
-                    htmlFor={`customer-${customer.id}`}
-                    className={checkboxLabelStyle}
-                  >
-                    {customer.name} ({customer.email})
-                  </label>
-                </li>
-              ))}
-            </ul>
+    <div className="mx-auto max-w-4xl space-y-6 p-4">
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+            <CardTitle>Send Customer Email</CardTitle>
+            <Button
+              onClick={handleRefresh}
+              disabled={isLoadingCustomers || isSending}
+              size="sm"
+              variant="outline"
+            >
+              {isLoadingCustomers ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Refreshing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  Refresh Customer List
+                </>
+              )}
+            </Button>
           </div>
-        )}
-      </div>
-
-      {}
-      <div className="mb-6 rounded border border-customGray/30 bg-white p-4">
-        <h3 className={sectionTitleStyle}>Email Content</h3>
-
-        {}
-        <div className="mb-4">
-          <label htmlFor="template" className={labelStyle}>
-            Use Email Template (Optional)
-          </label>
-          <select
-            id="template"
-            value={selectedTemplateId}
-            onChange={handleTemplateChange}
-            className={inputStyle()}
-            disabled={isSending || isLoadingTemplates}
-          >
-            <option value="">
-              -- Select a Template or Compose Manually --
-            </option>
-            {emailTemplates.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
-            ))}
-          </select>
-          {isLoadingTemplates && (
-            <p className="mt-1 text-xs text-gray-500">Loading templates...</p>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {listError && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {listError}
+            </div>
           )}
-          {emailTemplates.length === 0 &&
-            !isLoadingTemplates &&
-            !templateError && (
-              <p className="mt-1 text-xs text-gray-500">
-                No active email templates found. You can create them in
-                settings.
-              </p>
-            )}
-        </div>
-        {}
-
-        <div className="mb-4">
-          <label htmlFor="subject" className={labelStyle}>
-            Subject*
-          </label>
-          <input
-            type="text"
-            id="subject"
-            value={subject}
-            onChange={(e) => {
-              setSubject(e.target.value);
-
-              if (selectedTemplateId) setSelectedTemplateId("");
-            }}
-            className={inputStyle(!!fieldErrors.subject)}
-            disabled={isSending}
-          />
-          {fieldErrors.subject && (
-            <p className={fieldErrorStyle}>{fieldErrors.subject.join(", ")}</p>
+          {templateError && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {templateError}
+            </div>
           )}
-        </div>
 
-        <div>
-          <label htmlFor="body" className={labelStyle}>
-            Body (HTML/Plain Text - Placeholders like{" "}
-            <code>{"{{customerName}}"}</code> will be replaced)
-          </label>
-          <textarea
-            id="body"
-            value={body}
-            onChange={(e) => {
-              setBody(e.target.value);
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Select Recipients</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {fieldErrors.recipients && (
+                <p className="mb-3 text-sm text-destructive">
+                  {fieldErrors.recipients.join(", ")}
+                </p>
+              )}
+              {isLoadingCustomers ? (
+                <div className="space-y-2 py-4">
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-10 w-full" />
+                </div>
+              ) : customers.length === 0 ? (
+                <p className="py-4 text-center text-muted-foreground">
+                  No customers with email addresses found.
+                </p>
+              ) : (
+                <ScrollArea className="h-[300px]">
+                  <div className="sticky top-0 z-10 mb-3 flex items-center gap-2 border-b bg-background pb-3">
+                    <input
+                      type="checkbox"
+                      id="selectAll"
+                      ref={selectAllRef}
+                      checked={allSelected}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setSelectedCustomerIds(customers.map((c) => c.id));
+                        } else {
+                          setSelectedCustomerIds([]);
+                        }
+                      }}
+                      disabled={isLoadingCustomers || isSending}
+                      className="h-4 w-4 cursor-pointer rounded border-primary text-primary focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                    />
+                    <Label
+                      htmlFor="selectAll"
+                      className="cursor-pointer font-semibold"
+                    >
+                      Select All ({selectedCustomerIds.length}/
+                      {customers.length})
+                    </Label>
+                  </div>
+                  <div className="space-y-2">
+                    {customers.map((customer) => (
+                      <div
+                        key={customer.id}
+                        className={`flex items-center gap-2 rounded-md p-2 ${
+                          selectedCustomerIds.includes(customer.id)
+                            ? "bg-primary/10"
+                            : ""
+                        }`}
+                      >
+                        <Checkbox
+                          id={`customer-${customer.id}`}
+                          checked={selectedCustomerIds.includes(customer.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedCustomerIds((prev) => [
+                                ...prev,
+                                customer.id,
+                              ]);
+                            } else {
+                              setSelectedCustomerIds((prev) =>
+                                prev.filter((id) => id !== customer.id),
+                              );
+                            }
+                          }}
+                          disabled={isLoadingCustomers || isSending}
+                        />
+                        <Label
+                          htmlFor={`customer-${customer.id}`}
+                          className="flex-1 cursor-pointer"
+                        >
+                          {customer.name} ({customer.email})
+                        </Label>
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
 
-              if (selectedTemplateId) setSelectedTemplateId("");
-            }}
-            rows={10}
-            className={`${inputStyle(!!fieldErrors.body)} resize-y`}
-            disabled={isSending}
-            placeholder="Enter your email content here. You can use placeholders like {{customerName}} and {{customerEmail}}."
-          ></textarea>
-          {fieldErrors.body && (
-            <p className={fieldErrorStyle}>{fieldErrors.body.join(", ")}</p>
-          )}
-        </div>
-      </div>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg">Email Content</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="template">Use Email Template (Optional)</Label>
+                <select
+                  id="template"
+                  value={selectedTemplateId}
+                  onChange={handleTemplateChange}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={isSending || isLoadingTemplates}
+                >
+                  <option value="">
+                    -- Select a Template or Compose Manually --
+                  </option>
+                  {emailTemplates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.name}
+                    </option>
+                  ))}
+                </select>
+                {isLoadingTemplates && (
+                  <p className="text-xs text-muted-foreground">
+                    Loading templates...
+                  </p>
+                )}
+                {emailTemplates.length === 0 &&
+                  !isLoadingTemplates &&
+                  !templateError && (
+                    <p className="text-xs text-muted-foreground">
+                      No active email templates found. You can create them in
+                      settings.
+                    </p>
+                  )}
+              </div>
 
-      <div className="text-right">
-        <Button
-          onClick={handleSendEmail}
-          disabled={
-            isSending ||
-            selectedCustomerIds.length === 0 ||
-            isLoadingCustomers ||
-            isLoadingTemplates
-          }
-          className="w-full sm:w-auto"
-        >
-          {isSending ? (
-            <>
-              <RefreshCw size={16} className="mr-2 animate-spin" /> Sending...
-            </>
-          ) : (
-            <>
-              <Send size={16} className="mr-2" /> Send Email
-            </>
-          )}
-        </Button>
-      </div>
+              <div className="space-y-2">
+                <Label htmlFor="subject">
+                  Subject <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  type="text"
+                  id="subject"
+                  value={subject}
+                  onChange={(e) => {
+                    setSubject(e.target.value);
+                    if (selectedTemplateId) setSelectedTemplateId("");
+                    setFieldErrors((prev) => ({
+                      ...prev,
+                      subject: undefined,
+                    }));
+                  }}
+                  className={fieldErrors.subject ? "border-destructive" : ""}
+                  disabled={isSending}
+                  placeholder="Enter email subject"
+                />
+                {fieldErrors.subject && (
+                  <p className="text-xs text-destructive">
+                    {fieldErrors.subject.join(", ")}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="body">
+                  Body (HTML/Plain Text - Placeholders like{" "}
+                  <code className="rounded bg-muted px-1">
+                    {"{{customerName}}"}
+                  </code>{" "}
+                  will be replaced)
+                </Label>
+                <Textarea
+                  id="body"
+                  value={body}
+                  onChange={(e) => {
+                    setBody(e.target.value);
+                    if (selectedTemplateId) setSelectedTemplateId("");
+                    setFieldErrors((prev) => ({
+                      ...prev,
+                      body: undefined,
+                    }));
+                  }}
+                  rows={10}
+                  className={fieldErrors.body ? "border-destructive" : ""}
+                  disabled={isSending}
+                  placeholder="Enter your email content here. You can use placeholders like {{customerName}} and {{customerEmail}}."
+                />
+                {fieldErrors.body && (
+                  <p className="text-xs text-destructive">
+                    {fieldErrors.body.join(", ")}
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end">
+            <Button
+              onClick={handleSendEmailClick}
+              disabled={
+                isSending ||
+                selectedCustomerIds.length === 0 ||
+                isLoadingCustomers ||
+                isLoadingTemplates
+              }
+              size="lg"
+            >
+              {isSending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Send Email
+                </>
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Dialog open={confirmSendOpen} onOpenChange={setConfirmSendOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm Send Email</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to send this email to{" "}
+              <span className="font-semibold">
+                {selectedCustomerIds.length}
+              </span>{" "}
+              customer(s)?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmSendOpen(false)}
+              disabled={isSending}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmSend} disabled={isSending}>
+              {isSending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <Send className="mr-2 h-4 w-4" />
+                  Send
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

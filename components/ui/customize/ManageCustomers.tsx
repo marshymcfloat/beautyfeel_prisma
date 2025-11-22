@@ -14,7 +14,22 @@ import {
   deleteCustomerAction,
 } from "@/lib/ServerAction"; // Assuming ServerAction path
 import { CacheKey, invalidateCache } from "@/lib/cache"; // Make sure CacheKey is imported
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import {
   PlusCircle,
   Edit3,
@@ -24,10 +39,8 @@ import {
   Eye,
   ShoppingCart,
   CalendarCheck,
+  Loader2,
 } from "lucide-react";
-
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
 import {
   Transaction,
   RecommendedAppointment,
@@ -100,6 +113,9 @@ export default function ManageCustomers() {
   const [selectedCustomerForModal, setSelectedCustomerForModal] =
     useState<CustomerForDisplay | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteCustomerId, setPendingDeleteCustomerId] = useState<string | null>(null);
+  const [pendingDeleteCustomerName, setPendingDeleteCustomerName] = useState<string | null>(null);
 
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -226,19 +242,20 @@ export default function ManageCustomers() {
         }
 
         if (response.success) {
-          setSuccessMessage(
-            response.message ||
-              `Customer ${modalMode === "add" ? "created" : "updated"} successfully!`,
-          );
-          // Invalidate the customer list cache after create/update/delete
+          const successMsg = response.message ||
+            `Customer ${modalMode === "add" ? "created" : "updated"} successfully!`;
+          toast.success("Customer saved", {
+            description: successMsg,
+          });
           invalidateCache(CUSTOMERS_CACHE_KEY);
-          loadCustomers(); // Reload the list
+          loadCustomers();
           closeModal();
         } else {
-          setFormError(
-            response.message || "An error occurred. Please check the details.",
-          );
-          // Cast errors to the expected type
+          const errorMsg = response.message || "An error occurred. Please check the details.";
+          setFormError(errorMsg);
+          toast.error("Failed to save customer", {
+            description: errorMsg,
+          });
           if (response.errors) {
             setFieldErrors(
               response.errors as Partial<Record<"name" | "email", string[]>>,
@@ -253,42 +270,51 @@ export default function ManageCustomers() {
     });
   };
 
-  const handleDelete = (customerId: string, customerName: string) => {
-    if (
-      !window.confirm(
-        `Are you sure you want to delete the customer "${customerName}"? This action cannot be undone and may fail if the customer has associated records (transactions, recommendations, etc.).`,
-      )
-    ) {
+  const handleDeleteClick = (customer: CustomerForDisplay) => {
+    setPendingDeleteCustomerId(customer.id);
+    setPendingDeleteCustomerName(customer.name);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteCustomerId) {
+      setDeleteDialogOpen(false);
       return;
     }
 
     setListError(null);
     setSuccessMessage(null);
-    // No need to setFormError here as it's for the modal form
+    setDeleteDialogOpen(false);
 
     startTransition(async () => {
       try {
-        const response = await deleteCustomerAction(customerId);
+        const response = await deleteCustomerAction(pendingDeleteCustomerId);
         if (response.success) {
-          setSuccessMessage(
-            response.message || "Customer deleted successfully!",
-          );
-          // Invalidate the customer list cache after create/update/delete
+          const successMsg = response.message || "Customer deleted successfully!";
+          toast.success("Customer deleted", {
+            description: successMsg,
+          });
           invalidateCache(CUSTOMERS_CACHE_KEY);
-          loadCustomers(); // Reload the list
+          loadCustomers();
         } else {
-          setListError(
-            response.message ||
-              "Failed to delete customer. They may have related records.",
-          );
+          const errorMsg = response.message || "Failed to delete customer. They may have related records.";
+          setListError(errorMsg);
+          toast.error("Failed to delete customer", {
+            description: errorMsg,
+          });
         }
       } catch (err: any) {
-        setListError(
-          err.message || "An unexpected error occurred while deleting.",
-        );
+        const errorMsg = err.message || "An unexpected error occurred while deleting.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteCustomerId(null);
+        setPendingDeleteCustomerName(null);
       }
     });
-  };
+  }, [pendingDeleteCustomerId, loadCustomers]);
 
   const formatCurrency = (value: number | null | undefined): string => {
     const amount = value ?? 0;
@@ -365,38 +391,39 @@ export default function ManageCustomers() {
             onClick={handleRefresh}
             disabled={isLoading || isSaving}
             variant="outline"
-            size="sm" // Consistent size
-            className="w-full sm:w-auto" // Consistent responsive width
-            icon={
-              // Aligned icon size with ManageEmailTemplates header buttons
-              <RefreshCw
-                size={16}
-                className={`${isLoading ? "animate-spin" : ""}`}
-              />
-            }
+            size="sm"
+            className="w-full sm:w-auto"
           >
+            <RefreshCw
+              size={16}
+              className={`mr-1 ${isLoading ? "animate-spin" : ""}`}
+            />
             Refresh
           </Button>
           <Button
             onClick={() => openModal("add")}
-            size="sm" // Consistent size
+            size="sm"
             disabled={isSaving}
-            className="w-full sm:w-auto" // Consistent responsive width
-            // Aligned icon size with ManageEmailTemplates header buttons
-            icon={<PlusCircle size={16} />}
+            className="w-full sm:w-auto"
           >
+            <PlusCircle size={16} className="mr-1" />
             Add New Customer
           </Button>
         </div>
       </div>
 
-      {listError && <p className={errorMsgStyle}>{listError}</p>}
-      {successMessage && <p className={successMsgStyle}>{successMessage}</p>}
+      {listError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
+      )}
 
       {isLoading && customers.length === 0 ? (
-        <p className="py-10 text-center text-base text-customBlack/70 md:text-lg">
-          Loading customers...
-        </p>
+        <div className="p-4 space-y-3">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
       ) : !isLoading && !listError && customers.length === 0 ? (
         // Aligned empty state border/bg color, padding, and shadow with ManageEmailTemplates
         <div className="my-8 rounded-md border border-yellow-400 bg-yellow-50 p-6 text-center shadow">
@@ -415,9 +442,8 @@ export default function ManageCustomers() {
             onClick={() => openModal("add")}
             className="mt-6"
             disabled={isSaving}
-            // Aligned icon size with ManageEmailTemplates empty state button
-            icon={<PlusCircle size={16} className="mr-1.5" />}
           >
+            <PlusCircle size={16} className="mr-1.5" />
             Add First Customer
           </Button>
         </div>
@@ -482,39 +508,35 @@ export default function ManageCustomers() {
                   <td
                     className={`${tdStyleBase} space-x-1 whitespace-nowrap text-right`}
                   >
-                    {/* Button sizes are consistent (sm) */}
                     <Button
                       size="sm"
+                      variant="ghost"
                       onClick={() => openModal("view", customer)}
                       title="View Details"
-                      className="text-sky-600 hover:text-sky-800"
+                      className="h-8 w-8 p-0 text-sky-600 hover:text-sky-800 hover:bg-sky-50"
                       disabled={isSaving || isLoading}
-                      // Aligned icon size with ManageEmailTemplates table buttons
-                      icon={<Eye size={16} />}
                     >
-                      {/* Removed icon from Button children */}
+                      <Eye size={16} />
                     </Button>
                     <Button
                       size="sm"
+                      variant="ghost"
                       onClick={() => openModal("edit", customer)}
                       title="Edit Customer"
-                      className="text-indigo-600 hover:text-indigo-800"
+                      className="h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       disabled={isSaving || isLoading}
-                      // Aligned icon size with ManageEmailTemplates table buttons
-                      icon={<Edit3 size={16} />}
                     >
-                      {/* Removed icon from Button children */}
+                      <Edit3 size={16} />
                     </Button>
                     <Button
                       size="sm"
-                      onClick={() => handleDelete(customer.id, customer.name)}
+                      variant="ghost"
+                      onClick={() => handleDeleteClick(customer)}
                       title="Delete Customer"
-                      className="text-red-600 hover:text-red-800"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       disabled={isSaving || isLoading}
-                      // Aligned icon size with ManageEmailTemplates table buttons
-                      icon={<Trash2 size={16} />}
                     >
-                      {/* Removed icon from Button children */}
+                      <Trash2 size={16} />
                     </Button>
                   </td>
                 </tr>
@@ -524,93 +546,99 @@ export default function ManageCustomers() {
         </div>
       )}
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {modalMode === "add"
-              ? "Add New Customer"
-              : modalMode === "edit"
-                ? "Edit Customer Details"
-                : selectedCustomerForModal
-                  ? `Customer: ${selectedCustomerForModal.name}`
-                  : "Customer Details"}
-          </DialogTitle>
-        }
-        // Modal container styles already largely consistent and responsive
-        containerClassName={modalContainerStyle}
-      >
-        {/* ADD/EDIT FORM */}
-        {(modalMode === "add" ||
-          (modalMode === "edit" && selectedCustomerForModal)) && (
-          <form
-            ref={formRef}
-            onSubmit={(e) => e.preventDefault()}
-            className="flex h-full flex-col" // Keep flex col for fixed footer
-          >
-            {/* Modal content wrapper already handles scrolling and padding */}
-            <div className={modalContentStyle}>
-              {formError && <p className={modalErrorStyle}>{formError}</p>}
-              {/* Make form fields responsive: stack on small, 2 columns on sm+, Aligned gap */}
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {modalMode === "add"
+                ? "Add New Customer"
+                : modalMode === "edit"
+                  ? "Edit Customer Details"
+                  : selectedCustomerForModal
+                    ? `Customer: ${selectedCustomerForModal.name}`
+                    : "Customer Details"}
+            </DialogTitle>
+            <DialogDescription>
+              {modalMode === "view"
+                ? "View customer details, transactions, and appointments."
+                : modalMode === "add"
+                  ? "Fill in the form below to create a new customer."
+                  : "Update the customer information below."}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[calc(90vh-200px)]">
+            {/* ADD/EDIT FORM */}
+            {(modalMode === "add" ||
+              (modalMode === "edit" && selectedCustomerForModal)) && (
+              <>
+                <form
+                  ref={formRef}
+                  onSubmit={(e) => e.preventDefault()}
+                  className="space-y-4 p-4"
+                >
+                  <div className="space-y-4">
+                    {formError && (
+                      <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                        {formError}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <div>
-                  <label htmlFor="name" className={labelStyle}>
+                  <Label htmlFor="name">
                     Customer Name*
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="text"
                     id="name"
                     name="name"
                     defaultValue={selectedCustomerForModal?.name ?? ""}
                     required
                     maxLength={50}
-                    className={inputStyle(!!fieldErrors?.name)} // Check fieldErrors?.name
+                    className={fieldErrors?.name ? "border-destructive" : ""}
                     disabled={isSaving}
-                    aria-invalid={!!fieldErrors?.name} // Check fieldErrors?.name
+                    aria-invalid={!!fieldErrors?.name}
                     aria-describedby={
-                      fieldErrors?.name ? "name-error" : undefined // Check fieldErrors?.name
+                      fieldErrors?.name ? "name-error" : undefined
                     }
                   />
-                  {fieldErrors?.name && ( // Check fieldErrors?.name
-                    <p id="name-error" className={fieldErrorStyle}>
+                  {fieldErrors?.name && (
+                    <p id="name-error" className="mt-1 text-xs text-destructive">
                       {fieldErrors.name.join(", ")}
                     </p>
                   )}
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Max 50 characters.
                   </p>
                 </div>
                 <div>
-                  <label htmlFor="email" className={labelStyle}>
+                  <Label htmlFor="email">
                     Email Address
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="email"
                     id="email"
                     name="email"
                     defaultValue={selectedCustomerForModal?.email ?? ""}
-                    className={inputStyle(!!fieldErrors?.email)} // Check fieldErrors?.email
+                    className={fieldErrors?.email ? "border-destructive" : ""}
                     disabled={isSaving}
-                    aria-invalid={!!fieldErrors?.email} // Check fieldErrors?.email
+                    aria-invalid={!!fieldErrors?.email}
                     aria-describedby={
-                      fieldErrors?.email ? "email-error" : undefined // Check fieldErrors?.email
+                      fieldErrors?.email ? "email-error" : undefined
                     }
                   />
-                  {fieldErrors?.email && ( // Check fieldErrors?.email
-                    <p id="email-error" className={fieldErrorStyle}>
+                  {fieldErrors?.email && (
+                    <p id="email-error" className="mt-1 text-xs text-destructive">
                       {fieldErrors.email.join(", ")}
                     </p>
                   )}
-                  <p className="mt-1 text-xs text-gray-500">
+                  <p className="mt-1 text-xs text-muted-foreground">
                     Optional, but must be valid if provided.
                   </p>
                 </div>
-                {/* Add other form fields here if needed */}
-              </div>
-            </div>
-            {/* Modal actions bar remains fixed at the bottom - styling already consistent */}
-            <div className={modalActionsStyle}>
+                    </div>
+                  </div>
+                </form>
+                <DialogFooter>
               <Button
                 type="button"
                 onClick={closeModal}
@@ -620,22 +648,25 @@ export default function ManageCustomers() {
                 Cancel
               </Button>
               <Button type="button" onClick={handleSave} disabled={isSaving}>
-                {isSaving
-                  ? `${modalMode === "add" ? "Creating" : "Updating"}...`
-                  : `${modalMode === "add" ? "Create Customer" : "Save Changes"}`}
+                {isSaving ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {modalMode === "add" ? "Creating" : "Updating"}...
+                  </>
+                ) : (
+                  modalMode === "add" ? "Create Customer" : "Save Changes"
+                )}
               </Button>
-            </div>
-          </form>
-        )}
+                </DialogFooter>
+              </>
+            )}
+          </ScrollArea>
 
         {/* VIEW DETAILS SECTION */}
-        {/* This section's layout is already quite responsive */}
         {modalMode === "view" && selectedCustomerForModal && (
-          <div className="flex h-full flex-col">
-            {" "}
-            {/* Keep flex col for fixed footer */}
-            {/* Modal content wrapper already handles scrolling and padding */}
-            <div className={modalContentStyle}>
+          <>
+            <ScrollArea className="max-h-[calc(90vh-200px)]">
+              <div className="space-y-4 p-4">
               <div className="mb-6 grid grid-cols-1 gap-x-6 gap-y-3 border-b border-customGray/30 pb-4 md:grid-cols-2">
                 {/* These grid items stack on small and become 2 columns on md+ - already responsive */}
                 <div>
@@ -785,27 +816,77 @@ export default function ManageCustomers() {
                   No recommended appointments for this customer.
                 </p>
               )}
-            </div>
-            {/* Modal actions bar remains fixed at the bottom - styling already consistent */}
-            <div className={modalActionsStyle}>
+              </div>
+            </ScrollArea>
+            <DialogFooter>
               <Button
                 type="button"
                 onClick={() => {
                   setModalMode("edit");
                 }}
                 disabled={isSaving}
-                // Aligned icon size
-                icon={<Edit3 size={16} className="mr-1.5" />}
               >
+                <Edit3 size={16} className="mr-1.5" />
                 Edit This Customer
               </Button>
               <Button type="button" onClick={closeModal} variant="outline">
                 Close View
               </Button>
-            </div>
-          </div>
+            </DialogFooter>
+          </>
         )}
-      </Modal>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteCustomerId(null);
+          setPendingDeleteCustomerName(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Customer</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the customer{" "}
+              <span className="font-semibold">{pendingDeleteCustomerName}</span>?
+              This action cannot be undone and may fail if the customer has associated records (transactions, recommendations, etc.).
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteCustomerId(null);
+                setPendingDeleteCustomerName(null);
+              }}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Customer
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

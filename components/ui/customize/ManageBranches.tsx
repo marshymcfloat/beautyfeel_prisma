@@ -13,10 +13,20 @@ import {
   getBranchesForSelectAction,
 } from "@/lib/ServerAction";
 import { Branch as PrismaBranch } from "@prisma/client";
-import Button from "@/components/Buttons/Button";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
-import { Plus, Edit3, Trash2, RotateCcw as RefreshIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
+import { Plus, Edit3, Trash2, RotateCcw as RefreshIcon, Loader2 } from "lucide-react";
 
 import {
   getCachedData,
@@ -36,6 +46,9 @@ export default function ManageBranches() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingBranch, setEditingBranch] = useState<Branch | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteBranchId, setPendingDeleteBranchId] = useState<string | null>(null);
+  const [pendingDeleteBranchTitle, setPendingDeleteBranchTitle] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const loadData = useCallback(async (forceRefresh = false) => {
@@ -81,18 +94,47 @@ export default function ManageBranches() {
     setError(null);
     setIsModalOpen(true);
   };
-  const handleDelete = (branchId: string) => {
-    if (!window.confirm("Delete this branch? This cannot be undone.")) return;
+  const handleDeleteClick = (branch: Branch) => {
+    setPendingDeleteBranchId(branch.id);
+    setPendingDeleteBranchTitle(branch.title);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteBranchId) {
+      setDeleteDialogOpen(false);
+      return;
+    }
     setError(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
-      const res = await deleteBranchAction(branchId);
-      if (!res.success) setError(res.message);
-      else {
-        invalidateCache(BRANCHES_LIST_CACHE_KEY);
-        await loadData(true);
+      try {
+        const res = await deleteBranchAction(pendingDeleteBranchId);
+        if (!res.success) {
+          const errorMsg = res.message || "Failed to delete branch.";
+          setError(errorMsg);
+          toast.error("Failed to delete branch", {
+            description: errorMsg,
+          });
+        } else {
+          toast.success("Branch deleted", {
+            description: "The branch has been successfully deleted.",
+          });
+          invalidateCache(BRANCHES_LIST_CACHE_KEY);
+          await loadData(true);
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || "An unexpected error occurred.";
+        setError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteBranchId(null);
+        setPendingDeleteBranchTitle(null);
       }
     });
-  };
+  }, [pendingDeleteBranchId, loadData]);
   const handleSave = () => {
     if (!formRef.current) return setError("Form reference error.");
     setError(null);
@@ -119,11 +161,17 @@ export default function ManageBranches() {
           setEditingBranch(null);
           invalidateCache(BRANCHES_LIST_CACHE_KEY);
           await loadData(true);
+          toast.success("Branch saved", {
+            description: res.message || "The branch has been saved successfully.",
+          });
         } else {
-          setError(
+          const errorMsg =
             res.message +
-              (res.errors ? ` (${Object.values(res.errors).join(", ")})` : ""),
-          );
+            (res.errors ? ` (${Object.values(res.errors).join(", ")})` : "");
+          setError(errorMsg);
+          toast.error("Failed to save branch", {
+            description: errorMsg,
+          });
         }
       } catch (err) {
         setError("An unexpected error occurred during save.");
@@ -173,11 +221,19 @@ export default function ManageBranches() {
         </div>
       </div>
 
-      {error && !isModalOpen && <p className={errorMsgStyle}>{error}</p>}
+      {error && !isModalOpen && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {error}
+        </div>
+      )}
 
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading ? (
-          <p className="py-10 text-center text-customBlack/70">Loading...</p>
+          <div className="p-4 space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
         ) : !error && branches.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">
             {" "}
@@ -200,22 +256,26 @@ export default function ManageBranches() {
                     {b.code}
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       onClick={() => handleEdit(b)}
                       disabled={isPending}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       title="Edit Branch"
                     >
                       <Edit3 size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(b.id)}
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(b)}
                       disabled={isPending}
-                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       title="Delete Branch"
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -224,84 +284,144 @@ export default function ManageBranches() {
         )}
       </div>
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {" "}
-            {editingBranch ? "Edit Branch" : "Add New Branch"}{" "}
-          </DialogTitle>
-        }
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
-        {error && isModalOpen && <p className={modalErrorStyle}>{error}</p>}
-        <form
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()}
-          className="space-y-4"
-        >
-          <div>
-            <label htmlFor="title" className={labelStyle}>
-              {" "}
-              Branch Title <span className="text-red-500">*</span>{" "}
-            </label>
-            <input
-              type="text"
-              name="title"
-              id="title"
-              required
-              defaultValue={editingBranch?.title ?? ""}
-              className={inputStyle}
-              disabled={isSaving}
-            />
-          </div>
-          <div>
-            <label htmlFor="code" className={labelStyle}>
-              {" "}
-              Branch Code{" "}
-              {!editingBranch && <span className="text-red-500">*</span>}{" "}
-            </label>
-            <input
-              type="text"
-              name="code"
-              id="code"
-              required={!editingBranch}
-              maxLength={6}
-              minLength={6}
-              pattern="[A-Z0-9]{6}"
-              title="Must be 6 uppercase letters or numbers"
-              defaultValue={editingBranch?.code ?? ""}
-              disabled={!!editingBranch || isSaving}
-              className={`${inputStyle} font-mono uppercase tracking-widest`}
-              readOnly={!!editingBranch}
-            />
-            <p className="mt-1 text-xs text-gray-500">
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingBranch ? "Edit Branch" : "Add New Branch"}
+            </DialogTitle>
+            <DialogDescription>
               {editingBranch
-                ? "Code cannot be changed after creation."
-                : "Exactly 6 uppercase characters or numbers."}
-            </p>
-          </div>
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+                ? "Update the branch information below."
+                : "Fill in the form below to create a new branch."}
+            </DialogDescription>
+          </DialogHeader>
+          {error && isModalOpen && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+          <form
+            ref={formRef}
+            onSubmit={(e) => e.preventDefault()}
+            className="space-y-4"
+          >
+            <div>
+              <Label htmlFor="title">
+                Branch Title <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                type="text"
+                name="title"
+                id="title"
+                required
+                defaultValue={editingBranch?.title ?? ""}
+                disabled={isSaving}
+              />
+            </div>
+            <div>
+              <Label htmlFor="code">
+                Branch Code {!editingBranch && <span className="text-red-500">*</span>}
+              </Label>
+              <Input
+                type="text"
+                name="code"
+                id="code"
+                required={!editingBranch}
+                maxLength={6}
+                minLength={6}
+                pattern="[A-Z0-9]{6}"
+                title="Must be 6 uppercase letters or numbers"
+                defaultValue={editingBranch?.code ?? ""}
+                disabled={!!editingBranch || isSaving}
+                className="font-mono uppercase tracking-widest"
+                readOnly={!!editingBranch}
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {editingBranch
+                  ? "Code cannot be changed after creation."
+                  : "Exactly 6 uppercase characters or numbers."}
+              </p>
+            </div>
+          </form>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
               disabled={isSaving}
-              invert
+              variant="outline"
             >
-              {" "}
-              Cancel{" "}
+              Cancel
             </Button>
-            <Button type="button" onClick={handleSave} disabled={isSaving}>
-              {isSaving
-                ? "Saving..."
-                : editingBranch
-                  ? "Save Changes"
-                  : "Create Branch"}
+            <Button
+              type="button"
+              onClick={handleSave}
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : editingBranch ? (
+                "Save Changes"
+              ) : (
+                "Create Branch"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteBranchId(null);
+          setPendingDeleteBranchTitle(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Branch</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the branch{" "}
+              <span className="font-semibold">{pendingDeleteBranchTitle}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteBranchId(null);
+                setPendingDeleteBranchTitle(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Branch
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -1,14 +1,38 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/Separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   getPayslipBreakdownForPeriod,
   updatePayslipRequestStatusAction,
 } from "@/lib/SalaryActions";
 import { format } from "date-fns";
-import { Loader2, Calendar, DollarSign, AlertCircle } from "lucide-react";
+import {
+  Loader2,
+  Calendar,
+  DollarSign,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  RefreshCw,
+} from "lucide-react";
+import { toast } from "sonner";
 
 // Types
 type BreakdownData = Awaited<
@@ -24,11 +48,91 @@ interface PayslipReviewModalProps {
   adminAccountId?: string;
 }
 
-const SimpleScrollArea: React.FC<{
-  children: React.ReactNode;
-  className?: string;
-}> = ({ children, className }) => (
-  <div className={`overflow-y-auto ${className}`}>{children}</div>
+// Rejection Notes Dialog Component
+const RejectionNotesDialog: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: (notes: string | null) => void;
+  employeeName: string;
+}> = ({ isOpen, onClose, onConfirm, employeeName }) => {
+  const [notes, setNotes] = useState("");
+
+  const handleConfirm = () => {
+    onConfirm(notes.trim() || null);
+    setNotes("");
+  };
+
+  const handleCancel = () => {
+    setNotes("");
+    onClose();
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
+      <DialogContent className="sm:max-w-[500px]">
+        <DialogHeader>
+          <DialogTitle>Reject Payslip Request</DialogTitle>
+          <DialogDescription>
+            Please provide a reason for rejecting {employeeName}'s payslip
+            request (optional).
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-4">
+          <div className="space-y-2">
+            <Label htmlFor="rejection-notes">Rejection Reason</Label>
+            <Input
+              id="rejection-notes"
+              placeholder="Enter reason for rejection..."
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  handleConfirm();
+                }
+              }}
+              autoFocus
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={handleCancel}>
+            Cancel
+          </Button>
+          <Button variant="destructive" onClick={handleConfirm}>
+            Confirm Rejection
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+// Loading skeleton component
+const BreakdownSkeleton = () => (
+  <div className="space-y-6 p-6">
+    <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+      {[1, 2, 3].map((i) => (
+        <Skeleton key={i} className="h-20 w-full" />
+      ))}
+    </div>
+    <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      {[1, 2].map((i) => (
+        <Card key={i}>
+          <CardHeader>
+            <Skeleton className="h-6 w-32" />
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-3">
+              {[1, 2, 3].map((j) => (
+                <Skeleton key={j} className="h-12 w-full" />
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  </div>
 );
 
 export const PayslipReviewModal: React.FC<PayslipReviewModalProps> = ({
@@ -41,17 +145,35 @@ export const PayslipReviewModal: React.FC<PayslipReviewModalProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showRejectionDialog, setShowRejectionDialog] = useState(false);
+  const [pendingAction, setPendingAction] = useState<
+    "APPROVED" | "REJECTED" | null
+  >(null);
 
   const fetchBreakdown = useCallback(async (reqId: string) => {
     setIsLoading(true);
     setError(null);
-    const result = await getPayslipBreakdownForPeriod(reqId);
-    if (result.success && result.data) {
-      setBreakdown(result.data);
-    } else {
-      setError(result.error || "Failed to load breakdown data.");
+    try {
+      const result = await getPayslipBreakdownForPeriod(reqId);
+      if (result.success && result.data) {
+        setBreakdown(result.data);
+      } else {
+        const errorMsg = result.error || "Failed to load breakdown data.";
+        setError(errorMsg);
+        toast.error("Failed to load payslip breakdown", {
+          description: errorMsg,
+        });
+      }
+    } catch (err) {
+      const errorMsg =
+        err instanceof Error ? err.message : "An unexpected error occurred.";
+      setError(errorMsg);
+      toast.error("Failed to load payslip breakdown", {
+        description: errorMsg,
+      });
+    } finally {
+      setIsLoading(false);
     }
-    setIsLoading(false);
   }, []);
 
   useEffect(() => {
@@ -62,236 +184,333 @@ export const PayslipReviewModal: React.FC<PayslipReviewModalProps> = ({
       setBreakdown(null);
       setError(null);
       setIsProcessingAction(false);
+      setShowRejectionDialog(false);
+      setPendingAction(null);
     }
   }, [isOpen, request, breakdown, isLoading, fetchBreakdown]);
 
-  const handleAction = async (action: "APPROVED" | "REJECTED") => {
+  const handleActionConfirm = useCallback(
+    async (action: "APPROVED" | "REJECTED", notes?: string | null) => {
+      if (!request) return;
+
+      setIsProcessingAction(true);
+      try {
+        const result = await updatePayslipRequestStatusAction(
+          request.id,
+          action,
+          notes || undefined,
+        );
+
+        if (result.success) {
+          toast.success(`Request ${action.toLowerCase()} successfully`, {
+            description: `The payslip request for ${request.account.name} has been ${action.toLowerCase()}.`,
+          });
+          onActionComplete();
+          onClose();
+        } else {
+          toast.error(`Failed to ${action.toLowerCase()} request`, {
+            description: result.error || "An unexpected error occurred.",
+          });
+        }
+      } catch (err) {
+        toast.error(`Failed to ${action.toLowerCase()} request`, {
+          description:
+            err instanceof Error
+              ? err.message
+              : "An unexpected error occurred.",
+        });
+      } finally {
+        setIsProcessingAction(false);
+        setPendingAction(null);
+      }
+    },
+    [request, onActionComplete, onClose],
+  );
+
+  const handleApprove = useCallback(() => {
     if (!request) return;
+    setPendingAction("APPROVED");
+    handleActionConfirm("APPROVED");
+  }, [request, handleActionConfirm]);
 
-    let notes: string | null = null;
-    if (action === "REJECTED") {
-      notes = prompt("Please provide a reason for rejection (optional):");
-      if (notes === null) return;
-    }
+  const handleReject = useCallback(() => {
+    if (!request) return;
+    setPendingAction("REJECTED");
+    setShowRejectionDialog(true);
+  }, [request]);
 
-    if (
-      !confirm(
-        `You are about to ${action.toLowerCase()} this request for ${
-          request.account.name
-        }.\n\nDo you want to proceed?`,
-      )
-    )
-      return;
-
-    setIsProcessingAction(true);
-    const result = await updatePayslipRequestStatusAction(
-      request.id,
-      action,
-      notes || undefined,
-    );
-
-    if (result.success) {
-      alert(
-        `Request successfully ${action.toLowerCase()}. The list will now refresh.`,
-      );
-      onActionComplete();
-      onClose();
-    } else {
-      alert(`Error: ${result.error}`);
-      setIsProcessingAction(false);
-    }
-  };
+  const handleRejectionConfirm = useCallback(
+    (notes: string | null) => {
+      setShowRejectionDialog(false);
+      handleActionConfirm("REJECTED", notes);
+    },
+    [handleActionConfirm],
+  );
 
   const renderContent = () => {
     if (isLoading) {
-      return (
-        <div className="flex flex-col items-center justify-center p-12 text-center">
-          <Loader2 className="text-customBlue h-8 w-8 animate-spin" />
-          <p className="mt-4 text-customBlack/70">
-            Loading accurate payslip breakdown...
-          </p>
-        </div>
-      );
+      return <BreakdownSkeleton />;
     }
 
     if (error) {
       return (
-        <div className="flex flex-col items-center justify-center p-8 text-center text-red-600">
-          <AlertCircle className="h-10 w-10" />
-          <h3 className="mt-4 text-xl font-semibold">An Error Occurred</h3>
-          <p className="mt-1">{error}</p>
-          <button
+        <div className="flex flex-col items-center justify-center p-8 text-center">
+          <AlertCircle className="mb-4 h-12 w-12 text-destructive" />
+          <h3 className="mb-2 text-xl font-semibold">An Error Occurred</h3>
+          <p className="mb-4 text-muted-foreground">{error}</p>
+          <Button
             onClick={() => request && fetchBreakdown(request.id)}
-            className="btn-primary mt-4"
+            variant="outline"
           >
+            <RefreshCw className="mr-2 h-4 w-4" />
             Retry
-          </button>
+          </Button>
         </div>
       );
     }
 
     if (breakdown && request) {
       return (
-        <div className="space-y-6 p-4 sm:p-6">
-          <div className="grid grid-cols-1 gap-4 rounded-lg border bg-customGray/10 p-4 text-center md:grid-cols-3">
-            <div>
-              <p className="text-sm text-customBlack/70">Employee</p>
-              <p className="text-primary-dark text-lg font-bold">
-                {request.account.name}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-customBlack/70">
-                Period for Calculation
-              </p>
-              <p className="text-lg font-bold">
-                {format(new Date(breakdown.request.periodStartDate), "PPpp")} -{" "}
-                {format(new Date(breakdown.request.periodEndDate), "PPpp")}
-              </p>
-            </div>
-            <div>
-              <p className="text-sm text-customBlack/70">Total Net Pay</p>
-              <p className="text-2xl font-extrabold text-green-600">
-                ₱{breakdown.netPay.toLocaleString()}
-              </p>
-            </div>
+        <div className="space-y-6">
+          {/* Summary Cards */}
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  Employee
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-lg font-bold">{request.account.name}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  Period
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-sm font-medium">
+                  {format(
+                    new Date(breakdown.request.periodStartDate),
+                    "MMM dd, yyyy",
+                  )}{" "}
+                  -{" "}
+                  {format(
+                    new Date(breakdown.request.periodEndDate),
+                    "MMM dd, yyyy",
+                  )}
+                </p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium text-muted-foreground">
+                  Total Net Pay
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-2xl font-extrabold text-green-600">
+                  ₱{breakdown.netPay.toLocaleString()}
+                </p>
+              </CardContent>
+            </Card>
           </div>
 
+          {/* Attendance and Commissions */}
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <div className="rounded-lg border bg-white p-4">
-              <h3 className="mb-2 flex items-center text-lg font-semibold text-customBlack">
-                <Calendar className="text-customBlue mr-2 h-5 w-5" /> Attendance
-              </h3>
-              <SimpleScrollArea className="max-h-60 pr-2">
-                {breakdown.attendanceRecords.length > 0 ? (
-                  <ul className="space-y-1 text-sm">
-                    {breakdown.attendanceRecords.map((att) => (
-                      <li
-                        key={att.date.toISOString()}
-                        className={`flex justify-between rounded p-2 ${
-                          att.isPresent
-                            ? "bg-green-50 text-green-800"
-                            : "bg-red-50 text-red-800"
-                        }`}
-                      >
-                        <span>{format(att.date, "MMM dd, yyyy (eee)")}</span>
-                        <span className="font-semibold">
-                          {att.isPresent ? "PRESENT" : "ABSENT"}
-                          {!att.hasRecord && (
-                            <span className="ml-1 text-xs opacity-70">
-                              (no record)
-                            </span>
-                          )}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="p-4 text-center italic text-customBlack/60">
-                    No attendance data for this period.
-                  </div>
-                )}
-              </SimpleScrollArea>
-              <div className="mt-4 flex justify-between border-t pt-3 font-semibold text-customBlack">
-                <span>Base Salary (from Attendance):</span>
-                <span>₱{breakdown.baseSalaryForPeriod.toLocaleString()}</span>
-              </div>
-            </div>
-
-            <div className="rounded-lg border bg-white p-4">
-              <h3 className="mb-2 flex items-center text-lg font-semibold text-customBlack">
-                <DollarSign className="text-customGreen mr-2 h-5 w-5" />{" "}
-                Commissions
-              </h3>
-              <SimpleScrollArea className="max-h-60 pr-2">
-                {breakdown.commissionDetails.length > 0 ? (
-                  <ul className="space-y-3 text-sm">
-                    {breakdown.commissionDetails.map((entry, index) => (
-                      <li
-                        key={`${entry.availedServiceId}-${index}`}
-                        className="border-b border-customGray/20 pb-2 last:border-b-0"
-                      >
-                        <p className="font-medium text-customBlack">
-                          {entry.title}
-                        </p>
-                        <div className="flex items-center justify-between text-customBlack/70">
-                          <span>
-                            Units by employee: {entry.servedUnitCount}
+            {/* Attendance Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center text-lg">
+                  <Calendar className="mr-2 h-5 w-5 text-blue-600" />
+                  Attendance
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <ScrollArea className="h-[240px] pr-4">
+                  {breakdown.attendanceRecords.length > 0 ? (
+                    <div className="space-y-2">
+                      {breakdown.attendanceRecords.map((att) => (
+                        <div
+                          key={att.date.toISOString()}
+                          className={`flex items-center justify-between rounded-lg p-3 ${
+                            att.isPresent
+                              ? "bg-green-50 text-green-900"
+                              : "bg-red-50 text-red-900"
+                          }`}
+                        >
+                          <span className="text-sm font-medium">
+                            {format(att.date, "MMM dd, yyyy (eee)")}
                           </span>
-                          <span className="text-customGreen text-base font-bold">
-                            ₱
-                            {entry.totalCommissionForThisASItem.toLocaleString()}
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <Badge
+                              variant={
+                                att.isPresent ? "default" : "destructive"
+                              }
+                              className={
+                                att.isPresent
+                                  ? "bg-green-600 hover:bg-green-700"
+                                  : ""
+                              }
+                            >
+                              {att.isPresent ? "PRESENT" : "ABSENT"}
+                            </Badge>
+                            {!att.hasRecord && (
+                              <span className="text-xs text-muted-foreground">
+                                (no record)
+                              </span>
+                            )}
+                          </div>
                         </div>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="p-4 text-center italic text-customBlack/60">
-                    No commissions earned in this period.
-                  </div>
-                )}
-              </SimpleScrollArea>
-              <div className="mt-4 flex justify-between border-t pt-3 font-semibold text-customBlack">
-                <span>Total Commissions:</span>
-                <span>
-                  ₱{breakdown.totalCommissionsForPeriod.toLocaleString()}
-                </span>
-              </div>
-            </div>
-          </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      No attendance data for this period.
+                    </div>
+                  )}
+                </ScrollArea>
+                <Separator />
+                <div className="flex items-center justify-between text-sm font-semibold">
+                  <span>Base Salary:</span>
+                  <span>₱{breakdown.baseSalaryForPeriod.toLocaleString()}</span>
+                </div>
+              </CardContent>
+            </Card>
 
-          <div className="mt-6 flex flex-col items-center gap-4 rounded-lg border-2 border-yellow-400 bg-yellow-50 p-4 sm:flex-row sm:justify-end">
-            <p className="flex-grow text-center text-sm font-medium text-yellow-900 sm:text-left">
-              Approving this will move the request to "Ready to Process".
-            </p>
-            <button
-              className="btn-reject w-full sm:w-auto"
-              onClick={() => handleAction("REJECTED")}
-              disabled={isProcessingAction}
-            >
-              {isProcessingAction && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Reject Request
-            </button>
-            <button
-              className="btn-approve w-full sm:w-auto"
-              onClick={() => handleAction("APPROVED")}
-              disabled={isProcessingAction}
-            >
-              {isProcessingAction && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Approve Request
-            </button>
+            {/* Commissions Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center text-lg">
+                  <DollarSign className="mr-2 h-5 w-5 text-green-600" />
+                  Commissions
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <ScrollArea className="h-[240px] pr-4">
+                  {breakdown.commissionDetails.length > 0 ? (
+                    <div className="space-y-3">
+                      {breakdown.commissionDetails.map((entry, index) => (
+                        <div
+                          key={`${entry.availedServiceId}-${index}`}
+                          className="rounded-lg border p-3"
+                        >
+                          <p className="mb-2 text-sm font-medium">
+                            {entry.title}
+                          </p>
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="text-muted-foreground">
+                              Units: {entry.servedUnitCount}
+                            </span>
+                            <span className="font-bold text-green-600">
+                              ₱
+                              {entry.totalCommissionForThisASItem.toLocaleString()}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="py-8 text-center text-sm text-muted-foreground">
+                      No commissions earned in this period.
+                    </div>
+                  )}
+                </ScrollArea>
+                <Separator />
+                <div className="flex items-center justify-between text-sm font-semibold">
+                  <span>Total Commissions:</span>
+                  <span>
+                    ₱{breakdown.totalCommissionsForPeriod.toLocaleString()}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       );
     }
+
     return null;
   };
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={isProcessingAction ? () => {} : onClose}
-      size="3xl"
-    >
-      <DialogTitle>Review Payslip Request</DialogTitle>
-      {renderContent()}
+    <>
+      <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Review Payslip Request</DialogTitle>
+            <DialogDescription>
+              Review the attendance and commission details before approving or
+              rejecting this payslip request.
+            </DialogDescription>
+          </DialogHeader>
 
-      <style jsx global>{`
-        .btn-primary {
-          @apply bg-customBlue hover:bg-customBlue/90 inline-flex items-center rounded-md px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50;
-        }
-        .btn-approve {
-          @apply inline-flex items-center justify-center rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50;
-        }
-        .btn-reject {
-          @apply inline-flex items-center justify-center rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50;
-        }
-      `}</style>
-    </Modal>
+          {renderContent()}
+
+          {breakdown && request && !isLoading && !error && (
+            <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between sm:gap-0">
+              <div className="flex w-full items-center gap-2 rounded-md bg-yellow-50 px-3 py-2 text-sm text-yellow-700 sm:w-auto">
+                <AlertTriangle className="h-4 w-4" />
+                <span>
+                  Approving will move the request to "Ready to Process"
+                </span>
+              </div>
+              <div className="flex w-full gap-2 sm:w-auto">
+                <Button
+                  variant="destructive"
+                  onClick={handleReject}
+                  disabled={isProcessingAction}
+                  className="flex-1 sm:flex-initial"
+                >
+                  {isProcessingAction && pendingAction === "REJECTED" ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="mr-2 h-4 w-4" />
+                      Reject
+                    </>
+                  )}
+                </Button>
+                <Button
+                  onClick={handleApprove}
+                  disabled={isProcessingAction}
+                  className="flex-1 sm:flex-initial"
+                >
+                  {isProcessingAction && pendingAction === "APPROVED" ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Processing...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="mr-2 h-4 w-4" />
+                      Approve
+                    </>
+                  )}
+                </Button>
+              </div>
+            </DialogFooter>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Rejection Notes Dialog */}
+      {request && (
+        <RejectionNotesDialog
+          isOpen={showRejectionDialog}
+          onClose={() => {
+            setShowRejectionDialog(false);
+            setPendingAction(null);
+          }}
+          onConfirm={handleRejectionConfirm}
+          employeeName={request.account.name}
+        />
+      )}
+    </>
   );
 };

@@ -1,6 +1,6 @@
 import { isValid, addDays } from "date-fns";
 
-const PHT_TIMEZONE = process.env.TIMEZONE || "Asia/Manila";
+export const PHT_TIMEZONE = process.env.TIMEZONE || "Asia/Manila";
 
 // Calculate PHT epoch start as UTC
 const getPhtEpochStartAsUtc = (): Date => {

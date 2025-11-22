@@ -127,6 +127,7 @@ model Payslip {
   @@index([accountId])
   @@index([periodStartDate, periodEndDate])
   @@index([status])
+  @@index([accountId, status]) // Optimizes queries for last released payslip per employee
 }
 
 model RecommendedAppointment {
@@ -217,6 +218,7 @@ model Attendance {
 
   @@unique([date, accountId])
   @@index([date])
+  @@index([accountId, date]) // Optimizes employee attendance queries with date ranges
 }
 
 model Account {
@@ -424,6 +426,8 @@ model AvailedServiceUnit {
   @@index([servedById])
   @@index([status]) // Index for filtering units by status
   @@index([availedServiceId]) // Index for fetching all units for a parent service
+  @@index([servedById, servedAt]) // Optimizes payslip commission queries with date ranges
+  @@index([servedById, status, servedAt]) // Optimizes filtered commission queries (servedById + status + date range)
 }
 
 model GiftCertificate {

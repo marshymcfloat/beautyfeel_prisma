@@ -9,6 +9,7 @@ import {
 } from "@/lib/SalaryActions"; // Adjust path as needed
 import { format } from "date-fns";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { Button } from "./button";
 
 // --- Type Definitions ---
 type PayslipActionResult = {
@@ -68,7 +69,7 @@ const Label: React.FC<React.LabelHTMLAttributes<HTMLLabelElement>> = ({
   ...props
 }) => (
   <label
-    className={`block text-sm font-medium text-customBlack/80 ${className}`}
+    className={`mb-1.5 block text-sm font-medium text-customBlack ${className}`}
     {...props}
   >
     {children}
@@ -221,10 +222,10 @@ const EmployeeWorkHistory: React.FC<EmployeeWorkHistoryProps> = ({
       <div className="text-customRed flex min-h-[300px] flex-col items-center justify-center p-6 text-center">
         <AlertCircle className="mb-4 h-10 w-10" />
         <h2 className="mb-2 text-xl font-semibold">Error Loading Data</h2>
-        <p>{error.message}</p>
-        <button onClick={handleRefresh} className="btn-primary mt-4">
+        <p className="mb-4">{error.message}</p>
+        <Button onClick={handleRefresh} variant="outline">
           Try Again
-        </button>
+        </Button>
       </div>
     );
   }
@@ -271,16 +272,14 @@ const EmployeeWorkHistory: React.FC<EmployeeWorkHistoryProps> = ({
           </p>
         </div>
         <div className="mt-4 flex justify-center md:col-span-3">
-          <button
+          <Button
             onClick={handleRefresh}
             disabled={isLoading}
-            className="btn-primary"
+            variant="outline"
           >
-            {isLoading ? (
-              <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-            ) : null}{" "}
+            {isLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             Refresh Data
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -328,13 +327,13 @@ const EmployeeWorkHistory: React.FC<EmployeeWorkHistoryProps> = ({
         )}
 
         {data.account.canRequestPayslip && (
-          <button
+          <Button
             onClick={() => setIsRequestFormModalOpen(true)}
             className="btn-primary mt-4"
             disabled={isRequestPendingLocal}
           >
             Request Payslip Release
-          </button>
+          </Button>
         )}
 
         <Modal
@@ -345,85 +344,142 @@ const EmployeeWorkHistory: React.FC<EmployeeWorkHistoryProps> = ({
           title={<DialogTitle>Request Payslip</DialogTitle>}
           size="md"
         >
-          <div className="space-y-4 p-4">
-            <p className="mb-2 mt-1 text-sm text-customBlack/70">
-              This will submit a request for all unpaid earnings from the start
-              of the current work period **up to and including today's date**.
-            </p>
-            <div className="grid gap-4">
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="periodStartDate" className="text-right">
-                  Period Start
-                </Label>
-                <Input
-                  id="periodStartDate"
-                  type="date"
-                  className="col-span-3"
-                  readOnly
-                  value={
-                    currentPeriodStartDate
-                      ? format(currentPeriodStartDate, "yyyy-MM-dd")
-                      : ""
-                  }
-                  disabled
-                />
-              </div>
+          <div className="space-y-6 p-6">
+            <div className="rounded-md bg-blue-50 p-4">
+              <p className="text-sm text-customBlack/80">
+                This will submit a request for all unpaid earnings from the
+                start of the current work period up to and including today's
+                date.
+              </p>
+            </div>
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label className="text-right">Period End</Label>
-                <div className="col-span-3 rounded-md border border-customGray/50 bg-customGray/10 px-3 py-2 text-sm text-customBlack/70">
-                  Today's Date (Set Automatically)
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="periodStartDate">
+                  Period Start{" "}
+                  <span className="font-normal text-customBlack/60">
+                    (DateTime)
+                  </span>
+                </Label>
+                <div className="space-y-2">
+                  <Input
+                    id="periodStartDate"
+                    type="datetime-local"
+                    readOnly
+                    value={
+                      currentPeriodStartDate
+                        ? (() => {
+                            // Convert to local timezone for datetime-local input
+                            const localDate = new Date(currentPeriodStartDate);
+                            const year = localDate.getFullYear();
+                            const month = String(
+                              localDate.getMonth() + 1,
+                            ).padStart(2, "0");
+                            const day = String(localDate.getDate()).padStart(
+                              2,
+                              "0",
+                            );
+                            const hours = String(localDate.getHours()).padStart(
+                              2,
+                              "0",
+                            );
+                            const minutes = String(
+                              localDate.getMinutes(),
+                            ).padStart(2, "0");
+                            return `${year}-${month}-${day}T${hours}:${minutes}`;
+                          })()
+                        : ""
+                    }
+                    disabled
+                    className="mb-2"
+                  />
+                  {currentPeriodStartDate && (
+                    <p className="text-xs text-customBlack/60">
+                      Full DateTime: {format(currentPeriodStartDate, "PPpp")}
+                    </p>
+                  )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-4 items-center gap-4">
-                <Label htmlFor="notes" className="text-right">
-                  Notes (Optional)
+              <div className="space-y-2">
+                <Label>
+                  Period End{" "}
+                  <span className="font-normal text-customBlack/60">
+                    (DateTime)
+                  </span>
+                </Label>
+                <div className="space-y-2">
+                  <div className="flex h-10 w-full items-center rounded-md border border-customGray/50 bg-customGray/10 px-3 py-2 text-sm text-customBlack/70">
+                    Current DateTime (Set Automatically at Request Time)
+                  </div>
+                  <p className="text-xs text-customBlack/60">
+                    The period will end at the exact moment you submit this
+                    request, including the full time component (hours, minutes,
+                    seconds).
+                  </p>
+                  <p className="text-xs font-medium text-customBlack/70">
+                    Example: {format(new Date(), "PPpp")}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="notes">
+                  Notes <span className="text-customBlack/50">(Optional)</span>
                 </Label>
                 <Textarea
                   id="notes"
-                  rows={3}
-                  className="col-span-3"
+                  rows={4}
                   value={notesInput}
                   onChange={(e) => setNotesInput(e.target.value)}
                   disabled={isRequestPendingLocal}
+                  placeholder="Add any additional notes or comments..."
                 />
               </div>
+            </div>
 
-              {requestMessage && (
-                <p
-                  className={`col-span-4 mt-2 text-center text-sm ${requestSuccess ? "text-green-700" : "text-red-600"}`}
-                >
-                  {requestMessage}
-                </p>
-              )}
-              {requestErrorsDetail?.general && (
-                <p className="col-span-4 mt-2 text-center text-sm text-red-600">
-                  {requestErrorsDetail.general.join(", ")}
-                </p>
-              )}
-
-              <div className="col-span-4 flex justify-end gap-2 border-t pt-4">
-                <button
-                  type="button"
-                  onClick={handleSubmitRequest}
-                  className="btn-primary"
-                  disabled={isRequestPendingLocal || requestSuccess}
-                >
-                  {isRequestPendingLocal && (
-                    <Loader2 className="mr-2 inline h-4 w-4 animate-spin" />
-                  )}
-                  {isRequestPendingLocal ? "Submitting..." : "Submit Request"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsRequestFormModalOpen(false)}
-                  className="btn-secondary"
-                  disabled={isRequestPendingLocal || requestSuccess}
-                >
-                  Cancel
-                </button>
+            {(requestMessage || requestErrorsDetail?.general) && (
+              <div className="space-y-2">
+                {requestMessage && (
+                  <div
+                    className={`rounded-md p-3 text-sm ${
+                      requestSuccess
+                        ? "bg-green-50 text-green-800"
+                        : "bg-red-50 text-red-800"
+                    }`}
+                  >
+                    {requestMessage}
+                  </div>
+                )}
+                {requestErrorsDetail?.general && (
+                  <div className="rounded-md bg-red-50 p-3 text-sm text-red-800">
+                    {requestErrorsDetail.general.join(", ")}
+                  </div>
+                )}
               </div>
+            )}
+
+            <div className="flex flex-col-reverse gap-3 border-t pt-4 sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsRequestFormModalOpen(false)}
+                disabled={isRequestPendingLocal || requestSuccess}
+                className="w-full sm:w-auto"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSubmitRequest}
+                disabled={isRequestPendingLocal || requestSuccess}
+                className="w-full sm:w-auto"
+              >
+                {isRequestPendingLocal && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                {isRequestPendingLocal ? "Submitting..." : "Submit Request"}
+              </Button>
             </div>
           </div>
         </Modal>

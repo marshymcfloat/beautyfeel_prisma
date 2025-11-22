@@ -22,10 +22,22 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-import Button from "@/components/Buttons/Button";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
-import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "sonner";
+import { Plus, Edit3, Trash2, RefreshCw, Loader2 } from "lucide-react";
 
 type Service = Pick<PrismaService, "id" | "title" | "price">;
 type ServiceSet = PrismaServiceSet & { services?: Service[] };
@@ -57,6 +69,9 @@ export default function ManageServiceSets() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSet, setEditingSet] = useState<ServiceSet | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteSetId, setPendingDeleteSetId] = useState<string | null>(null);
+  const [pendingDeleteSetTitle, setPendingDeleteSetTitle] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const loadData = useCallback(async (forceRefresh = false) => {
@@ -136,19 +151,47 @@ export default function ManageServiceSets() {
     }
   }, [isModalOpen, editingSet]);
 
-  const handleDelete = (setId: string) => {
-    if (!window.confirm("Delete this Service Set permanently?")) return;
+  const handleDeleteClick = (serviceSet: ServiceSet) => {
+    setPendingDeleteSetId(serviceSet.id);
+    setPendingDeleteSetTitle(serviceSet.title);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteSetId) {
+      setDeleteDialogOpen(false);
+      return;
+    }
     setListError(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
-      const result = await deleteServiceSetAction(setId);
-      if (!result.success) {
-        setListError(result.message);
-      } else {
-        invalidateCache(SERVICE_SETS_CACHE_KEY);
-        await loadData();
+      try {
+        const result = await deleteServiceSetAction(pendingDeleteSetId);
+        if (!result.success) {
+          const errorMsg = result.message || "Failed to delete service set.";
+          setListError(errorMsg);
+          toast.error("Failed to delete service set", {
+            description: errorMsg,
+          });
+        } else {
+          toast.success("Service set deleted", {
+            description: "The service set has been successfully deleted.",
+          });
+          invalidateCache(SERVICE_SETS_CACHE_KEY);
+          await loadData();
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || "An unexpected error occurred.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteSetId(null);
+        setPendingDeleteSetTitle(null);
       }
     });
-  };
+  }, [pendingDeleteSetId, loadData]);
 
   const handleSave = () => {
     if (!formRef.current) {
@@ -184,6 +227,9 @@ export default function ManageServiceSets() {
 
           invalidateCache(SERVICE_SETS_CACHE_KEY);
           await loadData();
+          toast.success("Service set saved", {
+            description: result.message || "The service set has been saved successfully.",
+          });
         } else {
           let errorMsg = result.message;
           if (result.errors) {
@@ -193,6 +239,9 @@ export default function ManageServiceSets() {
             errorMsg += ` (${fieldErrors})`;
           }
           setFormError(errorMsg);
+          toast.error("Failed to save service set", {
+            description: errorMsg,
+          });
         }
       } catch (err) {
         console.error("Unexpected error during save action:", err);
@@ -247,12 +296,18 @@ export default function ManageServiceSets() {
           </Button>
         </div>
       </div>
-      {listError && <p className={listErrorMsgStyle}>{listError}</p>}
+      {listError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
+      )}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading && serviceSets.length === 0 ? (
-          <p className="py-10 text-center text-customBlack/70">
-            Loading service sets...
-          </p>
+          <div className="p-4 space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
         ) : !listError && serviceSets.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">
             No service sets found.
@@ -290,22 +345,26 @@ export default function ManageServiceSets() {
                     )}
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       onClick={() => handleEdit(set)}
                       disabled={isPending}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="mr-2 h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       title="Edit Set"
                     >
                       <Edit3 size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(set.id)}
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(set)}
                       disabled={isPending}
-                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       title="Delete Set"
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -313,99 +372,110 @@ export default function ManageServiceSets() {
           </table>
         )}
       </div>
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {editingSet ? "Edit Service Set" : "Add New Service Set"}
-          </DialogTitle>
-        }
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
-        {formError && <p className={modalErrorStyle}>{formError}</p>}
-        <form
-          key={editingSet?.id || "new-set"}
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()}
-          className="space-y-4"
-        >
-          <div>
-            <label htmlFor="title" className={labelStyle}>
-              Set Title <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="text"
-              name="title"
-              id="title"
-              required
-              defaultValue={editingSet?.title ?? ""}
-              className={inputStyle}
-              disabled={isSaving}
-            />
-          </div>
-          <div>
-            <label htmlFor="price" className={labelStyle}>
-              Set Price (in cents) <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="number"
-              name="price"
-              id="price"
-              required
-              min="0"
-              step="1"
-              defaultValue={editingSet?.price ?? ""}
-              className={inputStyle}
-              disabled={isSaving}
-            />
-          </div>
-          <div>
-            <label className={labelStyle}>
-              Include Services <span className="text-red-500">*</span>
-            </label>
-            <div className="mt-2 max-h-60 space-y-2 overflow-y-auto rounded border border-customGray bg-white p-3">
-              {isLoading && availableServices.length === 0 ? (
-                <p className="text-xs text-gray-500">Loading services...</p>
-              ) : availableServices.length === 0 ? (
-                <p className="text-xs text-gray-500">No services available.</p>
-              ) : (
-                availableServices.map((service: Service) => (
-                  <div key={service.id} className="flex items-center">
-                    <input
-                      id={`service-${service.id}`}
-                      name="serviceIds"
-                      type="checkbox"
-                      value={service.id}
-                      defaultChecked={editingSet?.services?.some(
-                        (s: Service) => s.id === service.id,
-                      )}
-                      className={checkboxStyle}
-                      disabled={isSaving}
-                    />
-                    <label
-                      htmlFor={`service-${service.id}`}
-                      className={checkboxLabelStyle}
-                    >
-                      {service.title}{" "}
-                      <span className="text-xs text-gray-500">
-                        ({service.price})
-                      </span>
-                    </label>
-                  </div>
-                ))
-              )}
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingSet ? "Edit Service Set" : "Add New Service Set"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingSet
+                ? "Update the service set details below."
+                : "Fill in the form below to create a new service set."}
+            </DialogDescription>
+          </DialogHeader>
+          {formError && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {formError}
             </div>
-            <p className="mt-1 text-xs text-gray-500">
-              Select one or more services.
-            </p>
-          </div>
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+          )}
+          <form
+            key={editingSet?.id || "new-set"}
+            ref={formRef}
+            onSubmit={(e) => e.preventDefault()}
+            className="space-y-4"
+          >
+            <div>
+              <Label htmlFor="title">
+                Set Title <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                type="text"
+                name="title"
+                id="title"
+                required
+                defaultValue={editingSet?.title ?? ""}
+                disabled={isSaving}
+              />
+            </div>
+            <div>
+              <Label htmlFor="price">
+                Set Price (in cents) <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                type="number"
+                name="price"
+                id="price"
+                required
+                min="0"
+                step="1"
+                defaultValue={editingSet?.price ?? ""}
+                disabled={isSaving}
+              />
+            </div>
+            <div>
+              <Label>
+                Include Services <span className="text-red-500">*</span>
+              </Label>
+              <ScrollArea className="mt-2 max-h-60 rounded-md border border-input bg-background p-3">
+                {isLoading && availableServices.length === 0 ? (
+                  <div className="space-y-2">
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                    <Skeleton className="h-4 w-full" />
+                  </div>
+                ) : availableServices.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No services available.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {availableServices.map((service: Service) => (
+                      <div key={service.id} className="flex items-center space-x-2">
+                        <input
+                          id={`service-${service.id}`}
+                          name="serviceIds"
+                          type="checkbox"
+                          value={service.id}
+                          defaultChecked={editingSet?.services?.some(
+                            (s: Service) => s.id === service.id,
+                          )}
+                          disabled={isSaving}
+                          className="h-4 w-4 rounded border-gray-300 text-primary focus:ring-2 focus:ring-primary disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                        <Label
+                          htmlFor={`service-${service.id}`}
+                          className="text-sm font-normal cursor-pointer flex-1"
+                        >
+                          {service.title}{" "}
+                          <span className="text-xs text-muted-foreground">
+                            ({service.price})
+                          </span>
+                        </Label>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Select one or more services.
+              </p>
+            </div>
+          </form>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
               disabled={isSaving}
-              invert
+              variant="outline"
             >
               Cancel
             </Button>
@@ -416,15 +486,70 @@ export default function ManageServiceSets() {
                 isSaving || (isLoading && availableServices.length === 0)
               }
             >
-              {isSaving
-                ? "Saving..."
-                : editingSet
-                  ? "Save Changes"
-                  : "Create Set"}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : editingSet ? (
+                "Save Changes"
+              ) : (
+                "Create Set"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteSetId(null);
+          setPendingDeleteSetTitle(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Service Set</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the service set{" "}
+              <span className="font-semibold">{pendingDeleteSetTitle}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteSetId(null);
+                setPendingDeleteSetTitle(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Service Set
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

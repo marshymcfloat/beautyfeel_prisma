@@ -143,19 +143,61 @@ const transactionSelectConfig = {
   branchId: true, // <-- Ensure branchId is selected here
   branch: { select: { id: true, title: true, code: true } },
   originatingRecommendations: {
-    include: {
-      originatingService: true,
+    select: {
+      id: true,
+      customerId: true,
+      recommendedDate: true,
+      originatingTransactionId: true,
+      originatingAvailedServiceId: true,
+      originatingServiceId: true,
+      status: true,
+      attendedTransactionId: true,
+      suppressNextFollowUpGeneration: true,
+      reminder3DaySentAt: true,
+      reminder2DaySentAt: true,
+      reminder1DaySentAt: true,
+      reminderTodaySentAt: true,
+      reminder1DayAfterSentAt: true,
+      reminder7DaySentAt: true,
+      reminder7DayAfterSentAt: true,
+      reminder14DayAfterSentAt: true,
+      createdAt: true,
+      updatedAt: true,
+      originatingService: {
+        select: { id: true, title: true, followUpPolicy: true },
+      },
       attendedTransaction: { select: { id: true } },
     },
   },
   attendedAppointment: {
-    include: {
-      originatingService: true,
+    select: {
+      id: true,
+      customerId: true,
+      recommendedDate: true,
+      originatingTransactionId: true,
+      originatingAvailedServiceId: true,
+      originatingServiceId: true,
+      status: true,
+      attendedTransactionId: true,
+      suppressNextFollowUpGeneration: true,
+      reminder3DaySentAt: true,
+      reminder2DaySentAt: true,
+      reminder1DaySentAt: true,
+      reminderTodaySentAt: true,
+      reminder1DayAfterSentAt: true,
+      reminder7DaySentAt: true,
+      reminder7DayAfterSentAt: true,
+      reminder14DayAfterSentAt: true,
+      createdAt: true,
+      updatedAt: true,
+      originatingService: {
+        select: { id: true, title: true, followUpPolicy: true },
+      },
       attendedTransaction: { select: { id: true } },
     },
   },
   giftCertificateId: true,
-  giftCertificateUsed: true,
+  giftCertificateUsed: { select: { id: true } },
 } satisfies Prisma.TransactionSelect;
 
 const transactionSelectConfigForRecentTransactions = {
@@ -181,15 +223,57 @@ const transactionSelectConfigForRecentTransactions = {
 
   // Include RecommendedAppointment relations if needed in TransactionListData
   originatingRecommendations: {
-    include: {
-      originatingService: true, // Includes all fields of originatingService as per schema
-      attendedTransaction: { select: { id: true } }, // Select minimal details
+    select: {
+      id: true,
+      customerId: true,
+      recommendedDate: true,
+      originatingTransactionId: true,
+      originatingAvailedServiceId: true,
+      originatingServiceId: true,
+      status: true,
+      attendedTransactionId: true,
+      suppressNextFollowUpGeneration: true,
+      reminder3DaySentAt: true,
+      reminder2DaySentAt: true,
+      reminder1DaySentAt: true,
+      reminderTodaySentAt: true,
+      reminder1DayAfterSentAt: true,
+      reminder7DaySentAt: true,
+      reminder7DayAfterSentAt: true,
+      reminder14DayAfterSentAt: true,
+      createdAt: true,
+      updatedAt: true,
+      originatingService: {
+        select: { id: true, title: true, followUpPolicy: true },
+      },
+      attendedTransaction: { select: { id: true } },
     },
   },
   attendedAppointment: {
-    include: {
-      originatingService: true, // Includes all fields of originatingService as per schema
-      attendedTransaction: { select: { id: true } }, // Select minimal details
+    select: {
+      id: true,
+      customerId: true,
+      recommendedDate: true,
+      originatingTransactionId: true,
+      originatingAvailedServiceId: true,
+      originatingServiceId: true,
+      status: true,
+      attendedTransactionId: true,
+      suppressNextFollowUpGeneration: true,
+      reminder3DaySentAt: true,
+      reminder2DaySentAt: true,
+      reminder1DaySentAt: true,
+      reminderTodaySentAt: true,
+      reminder1DayAfterSentAt: true,
+      reminder7DaySentAt: true,
+      reminder7DayAfterSentAt: true,
+      reminder14DayAfterSentAt: true,
+      createdAt: true,
+      updatedAt: true,
+      originatingService: {
+        select: { id: true, title: true, followUpPolicy: true },
+      },
+      attendedTransaction: { select: { id: true } },
     },
   },
 
@@ -1119,26 +1203,11 @@ const CUSTOMERS_CACHE_KEY: CacheKey = "customers_SendEmail";
 const TEMPLATES_CACHE_KEY: CacheKey = "emailTemplates_ManageEmailTemplates";
 const MANAGE_CUSTOMERS_CACHE_KEY: CacheKey = "customers_ManageCustomers";
 
-// Helper function to get the start of today in the target timezone as UTC
-// This ensures consistency with attendance date calculations
-// Helper function to get the start of today in the target timezone as UTC
-// This ensures consistency with attendance date calculations
-// Note: TARGET_TIMEZONE and PHT_TIMEZONE both reference "Asia/Manila"
+// Helper function to get the start of today in PHT as UTC
+// Uses the centralized timezone helper for consistency
 const getStartOfTodayTargetTimezoneUtc = () => {
   const nowUtc = new Date();
-  // Use PHT_TIMEZONE consistently with payslip calculations (both are "Asia/Manila")
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: PHT_TIMEZONE, // Use same timezone as payslip calculations
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const targetDateString = formatter.format(nowUtc);
-  const [yearStr, monthStr, dayStr] = targetDateString.split("-");
-  const year = parseInt(yearStr, 10);
-  const month = parseInt(monthStr, 10) - 1;
-  const day = parseInt(dayStr, 10);
-  return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  return getUtcForPhtStartOfDay(nowUtc);
 };
 
 const CustomerSchema = z.object({
@@ -2973,6 +3042,26 @@ export async function transactionSubmission(
   const transactionProcessingStartTimeUTC = new Date(); // Use as transaction createdAt
 
   try {
+    // Use Zod validation schema for robust server-side validation
+    const validationResult = await import("./transactionValidation").then(
+      (module) => module.validateTransactionForm(transactionForm),
+    );
+
+    if (!validationResult.success) {
+      console.warn(
+        "[TX Submit] Server-side validation failed:",
+        validationResult.errors,
+      );
+      return {
+        success: false,
+        message: "Validation failed. Please check the form.",
+        errors: validationResult.errors,
+      };
+    }
+
+    const validatedForm = validationResult.data;
+
+    // Extract validated fields (with proper types from Zod schema)
     const {
       name,
       date: dateString,
@@ -2988,52 +3077,14 @@ export async function transactionSubmission(
       generateNewFollowUpForFulfilledRA,
       customerId: formCustomerId,
       originBranchId, // This field now comes from the Redux state (can be string | null)
-    } = transactionForm;
+    } = validatedForm;
 
-    const errors: Record<string, string> = {};
-    if (!name || !name.trim())
-      errors.name = "Customer name is required (server check).";
-
-    const trimmedEmail = email?.trim() || null;
-    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-      errors.email = "Invalid email format (server check).";
-    }
-
-    if (!servicesAvailed || servicesAvailed.length === 0) {
-      errors.servicesAvailed =
-        "At least one service or set must be selected (server check).";
-    }
-    if (!paymentMethod) {
-      errors.paymentMethod = "Payment method is required (server check).";
-    }
-    // Ensure paymentMethod is a valid enum value string before checking Object.values
-    if (
-      paymentMethod &&
-      !Object.values(PaymentMethod).includes(paymentMethod as any)
-    ) {
-      errors.paymentMethod = "Invalid payment method provided (server check).";
-    }
-
-    if (serveTime === "later" && (!dateString || !timeString)) {
-      errors.serveTime =
-        "Date and time are required for later service (server check).";
-    }
-
-    // --- REMOVED THE STRICT VALIDATION CHECK FOR originBranchId ---
-    // Removing this check allows originBranchId to be null if "All Branches" is selected.
-    // if (!originBranchId) {
-    //   errors.originBranchId = "Originating branch is required.";
-    // }
-    // --- END REMOVED ---
-
-    if (Object.keys(errors).length > 0) {
-      console.warn("[TX Submit] Server-side validation failed:", errors);
-      return {
-        success: false,
-        message: "Validation failed. Please check the form.",
-        errors: convertErrorsToStringArrays(errors),
-      };
-    }
+    // Normalize email (handle null, empty string, or valid email)
+    // The validated form already handles email normalization, but we ensure it's properly trimmed
+    const trimmedEmail =
+      email && typeof email === "string" && email.trim() !== ""
+        ? email.trim()
+        : null;
 
     const customerNameFormatted = formatName(name);
     let finalBookingDateTimeUTC: Date | null = null;
@@ -3116,11 +3167,18 @@ export async function transactionSubmission(
               where: { id: customerRecord.id },
               data: { email: trimmedEmail },
             });
-          } catch (e: any) {
-            if (e.code === "P2002" && e.meta?.target?.includes("email"))
+          } catch (e: unknown) {
+            if (
+              e instanceof Prisma.PrismaClientKnownRequestError &&
+              e.code === "P2002" &&
+              e.meta?.target &&
+              Array.isArray(e.meta.target) &&
+              e.meta.target.includes("email")
+            ) {
               throw new Error(
                 `The email "${trimmedEmail}" is already associated with another customer.`,
               );
+            }
             throw e;
           }
         }
@@ -3134,10 +3192,13 @@ export async function transactionSubmission(
               email: trimmedEmail,
             },
           });
-        } catch (e: any) {
+        } catch (e: unknown) {
           if (
+            e instanceof Prisma.PrismaClientKnownRequestError &&
             e.code === "P2002" &&
-            e.meta?.target?.includes("email") &&
+            e.meta?.target &&
+            Array.isArray(e.meta.target) &&
+            e.meta.target.includes("email") &&
             trimmedEmail !== null
           ) {
             throw new Error(
@@ -3256,19 +3317,16 @@ export async function transactionSubmission(
             unitCommissionFromService * itemQuantity,
           ); // Total commission for the item
 
+          // Create AvailedService record for a single service (not from a set)
           const newAvailedServiceRecord = await tx.availedService.create({
-            // Use tx
             data: {
               transaction: { connect: { id: newTransactionRecord.id } },
               service: { connect: { id: item.id } },
-              quantity: itemQuantity, // Store the total quantity for the item
-              price: totalItemPrice, // Store the total price for the item
-              commissionValue: totalItemCommission, // Store the total commission for the item
-              // Explicitly set optional fields to undefined if not applicable
-              originatingSetId: undefined,
-              originatingSetTitle: undefined,
-              serviceSetId: undefined,
-            } as any, // <-- Apply 'as any' if still getting type errors here
+              quantity: itemQuantity,
+              price: totalItemPrice,
+              commissionValue: totalItemCommission,
+              // Omit optional fields that are not applicable for standalone services
+            },
           });
           console.log(
             `[TX Submit] Created AvailedService ${newAvailedServiceRecord.id} for service ${item.id} with quantity ${itemQuantity}`,
@@ -3329,18 +3387,16 @@ export async function transactionSubmission(
 
             // Create an AvailedService record for *each* service in the set
             const newAvailedServiceRecord = await tx.availedService.create({
-              // Use tx
               data: {
                 transaction: { connect: { id: newTransactionRecord.id } },
-                service: { connect: { id: serviceInSet.id } }, // Link to the service within the set
+                service: { connect: { id: serviceInSet.id } },
                 quantity: itemQuantity, // Quantity refers to the *number of times the SET was availed*
-                price: totalItemPriceForServiceInSet, // Total price for this service * itemQuantity
-                commissionValue: totalItemCommissionForServiceInSet, // Total commission for this service * itemQuantity
-                // Assign set details for set type
-                originatingSetId: setDetail.id,
+                price: totalItemPriceForServiceInSet,
+                commissionValue: totalItemCommissionForServiceInSet,
+                // Include set details for services from sets
+                originatingSet: { connect: { id: setDetail.id } },
                 originatingSetTitle: setDetail.title,
-                serviceSetId: undefined, // Explicitly undefined if not used for set service type
-              } as any, // <-- Apply 'as any' if still getting type errors here
+              },
             });
             console.log(
               `[TX Submit] Created AvailedService ${newAvailedServiceRecord.id} for service ${serviceInSet.id} (in set ${setDetail.id}) with quantity ${itemQuantity}`,
@@ -4402,6 +4458,24 @@ export async function getActiveTransactions(
       originatingRecommendations: {
         select: {
           id: true,
+          customerId: true,
+          recommendedDate: true,
+          originatingTransactionId: true,
+          originatingAvailedServiceId: true,
+          originatingServiceId: true,
+          status: true,
+          attendedTransactionId: true,
+          suppressNextFollowUpGeneration: true,
+          reminder3DaySentAt: true,
+          reminder2DaySentAt: true,
+          reminder1DaySentAt: true,
+          reminderTodaySentAt: true,
+          reminder1DayAfterSentAt: true,
+          reminder7DaySentAt: true,
+          reminder7DayAfterSentAt: true,
+          reminder14DayAfterSentAt: true,
+          createdAt: true,
+          updatedAt: true,
           originatingService: {
             select: { id: true, title: true, followUpPolicy: true },
           },
@@ -4411,6 +4485,24 @@ export async function getActiveTransactions(
       attendedAppointment: {
         select: {
           id: true,
+          customerId: true,
+          recommendedDate: true,
+          originatingTransactionId: true,
+          originatingAvailedServiceId: true,
+          originatingServiceId: true,
+          status: true,
+          attendedTransactionId: true,
+          suppressNextFollowUpGeneration: true,
+          reminder3DaySentAt: true,
+          reminder2DaySentAt: true,
+          reminder1DaySentAt: true,
+          reminderTodaySentAt: true,
+          reminder1DayAfterSentAt: true,
+          reminder7DaySentAt: true,
+          reminder7DayAfterSentAt: true,
+          reminder14DayAfterSentAt: true,
+          createdAt: true,
+          updatedAt: true,
           originatingService: {
             select: { id: true, title: true, followUpPolicy: true },
           },
@@ -4516,23 +4608,23 @@ export async function getActiveTransactions(
       "[getActiveTransactions] Error fetching active transactions:",
       error,
     );
-    
+
     // Handle Prisma connection errors gracefully
     // Return empty array instead of throwing to prevent app crashes
     if (error instanceof Prisma.PrismaClientKnownRequestError) {
       console.error("Prisma error details:", error.code, error.meta);
-      
+
       // Handle specific error codes
       if (error.code === "P1001" || error.code === "P1002") {
         console.error("[getActiveTransactions] Database connection error");
       } else if (error.code === "P2002") {
         console.error("[getActiveTransactions] Unique constraint violation");
       }
-      
+
       // Return empty array to allow app to continue functioning
       return [];
     }
-    
+
     // For unknown errors, log and return empty array
     console.error("[getActiveTransactions] Unknown error type:", error);
     return [];
@@ -6837,9 +6929,9 @@ export async function markAttendanceAction(
 
         const attendanceDataForUpsert = {
           date: attendanceDateForRecord,
-          accountId,
-          isPresent,
-          notes,
+          accountId: accountId,
+          isPresent: isPresent,
+          notes: notes ?? null,
           checkedById: checkerId,
           checkedAt: checkTimestampUtc,
         };
@@ -6848,13 +6940,13 @@ export async function markAttendanceAction(
           where: {
             date_accountId: {
               date: attendanceDateForRecord,
-              accountId,
+              accountId: accountId,
             },
           },
           create: attendanceDataForUpsert,
           update: {
             isPresent: isPresent,
-
+            notes: notes ?? null,
             checkedById: checkerId,
             checkedAt: checkTimestampUtc,
           },
@@ -6867,7 +6959,7 @@ export async function markAttendanceAction(
             data: { salary: finalNewSalary },
           });
           console.log(
-            `[Server Action] Account salary updated to ${finalNewSalary}.`,
+            `[Server Action] Account ${accountId} salary updated from ${currentSalary} to ${finalNewSalary} (change: ${salaryChange > 0 ? "+" : ""}${salaryChange}).`,
           );
         }
 
@@ -6899,27 +6991,39 @@ export async function markAttendanceAction(
     }
 
     return result;
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[Server Action Error] Failed to mark attendance:", error);
+
+    // Format date string for error message using PHT timezone
     let dateStringForError = "the current date";
     try {
       const formatter = new Intl.DateTimeFormat("en-CA", {
-        timeZone: TARGET_TIMEZONE,
+        timeZone: PHT_TIMEZONE, // Use same timezone as attendance calculation
         year: "numeric",
         month: "2-digit",
         day: "2-digit",
       });
       dateStringForError = formatter.format(checkTimestampUtc);
     } catch (formatError) {
+      console.error(
+        "[Server Action Error] Failed to format error date:",
+        formatError,
+      );
       dateStringForError =
         checkTimestampUtc.toISOString().split("T")[0] + " (UTC)";
     }
 
+    // Handle Prisma errors specifically
+    let errorMessage = "An unexpected error occurred while marking attendance.";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    }
+
     return {
       success: false,
-      message: `Failed to mark attendance for ${dateStringForError}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      message: `Failed to mark attendance for ${dateStringForError}: ${errorMessage}`,
     };
   }
 }
@@ -7041,9 +7145,8 @@ export async function requestPayslipGeneration(
       );
     } else {
       // If no released payslip, calculation starts from the start of the nominal request period day in PHT
-      trueAttendanceCalculationStartDateUtc = getUtcForPhtStartOfDay(
-        normalizedStartDate,
-      );
+      trueAttendanceCalculationStartDateUtc =
+        getUtcForPhtStartOfDay(normalizedStartDate);
       // If no released timestamp, start commissions from epoch timestamp
       commissionCalculationStartTimeUtc = new Date(0); // Epoch start (UTC)
 
@@ -7056,9 +7159,8 @@ export async function requestPayslipGeneration(
     }
 
     // Determine the upper boundary for calculation (exclusive boundary) - End of Payslip Nominal Period in PHT
-    const calculationPeriodEndExclusive = getUtcForPhtStartOfNextDay(
-      normalizedEndDate,
-    );
+    const calculationPeriodEndExclusive =
+      getUtcForPhtStartOfNextDay(normalizedEndDate);
 
     console.log(
       `[requestPayslipGeneration] Calculation period end (exclusive UTC boundary for end of PHT period end date): ${calculationPeriodEndExclusive.toISOString()}`,
@@ -7967,12 +8069,44 @@ export async function releaseSalary(
         data: { status: PayslipStatus.RELEASED, releasedDate: new Date() },
       });
 
-      // Decrement salary by netPay instead of setting to 0
-      // This ensures salary tracking is accurate
+      // Get current salary before decrementing to prevent negative values
+      const account = await tx.account.findUnique({
+        where: { id: payslip.accountId },
+        select: { salary: true },
+      });
+
+      if (!account) {
+        throw new Error(`Account ${payslip.accountId} not found.`);
+      }
+
+      const currentSalary = account.salary ?? 0;
+      const newSalary = Math.max(0, currentSalary - payslip.netPay);
+
+      // Decrement salary by netPay, but ensure it never goes below 0
+      // This prevents negative salary values
+      // Note: If netPay includes commissions that weren't added to salary field,
+      // this will prevent the salary from going negative
       await tx.account.update({
         where: { id: payslip.accountId },
-        data: { salary: { decrement: payslip.netPay } },
+        data: { salary: newSalary },
       });
+
+      if (newSalary < currentSalary - payslip.netPay) {
+        console.warn(
+          `[releaseSalary] Salary would have gone negative for account ${payslip.accountId}. ` +
+            `Current: ${currentSalary}, NetPay: ${payslip.netPay}, ` +
+            `Would be: ${currentSalary - payslip.netPay}, Set to: ${newSalary}. ` +
+            `This may indicate that the payslip includes commissions not yet added to the salary field.`,
+        );
+      }
+
+      if (payslip.netPay > currentSalary) {
+        console.warn(
+          `[releaseSalary] Payslip netPay (${payslip.netPay}) exceeds current salary (${currentSalary}) ` +
+            `for account ${payslip.accountId}. This may indicate commissions are included in netPay ` +
+            `but not yet reflected in the salary field. Salary set to 0.`,
+        );
+      }
 
       const expenseDescription = `Salary payment for ${payslip.account.name} (Acct: ${payslip.accountId}) for period ${payslip.periodStartDate.toISOString().split("T")[0]} to ${payslip.periodEndDate.toISOString().split("T")[0]}. Payslip ID: ${payslipId}.`;
 

@@ -11,6 +11,15 @@ const { Server } = require("socket.io");
 const cron = require("node-cron");
 const { Resend } = require("resend");
 const {
+  validateUnitActionPayload,
+  validateAccountId: validateAccountIdMatch,
+  createUnitActionError,
+  validateUnitForCheck,
+  validateUnitForUncheck,
+  validateUnitForServe,
+  validateUnitForUnserve,
+} = require("./unitActionValidation");
+const {
   addDays,
   subDays,
   startOfDay,
@@ -144,11 +153,9 @@ const EMAIL_RETRY_JITTER_MS = parseInt(
   10,
 ); // Max random jitter to add to delay
 
-// Assuming SALARY_COMMISSION_RATE is defined globally or imported elsewhere
-// For the socket server, you might need to define it here or load it from config
-const SALARY_COMMISSION_RATE = parseFloat(
-  process.env.SALARY_COMMISSION_RATE || "0.1",
-); // Example: 10% default rate
+// Import unified commission calculation helper
+// Note: Using dynamic import since this is CommonJS and the helper is ES module
+// The helper will be imported when needed in completeTransactionAndCalculateSalary
 
 const prisma = new PrismaClient({
   transactionOptions: {
@@ -242,7 +249,7 @@ function cleanupRateLimit(socketId) {
  * @param {string} accountId
  * @returns {Promise<boolean>}
  */
-async function validateAccountId(accountId) {
+async function validateAccountExists(accountId) {
   try {
     const account = await prisma.account.findUnique({
       where: { id: accountId },
@@ -843,49 +850,24 @@ async function completeTransactionAndCalculateSalary(transactionId) {
 
         // ... (rest of the commission calculation logic - it relies on the structure fetched above) ...
 
-        // Calculate discount factor based on original sum of AS prices vs final grandTotal
-        // This assumes commission is based on the *discounted* price contribution of the service
-        // Use the total price stored on the AS item as the base for the discount factor calculation for that item.
-        const originalSumOfAvailedServicePrices =
-          transactionDataForCoreOps.availedServices.reduce(
-            (sum, as) => sum + (as.price || 0),
-            0,
-          );
+        // Import unified commission calculation helper once before the loop
+        // This is the single source of truth for commission calculations
+        // This is the single source of truth for commission calculations
+        const { calculateUnitCommission } = await import(
+          "../lib/salaryCalculationHelpers.js"
+        );
 
-        // IMPORTANT: The discount is applied transaction-wide. Need to distribute it proportionally
-        // across AvailedService items based on their contribution to the *original* total.
-        // Then, commissions are calculated per unit based on the *discounted* unit price.
-        const totalTransactionDiscount =
-          originalSumOfAvailedServicePrices > 0
-            ? originalSumOfAvailedServicePrices -
-              transactionDataForCoreOps.grandTotal
-            : 0;
+        // Get all availed service prices for unified commission calculation
+        // This is needed for the helper to calculate discounts proportionally
+        const transactionAvailedServicesPrices =
+          transactionDataForCoreOps.availedServices.map((as) => as.price ?? 0);
 
         for (const availedSvc of transactionDataForCoreOps.availedServices) {
           let totalCommissionForAS = 0;
-          const serviceBaseUnitPrice = availedSvc.service?.price ?? 0; // Base price from the Service model for a *single unit*
-          const availedServiceOriginalPrice = availedSvc.price ?? 0; // The pre-discount total price for THIS AS line item (should be serviceBaseUnitPrice * quantity)
-
-          // Calculate the portion of the transaction discount applicable to this specific AvailedService line item
-          const asDiscountContribution =
-            originalSumOfAvailedServicePrices > 0
-              ? (availedServiceOriginalPrice /
-                  originalSumOfAvailedServicePrices) *
-                totalTransactionDiscount
-              : 0;
-
-          // The effective total price for this AvailedService line item *after* its proportional discount
-          const availedServiceEffectivePrice =
-            availedServiceOriginalPrice - asDiscountContribution;
-
-          // The effective price *per unit* for commission calculation
-          const effectiveUnitPriceForCommission =
-            availedSvc.quantity > 0
-              ? availedServiceEffectivePrice / availedSvc.quantity
-              : 0;
+          const availedServiceOriginalPrice = availedSvc.price ?? 0; // The pre-discount total price for THIS AS line item
 
           console.log(
-            `[Socket TXN Complete ${transactionId}] CoreTX: AS ${availedSvc.id} (${availedSvc.service?.title}): Orig Price=${availedServiceOriginalPrice}, Discount Contribution=${asDiscountContribution.toFixed(2)}, Effective Price=${availedServiceEffectivePrice.toFixed(2)}, Effective Unit Price=${effectiveUnitPriceForCommission.toFixed(2)}`,
+            `[Socket TXN Complete ${transactionId}] CoreTX: AS ${availedSvc.id} (${availedSvc.service?.title}): Orig Price=${availedServiceOriginalPrice}, Quantity=${availedSvc.quantity}`,
           );
 
           for (const unit of availedSvc.units) {
@@ -895,16 +877,14 @@ async function completeTransactionAndCalculateSalary(transactionId) {
               unit.servedById &&
               unit.servedBy
             ) {
-              let commissionRate = SALARY_COMMISSION_RATE; // Default global rate
-              if (unit.servedBy.role.some((role) => role === Role.MASSEUSE)) {
-                // Check if ANY role is MASSEUSE
-                commissionRate = 0.5; // Masseuse rate (50%)
-              }
-              // Add other role-based rates if necessary
-
-              const calculatedUnitCommission = Math.max(
-                0,
-                Math.floor(effectiveUnitPriceForCommission * commissionRate), // Calculate per unit commission based on effective unit price
+              // Use unified commission calculation helper
+              // This ensures consistency with SalaryActions and other server actions
+              const calculatedUnitCommission = calculateUnitCommission(
+                availedServiceOriginalPrice, // Total price for the AvailedService item
+                availedSvc.quantity, // Number of units in this AvailedService item
+                transactionAvailedServicesPrices, // Array of all AvailedService prices in the transaction
+                transactionDataForCoreOps.grandTotal, // Final grand total of the transaction (after discounts)
+                unit.servedBy.role, // Array of roles for the employee serving the unit
               );
 
               // Add unit commission to the server's salary update map
@@ -917,7 +897,7 @@ async function completeTransactionAndCalculateSalary(transactionId) {
               // Accumulate total commission for the parent AvailedService item
               totalCommissionForAS += calculatedUnitCommission;
               console.log(
-                `[Socket TXN Complete ${transactionId}] CoreTX: Unit ${unit.id}: ServedBy=${unit.servedById}, Role=${unit.servedBy.role.join(",")}, Rate=${commissionRate}, EffectiveUnit=${effectiveUnitPriceForCommission.toFixed(2)}, Unit Commission=${calculatedUnitCommission}`,
+                `[Socket TXN Complete ${transactionId}] CoreTX: Unit ${unit.id}: ServedBy=${unit.servedById}, Role=${unit.servedBy.role.join(",")}, Unit Commission=${calculatedUnitCommission}`,
               );
             }
           }
@@ -1377,7 +1357,7 @@ io.on("connection", async (socket) => {
   }
 
   // Validate account exists in database
-  const accountExists = await validateAccountId(accountIdFromQuery);
+  const accountExists = await validateAccountExists(accountIdFromQuery);
   if (!accountExists) {
     console.warn(
       `[Socket ${clientId}] Connection rejected: Account ${accountIdFromQuery} not found`,
@@ -1475,24 +1455,24 @@ io.on("connection", async (socket) => {
             select: { status: true },
           });
 
+          // Validate transaction status
           if (!parentTxn || parentTxn.status !== Status.PENDING) {
             throw new Error(
               `Cannot check unit: Transaction status is ${parentTxn?.status || "not found"}.`,
             );
           }
 
-          if (unitToUpdate.status !== Status.PENDING) {
-            throw new Error(
-              `Cannot check unit: Unit status is ${unitToUpdate.status}.`,
-            );
+          // Validate unit status for check action using validation helper
+          const unitValidation = validateUnitForCheck(
+            unitToUpdate.status,
+            unitToUpdate.checkedById,
+            accountId,
+          );
+          if (!unitValidation.valid) {
+            throw new Error(unitValidation.error);
           }
-          if (unitToUpdate.checkedById) {
-            if (unitToUpdate.checkedById === accountId)
-              throw new Error("Unit is already checked by you.");
-            throw new Error(
-              `Unit is already checked by ${unitToUpdate.checkedBy?.name || "someone else"}.`,
-            );
-          }
+
+          // Additional validation: Cannot check if already served
           if (unitToUpdate.servedById) {
             throw new Error(
               `Cannot check unit: Unit is already served by ${unitToUpdate.servedBy?.name || "someone else"}.`,
@@ -1557,13 +1537,15 @@ io.on("connection", async (socket) => {
           }
           transactionRooms.get(transactionId).add(clientId);
 
-          // Broadcast to transaction room instead of all clients
+          // Broadcast to transaction room AND all clients for real-time updates across all screens
           io.to(transactionRoom).emit(
             "availedServiceUpdated",
             availedServiceToSend,
           );
+          // Also broadcast globally so other screens (dashboard, work list) get updates
+          io.emit("availedServiceUpdated", availedServiceToSend);
           console.log(
-            `[Socket ${clientId}] Unit ${unitId} checked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+            `[Socket ${clientId}] Unit ${unitId} checked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room and all clients.`,
           );
           // Check timer unconditionally now. The function itself handles the status check.
           checkAndManageCompletionTimer(transactionId);
@@ -1615,24 +1597,25 @@ io.on("connection", async (socket) => {
         `[Socket ${clientId}] RX uncheckUnit: UNIT_ID=${unitId}, AS_ID=${availedServiceId}, TX_ID=${transactionId}, ACC_ID=${accountId}`,
       );
 
-      // Validate required fields
-      if (!unitId || !availedServiceId || !transactionId || !accountId) {
-        socket.emit("unitActionError", {
-          unitId,
-          message: "Invalid request data provided for uncheckUnit.",
-        });
+      // Validate payload structure
+      const payloadValidation = validateUnitActionPayload({
+        unitId,
+        availedServiceId,
+        transactionId,
+        accountId,
+      });
+      if (!payloadValidation.valid) {
+        socket.emit("unitActionError", createUnitActionError(unitId, payloadValidation.error));
         return;
       }
 
       // Validate accountId matches authenticated account
-      if (accountId !== socket.data.authenticatedAccountId) {
+      const accountValidation = validateAccountIdMatch(accountId, socket.data.authenticatedAccountId);
+      if (!accountValidation.valid) {
         console.warn(
-          `[Socket ${clientId}] Security: accountId mismatch. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
+          `[Socket ${clientId}] Security: ${accountValidation.error}. Authenticated: ${socket.data.authenticatedAccountId}, Provided: ${accountId}`,
         );
-        socket.emit("unitActionError", {
-          unitId,
-          message: "Unauthorized: Account ID mismatch.",
-        });
+        socket.emit("unitActionError", createUnitActionError(unitId, accountValidation.error));
         return;
       }
       try {
@@ -1750,8 +1733,10 @@ io.on("connection", async (socket) => {
             "availedServiceUpdated",
             availedServiceToSend,
           );
+          // Also broadcast globally so other screens get updates
+          io.emit("availedServiceUpdated", availedServiceToSend);
           console.log(
-            `[Socket ${clientId}] Unit ${unitId} unchecked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+            `[Socket ${clientId}] Unit ${unitId} unchecked by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room and all clients.`,
           );
           // Check timer unconditionally now.
           checkAndManageCompletionTimer(transactionId);
@@ -1942,8 +1927,10 @@ io.on("connection", async (socket) => {
             "availedServiceUpdated",
             availedServiceToSend,
           );
+          // Also broadcast globally so other screens get updates
+          io.emit("availedServiceUpdated", availedServiceToSend);
           console.log(
-            `[Socket ${clientId}] Unit ${unitId} MARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+            `[Socket ${clientId}] Unit ${unitId} MARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room and all clients.`,
           );
           // Check timer unconditionally now.
           checkAndManageCompletionTimer(transactionId);
@@ -2131,8 +2118,10 @@ io.on("connection", async (socket) => {
             "availedServiceUpdated",
             availedServiceToSend,
           );
+          // Also broadcast globally so other screens get updates
+          io.emit("availedServiceUpdated", availedServiceToSend);
           console.log(
-            `[Socket ${clientId}] Unit ${unitId} UNMARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room.`,
+            `[Socket ${clientId}] Unit ${unitId} UNMARKED as served by ${accountId}. Broadcasting update for AS ${availedServiceId} to transaction room and all clients.`,
           );
           // Check timer unconditionally now.
           checkAndManageCompletionTimer(transactionId);

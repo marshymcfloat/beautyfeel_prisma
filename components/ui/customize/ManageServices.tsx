@@ -28,11 +28,21 @@ import {
   CacheKey,
 } from "@/lib/cache";
 
-import Button from "@/components/Buttons/Button";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import SelectInputGroup from "@/components/Inputs/SelectInputGroup";
-import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
+import { toast } from "sonner";
+import { Plus, Edit3, Trash2, RefreshCw, Loader2 } from "lucide-react";
 
 type Service = PrismaService & {
   branch?: Pick<PrismaBranch, "id" | "title"> | null;
@@ -66,6 +76,9 @@ export default function ManageServices() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingService, setEditingService] = useState<Service | null>(null);
   const [isSaving, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteServiceId, setPendingDeleteServiceId] = useState<string | null>(null);
+  const [pendingDeleteServiceTitle, setPendingDeleteServiceTitle] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const [selectedFollowUpPolicy, setSelectedFollowUpPolicy] =
@@ -216,24 +229,47 @@ export default function ManageServices() {
     setIsModalOpen(true);
   };
 
-  const handleDelete = (serviceId: string) => {
-    if (!window.confirm("Are you sure you want to delete this service?"))
+  const handleDeleteClick = (service: Service) => {
+    setPendingDeleteServiceId(service.id);
+    setPendingDeleteServiceTitle(service.title);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteServiceId) {
+      setDeleteDialogOpen(false);
       return;
+    }
     setLoadError(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
       try {
-        const result = await deleteServiceAction(serviceId);
+        const result = await deleteServiceAction(pendingDeleteServiceId);
         if (!result.success) {
-          setLoadError(result.message || "Failed to delete service.");
+          const errorMsg = result.message || "Failed to delete service.";
+          setLoadError(errorMsg);
+          toast.error("Failed to delete service", {
+            description: errorMsg,
+          });
         } else {
+          toast.success("Service deleted", {
+            description: "The service has been successfully deleted.",
+          });
           invalidateCache(SERVICES_CACHE_KEY);
           await loadData();
         }
       } catch (err: any) {
-        setLoadError(err.message || "Error during deletion.");
+        const errorMsg = err.message || "Error during deletion.";
+        setLoadError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteServiceId(null);
+        setPendingDeleteServiceTitle(null);
       }
     });
-  };
+  }, [pendingDeleteServiceId, loadData]);
 
   // --- MODIFIED handleSave ---
   const handleSave = () => {
@@ -310,6 +346,9 @@ export default function ManageServices() {
           setIsModalOpen(false);
           invalidateCache(SERVICES_CACHE_KEY);
           await loadData();
+          toast.success("Service saved", {
+            description: result.message || "The service has been saved successfully.",
+          });
         } else {
           // Display validation errors or general error message from the server
           if (result.errors) {
@@ -426,14 +465,20 @@ export default function ManageServices() {
       </div>
 
       {/* List View Load Error */}
-      {loadError && <p className={listErrorMsgStyle}>{loadError}</p>}
+      {loadError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {loadError}
+        </div>
+      )}
 
       {/* Services Table */}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading && services.length === 0 ? (
-          <p className="py-10 text-center text-customBlack/70">
-            Loading services...
-          </p>
+          <div className="p-4 space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
         ) : !loadError && services.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">
             No services found.
@@ -515,22 +560,26 @@ export default function ManageServices() {
                   </td>
                   {/* Actions Cell */}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       onClick={() => handleEdit(service)}
                       disabled={isSaving}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="mr-2 h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       title="Edit Service"
                     >
                       <Edit3 size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(service.id)}
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(service)}
                       disabled={isSaving}
-                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       title="Delete Service"
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -539,41 +588,44 @@ export default function ManageServices() {
         )}
       </div>
 
-      {/* Modal for Add/Edit Service */}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {editingService ? "Edit Service" : "Add New Service"}
-          </DialogTitle>
-        }
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl flex flex-col"
-      >
-        {displayError(formErrors.general) && (
-          // Display general errors at the top of the form
-          <p className={modalErrorStyle}>{displayError(formErrors.general)}</p>
-        )}
-        <form
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()} // Prevent default form submission
-          className="space-y-4"
-        >
+      {/* Dialog for Add/Edit Service */}
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingService ? "Edit Service" : "Add New Service"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingService
+                ? "Update the service information below."
+                : "Fill in the form below to create a new service."}
+            </DialogDescription>
+          </DialogHeader>
+          {displayError(formErrors.general) && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {displayError(formErrors.general)}
+            </div>
+          )}
+          <form
+            ref={formRef}
+            onSubmit={(e) => e.preventDefault()} // Prevent default form submission
+            className="space-y-4"
+          >
           {/* Title */}
           <div>
-            <label htmlFor="title" className={labelStyle}>
+            <Label htmlFor="title">
               Service Title <span className="text-red-500">*</span>
-            </label>
-            <input
+            </Label>
+            <Input
               type="text"
               name="title" // Name matches Zod schema field
               id="title"
               required // Client-side validation hint
-              className={`${inputStyle} ${formErrors.title ? "border-red-500" : ""}`}
+              className={formErrors.title ? "border-destructive" : ""}
               disabled={isSaving}
             />
             {displayError(formErrors.title) && (
-              <p className={modalErrorStyle}>
+              <p className="mt-1 text-xs text-destructive">
                 {displayError(formErrors.title)}
               </p>
             )}
@@ -581,18 +633,16 @@ export default function ManageServices() {
 
           {/* Description */}
           <div>
-            <label htmlFor="description" className={labelStyle}>
-              Description
-            </label>
+            <Label htmlFor="description">Description</Label>
             <textarea
               name="description" // Name matches Zod schema field
               id="description"
               rows={3}
-              className={`${textareaStyle} ${formErrors.description ? "border-red-500" : ""}`}
+              className={`flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${formErrors.description ? "border-destructive" : ""}`}
               disabled={isSaving}
-            ></textarea>
+            />
             {displayError(formErrors.description) && (
-              <p className={modalErrorStyle}>
+              <p className="mt-1 text-xs text-destructive">
                 {displayError(formErrors.description)}
               </p>
             )}
@@ -601,29 +651,29 @@ export default function ManageServices() {
           {/* Price and Branch (side-by-side) */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="price" className={labelStyle}>
+              <Label htmlFor="price">
                 Price (in cents) <span className="text-red-500">*</span>
-              </label>
-              <input
+              </Label>
+              <Input
                 type="number"
                 name="price" // Name matches Zod schema field
                 id="price"
                 required // Client-side validation hint
                 min="0"
                 step="1"
-                className={`${inputStyle} ${formErrors.price ? "border-red-500" : ""}`}
+                className={formErrors.price ? "border-destructive" : ""}
                 disabled={isSaving}
               />
               {displayError(formErrors.price) && (
-                <p className={modalErrorStyle}>
+                <p className="mt-1 text-xs text-destructive">
                   {displayError(formErrors.price)}
                 </p>
               )}
             </div>
             <div>
-              <label htmlFor="branchId" className={labelStyle}>
+              <Label htmlFor="branchId">
                 Branch <span className="text-red-500">*</span>
-              </label>
+              </Label>
               <SelectInputGroup
                 name="branchId" // Name matches Zod schema field
                 id="branchId"
@@ -670,55 +720,45 @@ export default function ManageServices() {
             {sendPostTreatmentEmail && ( // Conditionally render based on state
               <>
                 <div>
-                  <label
-                    htmlFor="postTreatmentEmailSubject"
-                    className={labelStyle}
-                  >
+                  <Label htmlFor="postTreatmentEmailSubject">
                     Email Subject <span className="text-red-500">*</span>
-                  </label>
-                  <input
+                  </Label>
+                  <Input
                     type="text"
                     name="postTreatmentEmailSubject" // Name matches Zod schema field
                     id="postTreatmentEmailSubject"
                     required={sendPostTreatmentEmail} // Client-side hint
-                    // --- Make this input CONTROLLED ---
                     value={postTreatmentEmailSubjectState}
                     onChange={(e) =>
                       setPostTreatmentEmailSubjectState(e.target.value)
                     }
-                    // --- END CONTROLLED ---
-                    className={`${inputStyle} ${formErrors.postTreatmentEmailSubject ? "border-red-500" : ""}`}
+                    className={formErrors.postTreatmentEmailSubject ? "border-destructive" : ""}
                     disabled={isSaving}
                   />
                   {displayError(formErrors.postTreatmentEmailSubject) && (
-                    <p className={modalErrorStyle}>
+                    <p className="mt-1 text-xs text-destructive">
                       {displayError(formErrors.postTreatmentEmailSubject)}
                     </p>
                   )}
                 </div>
                 <div>
-                  <label
-                    htmlFor="postTreatmentInstructions"
-                    className={labelStyle}
-                  >
+                  <Label htmlFor="postTreatmentInstructions">
                     Instructions <span className="text-red-500">*</span>
-                  </label>
+                  </Label>
                   <textarea
                     name="postTreatmentInstructions" // Name matches Zod schema field
                     id="postTreatmentInstructions"
                     rows={6}
                     required={sendPostTreatmentEmail} // Client-side hint
-                    // --- Make this input CONTROLLED ---
                     value={postTreatmentInstructionsState}
                     onChange={(e) =>
                       setPostTreatmentInstructionsState(e.target.value)
                     }
-                    // --- END CONTROLLED ---
-                    className={`${textareaStyle} ${formErrors.postTreatmentInstructions ? "border-red-500" : ""}`}
+                    className={`flex min-h-[80px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${formErrors.postTreatmentInstructions ? "border-destructive" : ""}`}
                     disabled={isSaving}
-                  ></textarea>
+                  />
                   {displayError(formErrors.postTreatmentInstructions) && (
-                    <p className={modalErrorStyle}>
+                    <p className="mt-1 text-xs text-destructive">
                       {displayError(formErrors.postTreatmentInstructions)}
                     </p>
                   )}
@@ -729,10 +769,10 @@ export default function ManageServices() {
 
           {/* Follow-up Policy */}
           <div>
-            <label htmlFor="followUpPolicy" className={labelStyle}>
+            <Label htmlFor="followUpPolicy">
               Follow-up Recommendation Policy{" "}
               <span className="text-red-500">*</span>
-            </label>
+            </Label>
             <SelectInputGroup
               name="followUpPolicy" // Name matches Zod schema field
               id="followUpPolicy"
@@ -762,52 +802,106 @@ export default function ManageServices() {
           {/* Recommended Follow-up Days (Conditional) */}
           {selectedFollowUpPolicy !== FollowUpPolicy.NONE && (
             <div>
-              <label htmlFor="recommendedFollowUpDays" className={labelStyle}>
+              <Label htmlFor="recommendedFollowUpDays">
                 Recommended days for follow-up{" "}
                 <span className="text-red-500">*</span>
-              </label>
-              <input
+              </Label>
+              <Input
                 type="number"
                 name="recommendedFollowUpDays" // Name matches Zod schema field
                 id="recommendedFollowUpDays"
                 required={true}
                 min="1"
                 step="1"
-                className={`${inputStyle} ${formErrors.recommendedFollowUpDays ? "border-red-500" : ""}`}
+                className={formErrors.recommendedFollowUpDays ? "border-destructive" : ""}
                 disabled={isSaving}
               />
               {displayError(formErrors.recommendedFollowUpDays) && (
-                <p className={modalErrorStyle}>
+                <p className="mt-1 text-xs text-destructive">
                   {displayError(formErrors.recommendedFollowUpDays)}
                 </p>
               )}
             </div>
           )}
-
-          {/* Modal Footer Buttons */}
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+          </form>
+          <DialogFooter>
             <Button
-              type="button" // Important to prevent form submission
+              type="button"
               onClick={closeModal}
               disabled={isSaving}
-              invert
+              variant="outline"
             >
               Cancel
             </Button>
             <Button
-              type="button" // Important to prevent form submission
+              type="button"
               onClick={handleSave}
               disabled={isSaving}
             >
-              {isSaving
-                ? "Saving..."
-                : editingService
-                  ? "Save Changes"
-                  : "Create Service"}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : editingService ? (
+                "Save Changes"
+              ) : (
+                "Create Service"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteServiceId(null);
+          setPendingDeleteServiceTitle(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Service</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the service{" "}
+              <span className="font-semibold">{pendingDeleteServiceTitle}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteServiceId(null);
+                setPendingDeleteServiceTitle(null);
+              }}
+              disabled={isSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Service
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

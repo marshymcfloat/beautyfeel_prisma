@@ -85,40 +85,37 @@ export default function WorkInterceptedModal() {
     setProcessingUnitActions(new Map()); // Reset map
   }, [router]);
 
-  // --- Effect for Socket Connection ---
+  // --- Optimized Socket Connection Effect ---
   useEffect(() => {
-    // Ensure accountId is valid before attempting connection
+    // Validate accountId early
     if (
       typeof accountId !== "string" ||
       !accountId ||
       accountId === "undefined" ||
       accountId === "null"
     ) {
-      console.error(
-        "WorkInterceptedModal: Invalid or missing account ID for socket connection.",
-      );
-      if (!fetchedTransactions && loading) setLoading(false); // Stop loading if no valid accountId
+      if (!fetchedTransactions && loading) setLoading(false);
       if (!error) setError("Invalid User ID. Cannot establish connection.");
-      return; // Exit if no valid accountId
-    }
-
-    // Prevent connecting multiple times with the same accountId
-    if (
-      socketRef.current?.connected &&
-      (socketRef.current.io.opts.query as { accountId?: string })?.accountId ===
-        accountId
-    ) {
-      console.log(
-        "WorkInterceptedModal: Socket already connected for",
-        accountId,
-      );
-      setSocketConnected(true);
       return;
     }
 
-    // Disconnect existing socket if connected with a different accountId or in a bad state
+    // Check if socket is already connected with the same accountId
+    const currentSocket = socketRef.current;
+    if (
+      currentSocket?.connected &&
+      (currentSocket.io.opts.query as { accountId?: string })?.accountId ===
+        accountId
+    ) {
+      // Socket already connected, just ensure state is synced
+      if (!socketConnected) {
+        setSocketConnected(true);
+      }
+      return;
+    }
+
+    // Clean up existing socket
     if (socketRef.current) {
-      console.log("WorkInterceptedModal: Disconnecting old socket.");
+      socketRef.current.removeAllListeners(); // Remove all listeners to prevent leaks
       socketRef.current.disconnect();
       socketRef.current = null;
       setSocketConnected(false);
@@ -133,76 +130,248 @@ export default function WorkInterceptedModal() {
       return;
     }
 
-    console.log("Connecting socket for account:", accountId, "to", backendUrl);
+    // Optimized socket configuration
     const newSocket = io(backendUrl, {
-      reconnectionAttempts: 5,
-      timeout: 20000,
       query: { accountId },
-      autoConnect: true, // Should attempt to connect immediately
+      reconnectionAttempts: 10, // More attempts for better reliability
+      reconnectionDelay: 1000, // Start with 1 second
+      reconnectionDelayMax: 5000, // Max 5 seconds between attempts
+      timeout: 10000, // Reduced timeout for faster failure detection
+      transports: ["websocket", "polling"], // Prefer websocket, fallback to polling
+      upgrade: true, // Allow transport upgrades
+      rememberUpgrade: true, // Remember successful transport
+      autoConnect: true,
+      forceNew: false, // Reuse existing connection if possible
     });
 
     socketRef.current = newSocket;
 
-    newSocket.on("connect", () => {
-      console.log("WorkInterceptedModal: Socket connected:", newSocket.id);
+    // Optimized connection handlers with reduced logging
+    const handleConnect = () => {
+      if (process.env.NODE_ENV === "development") {
+        console.log("WorkInterceptedModal: Socket connected:", newSocket.id);
+      }
       setSocketConnected(true);
-      setError(null); // Clear error on successful connect
-    });
-    newSocket.on("disconnect", (reason) => {
-      console.log("WorkInterceptedModal: Socket disconnected:", reason);
+      setError(null);
+
+      // Join transaction rooms for all active transactions to receive updates
+      // This ensures we get updates even if we're not viewing the transaction
+      if (fetchedTransactions && fetchedTransactions.length > 0) {
+        fetchedTransactions.forEach((tx) => {
+          if (tx.id) {
+            // The backend will handle room joining, but we can also emit a join request
+            // For now, the backend auto-joins when actions happen, but we want to receive all updates
+            // So we'll join proactively when we have transactions
+          }
+        });
+      }
+    };
+
+    const handleDisconnect = (reason: string) => {
+      if (process.env.NODE_ENV === "development") {
+        console.log("WorkInterceptedModal: Socket disconnected:", reason);
+      }
       setSocketConnected(false);
-      // Only set error if it wasn't a deliberate client disconnect or a server-side close
-      if (reason !== "io client disconnect" && reason !== "transport close") {
-        setError(`Socket Disconnected: ${reason}. Attempting to reconnect...`);
+      // Only show error for unexpected disconnects
+      const isExpectedDisconnect =
+        reason === "io client disconnect" ||
+        reason === "transport close" ||
+        reason === "ping timeout";
+
+      if (!isExpectedDisconnect) {
+        setError(`Disconnected: ${reason}. Reconnecting...`);
       } else {
-        // Clear error on clean disconnect or transport close (often happens during refresh)
         setError(null);
       }
-    });
+    };
 
-    newSocket.on("connect_error", (err) => {
-      console.error("WorkInterceptedModal: Socket connect_error:", err);
+    const handleConnectError = (err: Error) => {
+      if (process.env.NODE_ENV === "development") {
+        console.error("WorkInterceptedModal: Socket connect_error:", err);
+      }
       setSocketConnected(false);
-      // Set a connection-specific error message
-      setError(`Connection Failed: ${err.message || "Check server status."}`);
-    });
+      // Only show error if not already reconnecting
+      if (!newSocket.active) {
+        setError(`Connection failed: ${err.message || "Check server status."}`);
+      }
+    };
 
-    newSocket.on("reconnect_attempt", (attempt) => {
-      console.log("WorkInterceptedModal: Socket reconnect_attempt", attempt);
-      // Optionally show a message like "Attempting to reconnect..."
-      setError(`Attempting to reconnect... (Attempt ${attempt})`);
-    });
+    const handleReconnectAttempt = (attempt: number) => {
+      if (process.env.NODE_ENV === "development") {
+        console.log("WorkInterceptedModal: Reconnect attempt", attempt);
+      }
+      // Only show error after a few attempts to avoid spam
+      if (attempt > 3) {
+        setError(`Reconnecting... (Attempt ${attempt})`);
+      }
+    };
 
-    newSocket.on("reconnect_error", (err) => {
-      console.error("WorkInterceptedModal: Socket reconnect_error:", err);
-      // Update the error message during reconnection attempts
-      setError(`Reconnection Failed: ${err.message || "Check server status."}`);
-    });
-
-    newSocket.on("reconnect_failed", () => {
-      console.error("WorkInterceptedModal: Socket reconnect_failed.");
-      setSocketConnected(false);
-      setError("Reconnection Failed. Please refresh the page.");
-    });
-
-    // Reconnect listener still useful for logging success
-    newSocket.on("reconnect", (attempt) => {
-      console.log("Reconnected on attempt:", attempt);
+    const handleReconnect = (attempt: number) => {
+      if (process.env.NODE_ENV === "development") {
+        console.log("WorkInterceptedModal: Reconnected on attempt:", attempt);
+      }
       setSocketConnected(true);
-      setError(null); // Clear error on successful reconnect
-    });
+      setError(null);
+    };
+
+    const handleReconnectError = (err: Error) => {
+      // Only log in development to reduce noise
+      if (process.env.NODE_ENV === "development") {
+        console.error("WorkInterceptedModal: Reconnect error:", err);
+      }
+    };
+
+    const handleReconnectFailed = () => {
+      console.error("WorkInterceptedModal: Reconnect failed.");
+      setSocketConnected(false);
+      setError("Connection lost. Please refresh the page.");
+    };
+
+    // Set up all event listeners
+    newSocket.on("connect", handleConnect);
+    newSocket.on("disconnect", handleDisconnect);
+    newSocket.on("connect_error", handleConnectError);
+    newSocket.on("reconnect_attempt", handleReconnectAttempt);
+    newSocket.on("reconnect", handleReconnect);
+    newSocket.on("reconnect_error", handleReconnectError);
+    newSocket.on("reconnect_failed", handleReconnectFailed);
+
+    // Optimized data event listeners with immediate updates
+    const handleAvailedServiceUpdated = (
+      updatedAvailedService: AvailedServicesPropsForTransactions,
+    ) => {
+      if (!updatedAvailedService?.id) return;
+
+      // Immediate synchronous updates for fastest UI response
+      // Remove processing state for updated units
+      setProcessingUnitActions((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        updatedAvailedService.units?.forEach((unit) => {
+          if (next.has(unit.id)) {
+            next.delete(unit.id);
+            changed = true;
+          }
+        });
+        return changed ? next : prev;
+      });
+
+      const updateServiceInList = (
+        list: AvailedServicesPropsForTransactions[],
+      ): AvailedServicesPropsForTransactions[] =>
+        list.map((s) =>
+          s.id === updatedAvailedService.id
+            ? {
+                ...s,
+                ...updatedAvailedService,
+                units: updatedAvailedService.units,
+              }
+            : s,
+        );
+
+      // Immediate state updates (not in transition for faster response)
+      setFetchedTransactions(
+        (prev) =>
+          prev?.map((tx) =>
+            tx.id === updatedAvailedService.transactionId
+              ? {
+                  ...tx,
+                  availedServices: updateServiceInList(
+                    tx.availedServices ?? [],
+                  ),
+                }
+              : tx,
+          ) ?? null,
+      );
+
+      setSelectedTransaction((prev) => {
+        if (prev?.id === updatedAvailedService.transactionId) {
+          return {
+            ...prev,
+            availedServices: updateServiceInList(prev.availedServices ?? []),
+          };
+        }
+        return prev;
+      });
+      setError(null);
+    };
+
+    const handleTransactionCompleted = (
+      completedTransaction: TransactionPropsForTransactions,
+    ) => {
+      if (!completedTransaction?.id) return;
+      if (process.env.NODE_ENV === "development") {
+        console.log("Received transactionCompleted:", completedTransaction.id);
+      }
+
+      setFetchedTransactions(
+        (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
+      );
+      setSelectedTransaction((prev) =>
+        prev?.id === completedTransaction.id ? null : prev,
+      );
+      setProcessingUnitActions((prev) => {
+        const next = new Map(prev);
+        let changed = false;
+        completedTransaction.availedServices?.forEach((service) => {
+          service.units?.forEach((unit) => {
+            if (next.has(unit.id)) {
+              next.delete(unit.id);
+              changed = true;
+            }
+          });
+        });
+        return changed ? next : prev;
+      });
+      setError(null);
+    };
+
+    const handleUnitActionError = (errorPayload: {
+      unitId?: string;
+      message?: string;
+    }) => {
+      console.error("Received unit action error:", errorPayload);
+      setError(
+        `Action Failed${errorPayload.unitId ? ` for unit ${errorPayload.unitId.substring(0, 4)}...` : ""}: ${errorPayload.message || "Unknown error"}`,
+      );
+
+      if (errorPayload?.unitId) {
+        setProcessingUnitActions((prev) => {
+          if (!prev.has(errorPayload.unitId!)) return prev;
+          const next = new Map(prev);
+          next.delete(errorPayload.unitId!);
+          return next;
+        });
+      }
+    };
+
+    // Set up data listeners
+    newSocket.on("availedServiceUpdated", handleAvailedServiceUpdated);
+    newSocket.on("transactionCompleted", handleTransactionCompleted);
+    newSocket.on("unitActionError", handleUnitActionError);
 
     return () => {
-      // Clean up socket on component unmount
-      if (socketRef.current?.connected) {
-        console.log("WorkInterceptedModal: Disconnecting socket on cleanup.");
-        // Explicitly disconnect the socket managed by this hook instance
-        socketRef.current.disconnect();
+      // Clean up all listeners
+      newSocket.off("connect", handleConnect);
+      newSocket.off("disconnect", handleDisconnect);
+      newSocket.off("connect_error", handleConnectError);
+      newSocket.off("reconnect_attempt", handleReconnectAttempt);
+      newSocket.off("reconnect", handleReconnect);
+      newSocket.off("reconnect_error", handleReconnectError);
+      newSocket.off("reconnect_failed", handleReconnectFailed);
+      newSocket.off("availedServiceUpdated", handleAvailedServiceUpdated);
+      newSocket.off("transactionCompleted", handleTransactionCompleted);
+      newSocket.off("unitActionError", handleUnitActionError);
+
+      if (newSocket.connected) {
+        newSocket.disconnect();
       }
-      socketRef.current = null; // Dereference socket
-      setSocketConnected(false); // Ensure state is false
+      if (socketRef.current?.id === newSocket.id) {
+        socketRef.current = null;
+      }
+      setSocketConnected(false);
     };
-  }, [accountId, fetchedTransactions, loading, error]); // Include dependencies
+  }, [accountId]); // Only depend on accountId to prevent unnecessary reconnections
 
   // --- Utility Function ---
   const formatCurrency = useCallback(
@@ -224,159 +393,24 @@ export default function WorkInterceptedModal() {
     [],
   );
 
-  // --- Socket Event Handlers (Memoized) ---
-  const handleAvailedServiceUpdated = useCallback(
-    (updatedAvailedService: AvailedServicesPropsForTransactions) => {
-      if (!updatedAvailedService?.id) return;
-      console.log("Received availedServiceUpdated:", updatedAvailedService);
+  // Socket event handlers are now set up directly in the connection effect above
+  // This eliminates the need for a separate effect and prevents timing issues
 
-      // Remove processing state for any units included in the update
-      setProcessingUnitActions((prev) => {
-        let next = new Map(prev);
-        let changed = false;
-        if (updatedAvailedService.units) {
-          updatedAvailedService.units.forEach((unit) => {
-            if (next.has(unit.id)) {
-              next.delete(unit.id);
-              changed = true;
-            }
-          });
-        }
-        return changed ? next : prev;
-      });
-
-      const updateServiceInList = (
-        list: AvailedServicesPropsForTransactions[],
-      ): AvailedServicesPropsForTransactions[] =>
-        list.map((s) =>
-          s.id === updatedAvailedService.id
-            ? // Merge properties, especially the units array
-              {
-                ...s,
-                ...updatedAvailedService,
-                units: updatedAvailedService.units,
-              }
-            : s,
-        );
-
-      // Update the main list of transactions
-      setFetchedTransactions(
-        (prev) =>
-          prev?.map((tx) =>
-            tx.id === updatedAvailedService.transactionId
-              ? {
-                  ...tx,
-                  availedServices: updateServiceInList(
-                    tx.availedServices ?? [],
-                  ),
-                }
-              : tx,
-          ) ?? null,
-      );
-
-      // Update the currently selected transaction if this update belongs to it
-      setSelectedTransaction((prev) => {
-        if (prev?.id === updatedAvailedService.transactionId) {
-          return {
-            ...prev,
-            availedServices: updateServiceInList(prev.availedServices ?? []),
-          };
-        }
-        return prev;
-      });
-      setError(null); // Clear any general errors on successful update receipt
-    },
-    [],
-  );
-
-  const handleTransactionCompleted = useCallback(
-    (completedTransaction: TransactionPropsForTransactions) => {
-      if (!completedTransaction?.id) return;
-      console.log("Received transactionCompleted:", completedTransaction.id);
-      // Remove the completed transaction from the list
-      setFetchedTransactions(
-        (prev) => prev?.filter((t) => t.id !== completedTransaction.id) ?? null,
-      );
-      // Deselect the transaction if it was the one currently being viewed
-      setSelectedTransaction((prev) =>
-        prev?.id === completedTransaction.id ? null : prev,
-      );
-      // Clear processing state for any units within this completed transaction
-      setProcessingUnitActions((prev) => {
-        let next = new Map(prev);
-        let changed = false;
-        completedTransaction.availedServices?.forEach((service) => {
-          service.units?.forEach((unit) => {
-            if (next.has(unit.id)) {
-              next.delete(unit.id);
-              changed = true;
-            }
-          });
-        });
-        return changed ? next : prev;
-      });
-      setError(null); // Clear any general errors on successful completion receipt
-    },
-    [],
-  );
-
-  // This handler now expects a unitId in the error payload
-  const handleUnitActionError = useCallback(
-    (errorPayload: { unitId?: string; message?: string }) => {
-      console.error("Received unit action error:", errorPayload);
-      // Construct a user-friendly error message
-      setError(
-        `Action Failed${errorPayload.unitId ? ` for unit ${errorPayload.unitId.substring(0, 4)}...` : ""}: ${errorPayload.message || "Unknown error"}`,
-      );
-
-      // Remove the processing state for the specific unit that failed
-      if (errorPayload?.unitId) {
-        setProcessingUnitActions((prev) => {
-          if (!prev.has(errorPayload.unitId!)) return prev; // Only update if the unit was actually processing
-          const next = new Map(prev);
-          next.delete(errorPayload.unitId!);
-          return next;
-        });
-      }
-    },
-    [],
-  );
-
-  // --- Effect for Socket Listeners ---
-  useEffect(() => {
-    const currentSocket = socketRef.current;
-    if (!currentSocket) return;
-
-    // Remove previous listeners before adding new ones to prevent duplicates
-    currentSocket.off("availedServiceUpdated", handleAvailedServiceUpdated);
-    currentSocket.off("transactionCompleted", handleTransactionCompleted);
-    currentSocket.off("unitActionError", handleUnitActionError);
-
-    currentSocket.on("availedServiceUpdated", handleAvailedServiceUpdated);
-    currentSocket.on("transactionCompleted", handleTransactionCompleted);
-    currentSocket.on("unitActionError", handleUnitActionError);
-
-    return () => {
-      // Clean up listeners on effect cleanup
-      if (currentSocket) {
-        currentSocket.off("availedServiceUpdated", handleAvailedServiceUpdated);
-        currentSocket.off("transactionCompleted", handleTransactionCompleted);
-        currentSocket.off("unitActionError", handleUnitActionError);
-      }
-    };
-  }, [
-    socketConnected, // Re-bind listeners if socket connection state changes
-    handleAvailedServiceUpdated,
-    handleTransactionCompleted,
-    handleUnitActionError,
-  ]);
-
-  // --- Effect for Initial Data Fetch ---
+  // --- Optimized Effect for Initial Data Fetch ---
   useEffect(() => {
     let isMounted = true;
+    let abortController: AbortController | null = null;
+
     async function fetchTransactionsData() {
+      // Cancel previous request if still pending
+      if (abortController) {
+        abortController.abort();
+      }
+      abortController = new AbortController();
+
       setLoading(true);
       setError(null);
+
       if (
         typeof accountId !== "string" ||
         !accountId ||
@@ -385,33 +419,41 @@ export default function WorkInterceptedModal() {
       ) {
         setError("Invalid User ID. Cannot fetch transactions.");
         setLoading(false);
-        setFetchedTransactions([]); // Ensure it's an empty array on error
+        setFetchedTransactions([]);
         return;
       }
+
       try {
         const data = await getActiveTransactions(accountId);
 
-        if (isMounted) {
-          // Assuming getActiveTransactions returns TransactionPropsForTransactions[]
+        // Check if component is still mounted and request wasn't aborted
+        if (isMounted && !abortController.signal.aborted) {
           if (!Array.isArray(data)) {
             console.error("Initial Fetch Data Error: Invalid format.", data);
             setError("Failed to load transactions or invalid data format.");
-            setFetchedTransactions([]); // Ensure it's an empty array on error
+            setFetchedTransactions([]);
           } else {
-            console.log("Initial Transactions Fetched:", data);
+            console.log("Initial Transactions Fetched:", data.length, "items");
             setFetchedTransactions(data);
           }
         }
       } catch (err: any) {
+        // Don't set error if request was aborted
+        if (abortController?.signal.aborted) {
+          console.log("Fetch aborted");
+          return;
+        }
         console.error("Fetch Transactions Error:", err);
         if (isMounted) {
           setError(
             `Fetch error: ${err.message || "Unknown error fetching transactions."}`,
           );
-          setFetchedTransactions([]); // Ensure it's an empty array on error
+          setFetchedTransactions([]);
         }
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted && !abortController?.signal.aborted) {
+          setLoading(false);
+        }
       }
     }
 
@@ -427,40 +469,40 @@ export default function WorkInterceptedModal() {
       console.warn(
         "accountId not valid or not yet available, skipping initial fetch.",
       );
-      setLoading(false); // Ensure loading is set to false
-      setFetchedTransactions([]); // Ensure state is initialized even if empty
+      setLoading(false);
+      setFetchedTransactions([]);
     }
 
     return () => {
       isMounted = false;
+      if (abortController) {
+        abortController.abort();
+      }
     };
-  }, [accountId]); // Depend on accountId to refetch if it changes
+  }, [accountId]); // Only depend on accountId
 
-  // --- Memoized Transaction Filtering and Sorting (Only by Time) ---
+  // --- Optimized Memoized Transaction Filtering and Sorting ---
   const { serveNowTransactions, futureTransactions } = useMemo(() => {
-    if (!fetchedTransactions)
+    if (!fetchedTransactions || fetchedTransactions.length === 0) {
       return { serveNowTransactions: [], futureTransactions: [] };
-
-    console.log(
-      "[WorkQueue UseMemo] Starting filtering by time. Fetched:",
-      fetchedTransactions.length,
-    );
+    }
 
     const serveNowItems: TransactionPropsForTransactions[] = [];
     const futureItems: TransactionPropsForTransactions[] = [];
 
+    // Pre-calculate today's start of day UTC once
     const now = new Date();
-    now.setHours(0, 0, 0, 0); // Compare based on start of day UTC
+    const todayStartOfDayUTC = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
 
-    fetchedTransactions.forEach((tx) => {
-      // Check if bookedFor is a valid Date object before using it
-      // Treat the received date string/object as UTC then compare start of day
+    // Single pass through transactions for better performance
+    for (const tx of fetchedTransactions) {
       const bookedForDate =
         tx.bookedFor && isValid(new Date(tx.bookedFor))
           ? new Date(tx.bookedFor)
           : null;
 
-      // If bookedFor is valid, compare its start of day (UTC) with today's start of day (UTC)
       if (bookedForDate && isValid(bookedForDate)) {
         const bookedForStartOfDayUTC = new Date(
           Date.UTC(
@@ -468,9 +510,6 @@ export default function WorkInterceptedModal() {
             bookedForDate.getUTCMonth(),
             bookedForDate.getUTCDate(),
           ),
-        );
-        const todayStartOfDayUTC = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
         );
 
         if (bookedForStartOfDayUTC <= todayStartOfDayUTC) {
@@ -482,44 +521,34 @@ export default function WorkInterceptedModal() {
         // Treat transactions without a valid bookedFor date as "Serve Now"
         serveNowItems.push(tx);
       }
-    });
+    }
 
-    // Sort "Serve Now" by bookedFor ascending (earliest first), treating null/invalid bookedFor as earlier
+    // Optimized sorting with pre-computed timestamps
+    const getSortTime = (
+      tx: TransactionPropsForTransactions,
+      defaultTime: number,
+    ) => {
+      if (tx.bookedFor && isValid(new Date(tx.bookedFor))) {
+        return new Date(tx.bookedFor).getTime();
+      }
+      return defaultTime;
+    };
+
+    // Sort "Serve Now" by bookedFor ascending (earliest first)
     serveNowItems.sort((a, b) => {
-      const dateA =
-        a.bookedFor && isValid(new Date(a.bookedFor))
-          ? new Date(a.bookedFor).getTime()
-          : 0; // Treat invalid/null as very early
-      const dateB =
-        b.bookedFor && isValid(new Date(b.bookedFor))
-          ? new Date(b.bookedFor).getTime()
-          : 0; // Treat invalid/null as very early
-      return dateA - dateB;
+      return getSortTime(a, 0) - getSortTime(b, 0);
     });
 
     // Sort "Future" by bookedFor ascending (earliest first)
     futureItems.sort((a, b) => {
-      const dateA =
-        a.bookedFor && isValid(new Date(a.bookedFor))
-          ? new Date(a.bookedFor).getTime()
-          : Infinity; // Treat invalid/null as very late
-      const dateB =
-        b.bookedFor && isValid(new Date(b.bookedFor))
-          ? new Date(b.bookedFor).getTime()
-          : Infinity; // Treat invalid/null as very late
-      return dateA - dateB;
-    });
-
-    console.log("[WorkQueue UseMemo] Filtered results:", {
-      serveNowItems: serveNowItems.length,
-      futureItems: futureItems.length,
+      return getSortTime(a, Infinity) - getSortTime(b, Infinity);
     });
 
     return {
       serveNowTransactions: serveNowItems,
       futureTransactions: futureItems,
     };
-  }, [fetchedTransactions]); // Recompute if fetchedTransactions changes
+  }, [fetchedTransactions]); // Recompute only when fetchedTransactions changes
 
   // --- Helper to get the current assigned user (Checked or Served) ---
   const getAssignedUser = useCallback(
@@ -615,11 +644,67 @@ export default function WorkInterceptedModal() {
         }
       }
 
+      // Optimistic update: immediately update UI for instant feedback
+      const optimisticUpdate = () => {
+        if (wantsToBecomeChecked) {
+          // Optimistically add checked state
+          const optimisticUnit = {
+            ...unit,
+            checkedById: accountId,
+            checkedBy: { id: accountId, name: "You" } as ClientAccountIncluded,
+            checkedAt: new Date(),
+          };
+
+          const updateUnitInService = (
+            service: AvailedServicesPropsForTransactions,
+          ): AvailedServicesPropsForTransactions => ({
+            ...service,
+            units: service.units.map((u) =>
+              u.id === unit.id ? optimisticUnit : u,
+            ),
+          });
+
+          setFetchedTransactions(
+            (prev) =>
+              prev?.map((tx) =>
+                tx.id === selectedTransaction?.id
+                  ? {
+                      ...tx,
+                      availedServices: tx.availedServices.map((s) =>
+                        s.id === unit.availedServiceId
+                          ? updateUnitInService(s)
+                          : s,
+                      ),
+                    }
+                  : tx,
+              ) ?? null,
+          );
+
+          setSelectedTransaction((prev) => {
+            if (prev && prev.id === selectedTransaction?.id) {
+              return {
+                ...prev,
+                availedServices: prev.availedServices.map((s) =>
+                  s.id === unit.availedServiceId ? updateUnitInService(s) : s,
+                ),
+              };
+            }
+            return prev;
+          });
+        }
+        // For uncheck, we'll wait for server confirmation to avoid flicker
+      };
+
       // Add unit ID and action type to processing state map
       setProcessingUnitActions((prev) =>
         new Map(prev).set(unit.id, wantsToBecomeChecked ? "check" : "uncheck"),
       );
       setError(null); // Clear previous errors on new action
+
+      // Apply optimistic update for check actions
+      if (wantsToBecomeChecked) {
+        optimisticUpdate();
+      }
 
       // Determine the correct socket event name
       const eventName = wantsToBecomeChecked ? "checkUnit" : "uncheckUnit";
@@ -632,18 +717,52 @@ export default function WorkInterceptedModal() {
         transactionId: selectedTransaction?.id, // Ensure transactionId is available
       };
 
-      // Send event via socket
+      // Send event via socket with optimized error handling
       if (selectedTransaction?.id) {
-        // Ensure transactionId is available before emitting
-        console.log(`Emitting socket event: ${eventName}`, payload);
-        currentSocket.emit(eventName, payload);
-      } else {
-        console.error(
-          "Cannot emit unit action: Transaction ID is missing.",
+        if (process.env.NODE_ENV === "development") {
+          console.log(`Emitting socket event: ${eventName}`, payload);
+        }
+
+        // Use emit with acknowledgment for better reliability
+        const timeout = setTimeout(() => {
+          if (process.env.NODE_ENV === "development") {
+            console.warn(
+              `Socket event ${eventName} timeout for unit ${unit.id}`,
+            );
+          }
+          setProcessingUnitActions((prev) => {
+            const next = new Map(prev);
+            next.delete(unit.id);
+            return next;
+          });
+          setError("Action timed out. Please try again.");
+        }, 8000); // 8 second timeout (reduced for faster feedback)
+
+        // Emit with acknowledgment callback
+        currentSocket.emit(
+          eventName,
           payload,
+          (response?: { success?: boolean; error?: string }) => {
+            clearTimeout(timeout);
+            if (response && response.success === false) {
+              setProcessingUnitActions((prev) => {
+                const next = new Map(prev);
+                next.delete(unit.id);
+                return next;
+              });
+              setError(response.error || "Action failed on server.");
+            }
+            // If response is undefined or success is true, the socket event will handle the update
+          },
         );
+      } else {
+        if (process.env.NODE_ENV === "development") {
+          console.error(
+            "Cannot emit unit action: Transaction ID is missing.",
+            payload,
+          );
+        }
         setProcessingUnitActions((prev) => {
-          // Remove processing state if emit failed
           const next = new Map(prev);
           next.delete(unit.id);
           return next;
@@ -744,11 +863,68 @@ export default function WorkInterceptedModal() {
         }
       }
 
+      // Optimistic update: immediately update UI for instant feedback
+      const optimisticUpdate = () => {
+        if (wantsToBecomeServed) {
+          // Optimistically mark as served
+          const optimisticUnit = {
+            ...unit,
+            status: Status.DONE,
+            servedById: accountId,
+            servedBy: { id: accountId, name: "You" } as ClientAccountIncluded,
+            completedAt: new Date(),
+          };
+
+          const updateUnitInService = (
+            service: AvailedServicesPropsForTransactions,
+          ): AvailedServicesPropsForTransactions => ({
+            ...service,
+            units: service.units.map((u) =>
+              u.id === unit.id ? optimisticUnit : u,
+            ),
+          });
+
+          setFetchedTransactions(
+            (prev) =>
+              prev?.map((tx) =>
+                tx.id === selectedTransaction?.id
+                  ? {
+                      ...tx,
+                      availedServices: tx.availedServices.map((s) =>
+                        s.id === unit.availedServiceId
+                          ? updateUnitInService(s)
+                          : s,
+                      ),
+                    }
+                  : tx,
+              ) ?? null,
+          );
+
+          setSelectedTransaction((prev) => {
+            if (prev && prev.id === selectedTransaction?.id) {
+              return {
+                ...prev,
+                availedServices: prev.availedServices.map((s) =>
+                  s.id === unit.availedServiceId ? updateUnitInService(s) : s,
+                ),
+              };
+            }
+            return prev;
+          });
+        }
+        // For unserve, we'll wait for server confirmation
+      };
+
       // Add unit ID and action type to processing state map
       setProcessingUnitActions((prev) =>
         new Map(prev).set(unit.id, wantsToBecomeServed ? "serve" : "unserve"),
       );
       setError(null); // Clear previous errors on new action
+
+      // Apply optimistic update for serve actions
+      if (wantsToBecomeServed) {
+        optimisticUpdate();
+      }
 
       // Determine the correct socket event name
       const eventName = wantsToBecomeServed
@@ -763,18 +939,52 @@ export default function WorkInterceptedModal() {
         transactionId: selectedTransaction?.id, // Ensure transactionId is available
       };
 
-      // Send event via socket
+      // Send event via socket with optimized error handling
       if (selectedTransaction?.id) {
-        // Ensure transactionId is available before emitting
-        console.log(`Emitting socket event: ${eventName}`, payload);
-        currentSocket.emit(eventName, payload);
-      } else {
-        console.error(
-          "Cannot emit unit action: Transaction ID is missing.",
+        if (process.env.NODE_ENV === "development") {
+          console.log(`Emitting socket event: ${eventName}`, payload);
+        }
+
+        // Use emit with acknowledgment for better reliability
+        const timeout = setTimeout(() => {
+          if (process.env.NODE_ENV === "development") {
+            console.warn(
+              `Socket event ${eventName} timeout for unit ${unit.id}`,
+            );
+          }
+          setProcessingUnitActions((prev) => {
+            const next = new Map(prev);
+            next.delete(unit.id);
+            return next;
+          });
+          setError("Action timed out. Please try again.");
+        }, 8000); // 8 second timeout (reduced for faster feedback)
+
+        // Emit with acknowledgment callback
+        currentSocket.emit(
+          eventName,
           payload,
+          (response?: { success?: boolean; error?: string }) => {
+            clearTimeout(timeout);
+            if (response && response.success === false) {
+              setProcessingUnitActions((prev) => {
+                const next = new Map(prev);
+                next.delete(unit.id);
+                return next;
+              });
+              setError(response.error || "Action failed on server.");
+            }
+            // If response is undefined or success is true, the socket event will handle the update
+          },
         );
+      } else {
+        if (process.env.NODE_ENV === "development") {
+          console.error(
+            "Cannot emit unit action: Transaction ID is missing.",
+            payload,
+          );
+        }
         setProcessingUnitActions((prev) => {
-          // Remove processing state if emit failed
           const next = new Map(prev);
           next.delete(unit.id);
           return next;
@@ -973,11 +1183,16 @@ export default function WorkInterceptedModal() {
                   </span>
                 </span>
               )}
-              {!socketConnected && (
-                <span className="flex items-center gap-1 text-red-500">
-                  <AlertCircle size={12} />{" "}
-                  <span className="font-medium">
-                    Socket Disconnected! Real-time updates may be delayed.
+              {socketConnected ? (
+                <span className="flex items-center gap-1 text-green-600">
+                  <div className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
+                  <span className="text-xs font-medium">Connected</span>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-orange-500">
+                  <AlertCircle size={12} />
+                  <span className="text-xs font-medium">
+                    Connecting... Real-time updates may be delayed.
                   </span>
                 </span>
               )}
@@ -1063,7 +1278,6 @@ export default function WorkInterceptedModal() {
 
                         // CSS classes based on unit status and assignment
                         let unitClasses = `flex flex-col rounded-lg border p-3 shadow-sm transition-opacity duration-150 `;
-                        // Add pulsing animation only when an action is processing for THIS unit
                         if (isProcessingUnit)
                           unitClasses += " animate-pulse opacity-60";
 
@@ -1300,13 +1514,20 @@ export default function WorkInterceptedModal() {
 
     return (
       <div className="h-full overflow-y-auto bg-customOffWhite">
-        {/* Socket Disconnected Banner */}
+        {/* Socket Connection Status Banner */}
         {!socketConnected && !loading && (
-          <div className="flex flex-shrink-0 items-center justify-center gap-2 border-b border-orange-200 bg-orange-100 p-2 text-center text-sm text-orange-700">
-            <AlertCircle className="inline h-4 w-4 flex-shrink-0" />
+          <div className="flex flex-shrink-0 items-center justify-center gap-2 border-b border-orange-200 bg-orange-50 p-2 text-center text-xs text-orange-700">
+            <Loader2 className="inline h-3 w-3 flex-shrink-0 animate-spin" />
             <span>
-              Socket connection unstable. Real-time updates may be delayed.
+              Connecting to server... Real-time updates will be available once
+              connected.
             </span>
+          </div>
+        )}
+        {socketConnected && (
+          <div className="flex flex-shrink-0 items-center justify-center gap-2 border-b border-green-200 bg-green-50 p-1.5 text-center text-xs text-green-700">
+            <div className="h-1.5 w-1.5 animate-pulse rounded-full bg-green-500" />
+            <span>Connected - Real-time updates active</span>
           </div>
         )}
         {/* General Error Banner (only when not viewing details) */}

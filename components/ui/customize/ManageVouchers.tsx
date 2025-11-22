@@ -13,9 +13,20 @@ import {
   getAllVouchers,
 } from "@/lib/ServerAction";
 import { Voucher as PrismaVoucher } from "@prisma/client";
-import Button from "@/components/Buttons/Button";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import {
   Plus,
   Edit3,
@@ -23,6 +34,7 @@ import {
   CheckCircle,
   XCircle,
   RotateCcw as RefreshIcon,
+  Loader2,
 } from "lucide-react";
 import {
   getCachedData,
@@ -42,6 +54,9 @@ export default function ManageVouchers() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingVoucher, setEditingVoucher] = useState<Voucher | null>(null);
   const [isPending, startTransition] = useTransition();
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteVoucherId, setPendingDeleteVoucherId] = useState<string | null>(null);
+  const [pendingDeleteVoucherCode, setPendingDeleteVoucherCode] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const loadData = useCallback(async (forceRefresh = false) => {
@@ -86,23 +101,58 @@ export default function ManageVouchers() {
     formRef.current?.reset();
   };
   const handleEdit = (voucher: Voucher) => {
-    if (voucher.usedAt) return alert("Cannot edit a used voucher.");
+    if (voucher.usedAt) {
+      toast.error("Cannot edit used voucher", {
+        description: "Vouchers that have been used cannot be edited.",
+      });
+      return;
+    }
     setEditingVoucher(voucher);
     setFormError(null);
     setIsModalOpen(true);
   };
-  const handleDelete = (voucherId: string) => {
-    if (!window.confirm("Delete this voucher permanently?")) return;
+
+  const handleDeleteClick = (voucher: Voucher) => {
+    setPendingDeleteVoucherId(voucher.id);
+    setPendingDeleteVoucherCode(voucher.code);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteVoucherId) {
+      setDeleteDialogOpen(false);
+      return;
+    }
     setListError(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
-      const res = await deleteVoucherAction(voucherId);
-      if (!res.success) setListError(res.message);
-      else {
-        invalidateCache(VOUCHERS_CACHE_KEY);
-        await loadData(true);
+      try {
+        const res = await deleteVoucherAction(pendingDeleteVoucherId);
+        if (!res.success) {
+          const errorMsg = res.message || "Failed to delete voucher.";
+          setListError(errorMsg);
+          toast.error("Failed to delete voucher", {
+            description: errorMsg,
+          });
+        } else {
+          toast.success("Voucher deleted", {
+            description: "The voucher has been successfully deleted.",
+          });
+          invalidateCache(VOUCHERS_CACHE_KEY);
+          await loadData(true);
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || "An unexpected error occurred.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteVoucherId(null);
+        setPendingDeleteVoucherCode(null);
       }
     });
-  };
+  }, [pendingDeleteVoucherId, loadData]);
   const handleSave = () => {
     if (!formRef.current) return setFormError("Form error.");
     setFormError(null);
@@ -122,10 +172,16 @@ export default function ManageVouchers() {
           setEditingVoucher(null);
           invalidateCache(VOUCHERS_CACHE_KEY);
           await loadData(true);
+          toast.success("Voucher saved", {
+            description: res.message || "The voucher has been saved successfully.",
+          });
         } else {
           let msg = res.message;
           if (res.errors) msg += ` (${Object.values(res.errors).join(", ")})`;
           setFormError(msg);
+          toast.error("Failed to save voucher", {
+            description: msg,
+          });
         }
       } catch (err) {
         setFormError("An unexpected error occurred.");
@@ -179,13 +235,18 @@ export default function ManageVouchers() {
       </div>
 
       {listError && !isModalOpen && (
-        <p className={errorMsgStyle}>{listError}</p>
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
       )}
 
-      {}
       <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         {isLoading ? (
-          <p className="py-10 text-center text-customBlack/70">Loading...</p>
+          <div className="p-4 space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
         ) : !listError && vouchers.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">No vouchers.</p>
         ) : (
@@ -223,40 +284,39 @@ export default function ManageVouchers() {
                   {}
                   <td className={`${tdStyleBase} hidden sm:table-cell`}>
                     {v.usedAt ? (
-                      <span
-                        className={`${statusBadgeBase} bg-red-100 text-red-700`}
-                      >
-                        <XCircle size={12} /> Used (
+                      <Badge variant="destructive" className="bg-red-100 text-red-700">
+                        <XCircle size={12} className="mr-1" /> Used (
                         {new Date(v.usedAt).toLocaleDateString()})
-                      </span>
+                      </Badge>
                     ) : (
-                      <span
-                        className={`${statusBadgeBase} bg-green-100 text-green-700`}
-                      >
-                        <CheckCircle size={12} /> Active
-                      </span>
+                      <Badge variant="default" className="bg-green-100 text-green-700">
+                        <CheckCircle size={12} className="mr-1" /> Active
+                      </Badge>
                     )}
                   </td>
-                  {}
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       onClick={() => handleEdit(v)}
                       disabled={!!v.usedAt || isPending}
-                      className={`mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50 ${v.usedAt ? "cursor-not-allowed" : ""}`}
+                      variant="ghost"
+                      size="sm"
+                      className={`mr-2 h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50 ${v.usedAt ? "cursor-not-allowed" : ""}`}
                       title={
                         v.usedAt ? "Cannot edit used voucher" : "Edit Value"
                       }
                     >
                       <Edit3 size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(v.id)}
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(v)}
                       disabled={isPending}
-                      className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                       title="Delete"
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -265,77 +325,136 @@ export default function ManageVouchers() {
         )}
       </div>
 
-      {}
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {editingVoucher ? "Edit Voucher Value" : "Add New Voucher"}
-          </DialogTitle>
-        }
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-md overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
-        {formError && <p className={modalErrorStyle}>{formError}</p>}
-        <form
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()}
-          className="space-y-4"
-        >
-          <div>
-            <label htmlFor="code" className={labelStyle}>
-              Voucher Code{" "}
-              {!editingVoucher && <span className="text-red-500">*</span>}
-            </label>
-            <input
-              type="text"
-              name="code"
-              id="code"
-              required={!editingVoucher}
-              defaultValue={editingVoucher?.code ?? ""}
-              disabled={!!editingVoucher}
-              className={`${inputStyle} font-mono uppercase tracking-wider`}
-            />
-            <p className="mt-1 text-xs text-gray-500">
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-md overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingVoucher ? "Edit Voucher Value" : "Add New Voucher"}
+            </DialogTitle>
+            <DialogDescription>
               {editingVoucher
-                ? "Code cannot be changed."
-                : "Unique code (auto uppercase)."}
-            </p>
-          </div>
-          <div>
-            <label htmlFor="value" className={labelStyle}>
-              Value (PHP Amount) <span className="text-red-500">*</span>
-            </label>
-            <input
-              type="number"
-              name="value"
-              id="value"
-              required
-              min="1"
-              step="1"
-              defaultValue={editingVoucher?.value ?? ""}
-              className={inputStyle}
-            />
-          </div>
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+                ? "Update the voucher value below."
+                : "Fill in the form below to create a new voucher."}
+            </DialogDescription>
+          </DialogHeader>
+          {formError && (
+            <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+              {formError}
+            </div>
+          )}
+          <form
+            ref={formRef}
+            onSubmit={(e) => e.preventDefault()}
+            className="space-y-4"
+          >
+            <div>
+              <Label htmlFor="code">
+                Voucher Code {!editingVoucher && <span className="text-red-500">*</span>}
+              </Label>
+              <Input
+                type="text"
+                name="code"
+                id="code"
+                required={!editingVoucher}
+                defaultValue={editingVoucher?.code ?? ""}
+                disabled={!!editingVoucher}
+                className="font-mono uppercase tracking-wider"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                {editingVoucher
+                  ? "Code cannot be changed."
+                  : "Unique code (auto uppercase)."}
+              </p>
+            </div>
+            <div>
+              <Label htmlFor="value">
+                Value (PHP Amount) <span className="text-red-500">*</span>
+              </Label>
+              <Input
+                type="number"
+                name="value"
+                id="value"
+                required
+                min="1"
+                step="1"
+                defaultValue={editingVoucher?.value ?? ""}
+              />
+            </div>
+          </form>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
               disabled={isSaving}
-              invert
+              variant="outline"
             >
               Cancel
             </Button>
             <Button type="button" onClick={handleSave} disabled={isSaving}>
-              {isSaving
-                ? "Saving..."
-                : editingVoucher
-                  ? "Save Value"
-                  : "Create Voucher"}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : editingVoucher ? (
+                "Save Value"
+              ) : (
+                "Create Voucher"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteVoucherId(null);
+          setPendingDeleteVoucherCode(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Voucher</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the voucher{" "}
+              <span className="font-semibold font-mono">{pendingDeleteVoucherCode}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteVoucherId(null);
+                setPendingDeleteVoucherCode(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Voucher
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

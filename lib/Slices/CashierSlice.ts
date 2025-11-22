@@ -488,6 +488,11 @@ export const CashierSlice = createSlice({
       state.appliedDiscountRules = [];
       calculateAllTotalsHelper(state);
     },
+    setDiscountRules(state, action: PayloadAction<UIDiscountRuleWithServices[]>) {
+      state.appliedDiscountRules = action.payload;
+      // Recalculate totals when setting discount rules
+      calculateAllTotalsHelper(state);
+    },
     setVoucher(state, action: PayloadAction<SetVoucherPayload>) {
       if (action.payload.isValid) {
         state.voucherCode = action.payload.code;

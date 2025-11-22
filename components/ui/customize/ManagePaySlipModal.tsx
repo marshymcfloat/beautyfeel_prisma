@@ -14,27 +14,37 @@ import {
 } from "date-fns";
 import {
   DayPicker,
-  // Remove DayPickerDefaultProps, CalendarDay
-  // Keep Modifiers
   Modifiers,
 } from "react-day-picker";
 import "react-day-picker/dist/style.css";
 
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
-import Button from "@/components/Buttons/Button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/Separator";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Loader2,
   AlertCircle,
   CheckCircle,
-  X,
   User,
   Tag,
   PhilippinePeso,
   CalendarDays,
-  // Remove Lock icon import for now
-  // Lock,
+  DollarSign,
+  XCircle,
+  AlertTriangle,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   PayslipData,
@@ -43,8 +53,6 @@ import {
   SalaryBreakdownItem,
 } from "@/lib/Types";
 import { PayslipStatus } from "@prisma/client";
-
-// Removed CustomDayProps type as we are not using a custom Day component
 
 type ManagePayslipModalProps = {
   isOpen: boolean;
@@ -129,21 +137,21 @@ const formatDateRange = (start: Date | string, end: Date | string): string => {
 
 const modifierStyles = {
   present: {
-    backgroundColor: "#A7F3D0", // green-100
-    color: "#065F46", // green-800
+    backgroundColor: "#A7F3D0",
+    color: "#065F46",
     fontWeight: "bold",
     borderRadius: "50%",
   },
   absent: {
-    backgroundColor: "#FECACA", // red-100
-    color: "#991B1B", // red-800
+    backgroundColor: "#FECACA",
+    color: "#991B1B",
     textDecoration: "line-through",
-    opacity: 0.9, // Adjusted for consistency
+    opacity: 0.9,
     borderRadius: "50%",
   },
   paid: {
-    backgroundColor: "#E5E7EB", // gray-200
-    color: "#9CA3AF", // gray-400
+    backgroundColor: "#E5E7EB",
+    color: "#9CA3AF",
     textDecoration: "line-through",
   },
 };
@@ -165,8 +173,6 @@ export default function ManagePayslipModal({
   isModalDataLoading,
   modalDataError,
 }: ManagePayslipModalProps) {
-  // Period dates from payslipData for the calendar range
-  // --- MOVE THESE DECLARATIONS UP ---
   const periodStartDate = useMemo(() => {
     const date = new Date(payslipData.periodStartDate);
     return isValid(date) ? date : undefined;
@@ -176,7 +182,6 @@ export default function ManagePayslipModal({
     const date = new Date(payslipData.periodEndDate);
     return isValid(date) ? date : undefined;
   }, [payslipData.periodEndDate]);
-  // --- END MOVE ---
 
   const initialMonth = useMemo(() => {
     const endDate =
@@ -206,7 +211,7 @@ export default function ManagePayslipModal({
     ) {
       setCurrentMonth(newInitialMonth);
     }
-  }, [payslipData.id, payslipData.periodEndDate, payslipData.periodStartDate]);
+  }, [payslipData.id, payslipData.periodEndDate, payslipData.periodStartDate, currentMonth]);
 
   const handleReleaseClick = () => {
     if (isReleasing || payslipData.status !== PayslipStatus.PENDING) return;
@@ -235,12 +240,11 @@ export default function ManagePayslipModal({
     });
   }, [rawAttendanceRecords, attendanceCountingStartDate]);
 
-  // Filtered Present and Absent days for the calendar modifiers
   const presentDays = useMemo(
     () =>
       filteredAttendanceRecordsForDisplay
         ?.filter((r) => r.isPresent)
-        .map((r) => startOfDay(new Date(r.date))) // Ensure startOfDay for comparison consistency
+        .map((r) => startOfDay(new Date(r.date)))
         .filter(isValid) ?? [],
     [filteredAttendanceRecordsForDisplay],
   );
@@ -249,14 +253,12 @@ export default function ManagePayslipModal({
     () =>
       filteredAttendanceRecordsForDisplay
         ?.filter((r) => !r.isPresent)
-        .map((r) => startOfDay(new Date(r.date))) // Ensure startOfDay for comparison consistency
+        .map((r) => startOfDay(new Date(r.date)))
         .filter(isValid) ?? [],
     [filteredAttendanceRecordsForDisplay],
   );
 
-  // Calculate days that are within the nominal payslip period BUT are already paid
   const paidDays = useMemo(() => {
-    // Access periodStartDate and periodEndDate here (now declared above)
     if (!periodStartDate || !periodEndDate || !lastReleasedPayslipEndDate)
       return [];
 
@@ -267,23 +269,18 @@ export default function ManagePayslipModal({
     const paidDates: Date[] = [];
     let currentDate = start;
 
-    // Iterate from the start of the payslip period up to the last paid date (inclusive)
-    // Ensure we don't go beyond the payslip's own end date
     while (
       isValid(currentDate) &&
       !isAfter(currentDate, end) &&
       !isAfter(currentDate, lastPaidEnd)
     ) {
-      // Only add the date if it's within the nominal payslip period and on or before the last paid date
-      // The loop condition handles being <= lastPaidEnd, and the outer loop handles <= nominalPeriodEnd
       if (!isBefore(currentDate, start)) {
-        // Ensure it's not before the nominal start just in case
         paidDates.push(currentDate);
       }
       currentDate = addDays(currentDate, 1);
     }
     return paidDates;
-  }, [periodStartDate, periodEndDate, lastReleasedPayslipEndDate]); // Dependencies are now correct
+  }, [periodStartDate, periodEndDate, lastReleasedPayslipEndDate]);
 
   const commissionFilteringTimestamp = useMemo(() => {
     if (!lastReleasedTimestamp || !isValid(new Date(lastReleasedTimestamp))) {
@@ -306,283 +303,322 @@ export default function ManagePayslipModal({
     });
   }, [rawBreakdownItems, commissionFilteringTimestamp]);
 
-  // We no longer need a separate lastPaidPeriodEndUTC memo, as the paidDays memo calculates the dates directly
+  // Show toast for release errors
+  useEffect(() => {
+    if (releaseError) {
+      toast.error("Failed to release salary", {
+        description: releaseError,
+      });
+    }
+  }, [releaseError]);
 
-  // Removed getDayCellClasses helper function
+  // Show toast for modal data errors
+  useEffect(() => {
+    if (modalDataError) {
+      toast.error("Failed to load payslip details", {
+        description: modalDataError,
+      });
+    }
+  }, [modalDataError]);
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title={
-        <DialogTitle>
-          {payslipData.status === PayslipStatus.PENDING
-            ? "Manage Payslip"
-            : "Payslip Details"}
-        </DialogTitle>
-      }
-      containerClassName="relative m-auto max-h-[90vh] w-full max-w-3xl overflow-y-auto rounded-lg bg-gray-50 shadow-xl flex flex-col"
-    >
-      <button
-        onClick={onClose}
-        className="absolute right-3 top-3 z-10 rounded-full p-1 text-gray-400 hover:bg-gray-200 hover:text-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-400"
-        aria-label="Close modal"
-      >
-        <X size={20} />
-      </button>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>
+            {payslipData.status === PayslipStatus.PENDING
+              ? "Manage Payslip"
+              : "Payslip Details"}
+          </DialogTitle>
+          <DialogDescription>
+            Review attendance and commission details for {payslipData.employeeName}
+          </DialogDescription>
+        </DialogHeader>
 
-      <div className="flex-grow space-y-4 overflow-y-auto p-4 sm:p-6">
-        <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
-          <h3 className="mb-2 text-base font-semibold text-gray-800 sm:text-lg">
-            Payslip Summary for {payslipData.employeeName}
-          </h3>
-          <p className="text-sm text-gray-600">
-            Period:{" "}
-            {periodStartDate && periodEndDate
-              ? formatDateRange(periodStartDate, periodEndDate)
-              : "Invalid Period Dates"}
-          </p>
-          {payslipData.status === PayslipStatus.RELEASED &&
-            payslipData.releasedDate && (
-              <p className="text-sm text-green-600">
-                Released: {format(new Date(payslipData.releasedDate), "PPpp")}
-              </p>
-            )}
-          <div className="mt-2 border-t pt-2 text-xs italic text-gray-500">
-            Attendance counted from:{" "}
-            {attendanceCountingStartDate && isValid(attendanceCountingStartDate)
-              ? format(attendanceCountingStartDate, "PP")
-              : "Beginning (No prior release)"}
-            <br /> Commissions counted from:{" "}
-            {commissionFilteringTimestamp &&
-            isValid(commissionFilteringTimestamp)
-              ? format(commissionFilteringTimestamp, "PPpp")
-              : "Beginning (No prior release)"}
-          </div>
-
-          <div className="mt-3 space-y-1 border-t border-gray-200 pt-3 text-sm">
-            <p className="flex justify-between">
-              <span>Base Salary:</span>{" "}
-              <span>{formatCurrency(payslipData.baseSalary)}</span>
-            </p>
-            <p className="flex justify-between">
-              <span>Total Commissions:</span>{" "}
-              <span className="font-medium text-green-600">
-                (+) {formatCurrency(payslipData.totalCommissions)}
-              </span>
-            </p>
-            <p className="flex justify-between">
-              <span>Total Bonuses:</span>{" "}
-              <span className="font-medium text-green-600">
-                (+) {formatCurrency(payslipData.totalBonuses)}
-              </span>
-            </p>
-            <p className="flex justify-between">
-              <span>Total Deductions:</span>{" "}
-              <span className="font-medium text-red-600">
-                (-) {formatCurrency(payslipData.totalDeductions)}
-              </span>
-            </p>
-            <p className="mt-2 flex justify-between border-t-2 border-gray-300 pt-2 text-base font-bold text-blue-700">
-              <span>Net Pay:</span>
-              <span>{formatCurrency(payslipData.netPay)}</span>
-            </p>
-          </div>
-        </div>
-
-        {isModalDataLoading && (
-          <div className="flex items-center justify-center rounded border border-gray-200 bg-white p-6 text-gray-500 shadow-sm">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading details...
-          </div>
-        )}
-        {modalDataError && !isModalDataLoading && (
-          <div className="flex items-center gap-2 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-700 shadow-sm">
-            <AlertCircle size={18} /> <span>{modalDataError}</span>
-          </div>
-        )}
-
-        {!isModalDataLoading && !modalDataError && (
-          <>
-            <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
-              <h4 className="mb-3 text-center text-base font-semibold text-gray-800 sm:text-left">
-                Attendance ({format(currentMonth, "MMMM yyyy")})
-              </h4>
-              <div className="flex flex-col items-center">
-                {periodStartDate && periodEndDate ? (
-                  <DayPicker
-                    key={currentMonth.toISOString()}
-                    showOutsideDays
-                    fixedWeeks
-                    month={currentMonth}
-                    onMonthChange={setCurrentMonth}
-                    fromDate={periodStartDate}
-                    toDate={periodEndDate}
-                    modifiers={{
-                      // Pass the filtered days as modifiers
-                      present: presentDays,
-                      absent: absentDays,
-                      paid: paidDays, // New modifier for paid days
-                    }}
-                    // Use modifiersStyles to apply styles based on the modifiers
-                    modifiersStyles={modifierStyles}
-                    className="text-sm [&_button:focus]:ring-1 [&_button:focus]:ring-offset-1 [&_button]:rounded-full [&_button]:border-0"
-                    captionLayout="dropdown"
-                    fromYear={periodStartDate.getFullYear()}
-                    toYear={periodEndDate.getFullYear()}
-                    // Remove custom components.Day renderer
-                    // components={{ Day: ... }}
-                  />
-                ) : (
-                  <p className="py-4 text-center italic text-red-600">
-                    Cannot display calendar due to invalid period dates.
-                  </p>
-                )}
-                <div className="mt-3 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-gray-600">
-                  <span className="flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-3 w-3 rounded-full"
-                      style={{
-                        backgroundColor: modifierStyles.present.backgroundColor,
-                      }}
-                    ></span>{" "}
-                    Present ({presentDays.length})
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-3 w-3 rounded-full"
-                      style={{
-                        backgroundColor: modifierStyles.absent.backgroundColor,
-                      }}
-                    ></span>{" "}
-                    Absent ({absentDays.length})
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span
-                      className="inline-block h-3 w-3 rounded-full"
-                      style={{
-                        backgroundColor: modifierStyles.paid.backgroundColor, // Use paid modifier color
-                      }}
-                    ></span>{" "}
-                    Paid/Covered ({paidDays.length}){" "}
-                    {/* Add count for paid days */}
-                  </span>
-                </div>
-              </div>
-              <p className="mt-2 text-center text-[0.7rem] italic text-gray-500">
-                Calendar shows attendance within the payslip period (
+        <div className="space-y-6 py-4">
+          {/* Payslip Summary Card */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Payslip Summary</CardTitle>
+              <CardDescription>
+                Period:{" "}
                 {periodStartDate && periodEndDate
                   ? formatDateRange(periodStartDate, periodEndDate)
-                  : "Invalid Range"}
-                ). Days covered by a previous payout (
-                {lastReleasedPayslipEndDate
-                  ? `up to ${format(new Date(lastReleasedPayslipEndDate), "PP")}`
-                  : "none"}
-                ) are marked as Paid/Covered.
-              </p>
-            </div>
+                  : "Invalid Period Dates"}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {payslipData.status === PayslipStatus.RELEASED &&
+                payslipData.releasedDate && (
+                  <div className="flex items-center gap-2 rounded-md bg-green-50 px-3 py-2">
+                    <CheckCircle className="h-4 w-4 text-green-600" />
+                    <span className="text-sm font-medium text-green-800">
+                      Released: {format(new Date(payslipData.releasedDate), "PPpp")}
+                    </span>
+                  </div>
+                )}
 
-            <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-sm sm:p-4">
-              <h4 className="mb-3 text-center text-base font-semibold text-gray-800 sm:text-left">
-                Commission Breakdown for Period
-              </h4>
-              {/* Display the filtered breakdown items */}
-              {filteredBreakdownItemsForDisplay.length > 0 ? (
-                <ul className="max-h-[250px] space-y-2 overflow-y-auto border-t border-gray-100 pr-1 pt-2">
-                  {filteredBreakdownItemsForDisplay.map((item) => (
-                    <li
-                      key={item.id}
-                      className="rounded-md border border-gray-100 bg-gray-50/50 p-2.5 text-xs shadow-sm"
-                    >
-                      <div className="mb-1 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                        <span className="flex items-center gap-1.5 font-medium text-gray-800">
-                          <Tag size={12} className="text-blue-500" />{" "}
-                          {item.serviceTitle || "Unknown Service"}
-                        </span>
-                        <span className="whitespace-nowrap font-semibold text-green-600">
-                          +{formatCurrency(item.commissionEarned)}
-                        </span>
-                      </div>
-                      <div className="space-y-0.5 text-gray-500">
-                        <p className="flex items-center gap-1">
-                          <User size={10} /> Client:{" "}
-                          {item.customerName || "N/A"}
-                        </p>
-                        <p className="flex items-center gap-1">
-                          <PhilippinePeso size={10} /> Price:{" "}
-                          {formatCurrency(item.servicePrice)}
-                        </p>
-                        <p className="flex items-center gap-1">
-                          <CalendarDays size={10} /> Date Served:{" "}
-                          {format(new Date(item.completedAt!), "PPpp")}
-                        </p>
-                        {item.originatingSetTitle && (
-                          <p className="flex items-center gap-1">
-                            <Tag size={10} /> Set: {item.originatingSetTitle}
-                          </p>
-                        )}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="py-4 text-center italic text-gray-500">
-                  {rawBreakdownItems?.length > 0 &&
-                  commissionFilteringTimestamp &&
-                  isValid(commissionFilteringTimestamp)
-                    ? `No commissions earned after ${format(commissionFilteringTimestamp, "PPpp")}.`
-                    : "No commissions earned yet in this period."}
+              <div className="space-y-2 rounded-lg bg-muted/50 p-4 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Base Salary:</span>
+                  <span className="font-medium">{formatCurrency(payslipData.baseSalary)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Total Commissions:</span>
+                  <span className="font-medium text-green-600">
+                    +{formatCurrency(payslipData.totalCommissions)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Total Bonuses:</span>
+                  <span className="font-medium text-green-600">
+                    +{formatCurrency(payslipData.totalBonuses)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Total Deductions:</span>
+                  <span className="font-medium text-red-600">
+                    -{formatCurrency(payslipData.totalDeductions)}
+                  </span>
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between text-base font-bold">
+                  <span>Net Pay:</span>
+                  <span className="text-blue-700">{formatCurrency(payslipData.netPay)}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1 rounded-md bg-muted/30 p-3 text-xs text-muted-foreground">
+                <p>
+                  <span className="font-medium">Attendance counted from:</span>{" "}
+                  {attendanceCountingStartDate && isValid(attendanceCountingStartDate)
+                    ? format(attendanceCountingStartDate, "PP")
+                    : "Beginning (No prior release)"}
                 </p>
-              )}
-              <p className="mt-2 text-center text-[0.7rem] italic text-gray-500">
-                Commissions included are those completed after{" "}
-                {commissionFilteringTimestamp &&
-                isValid(commissionFilteringTimestamp)
-                  ? format(commissionFilteringTimestamp, "PPpp")
-                  : "the employee's start date"}
-                .
-              </p>
-            </div>
-          </>
-        )}
-      </div>
+                <p>
+                  <span className="font-medium">Commissions counted from:</span>{" "}
+                  {commissionFilteringTimestamp &&
+                  isValid(commissionFilteringTimestamp)
+                    ? format(commissionFilteringTimestamp, "PPpp")
+                    : "Beginning (No prior release)"}
+                </p>
+              </div>
+            </CardContent>
+          </Card>
 
-      <div className="flex shrink-0 items-center justify-between gap-4 border-t border-gray-200 bg-gray-100 p-4">
-        <div className="flex-grow text-left">
+          {/* Loading State */}
+          {isModalDataLoading && (
+            <Card>
+              <CardContent className="flex items-center justify-center py-8">
+                <Loader2 className="mr-2 h-5 w-5 animate-spin text-muted-foreground" />
+                <span className="text-muted-foreground">Loading details...</span>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Error State */}
+          {modalDataError && !isModalDataLoading && (
+            <Card>
+              <CardContent className="flex items-center gap-3 py-6 text-destructive">
+                <AlertCircle className="h-5 w-5" />
+                <span>{modalDataError}</span>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Attendance Calendar and Commission Breakdown */}
+          {!isModalDataLoading && !modalDataError && (
+            <>
+              {/* Attendance Calendar Card */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <CalendarDays className="h-5 w-5" />
+                    Attendance ({format(currentMonth, "MMMM yyyy")})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-col items-center">
+                    {periodStartDate && periodEndDate ? (
+                      <DayPicker
+                        key={currentMonth.toISOString()}
+                        showOutsideDays
+                        fixedWeeks
+                        month={currentMonth}
+                        onMonthChange={setCurrentMonth}
+                        fromDate={periodStartDate}
+                        toDate={periodEndDate}
+                        modifiers={{
+                          present: presentDays,
+                          absent: absentDays,
+                          paid: paidDays,
+                        }}
+                        modifiersStyles={modifierStyles}
+                        className="text-sm [&_button:focus]:ring-1 [&_button:focus]:ring-offset-1 [&_button]:rounded-full [&_button]:border-0"
+                        captionLayout="dropdown"
+                        fromYear={periodStartDate.getFullYear()}
+                        toYear={periodEndDate.getFullYear()}
+                      />
+                    ) : (
+                      <div className="py-8 text-center text-destructive">
+                        Cannot display calendar due to invalid period dates.
+                      </div>
+                    )}
+                    <div className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-3 w-3 rounded-full"
+                          style={{
+                            backgroundColor: modifierStyles.present.backgroundColor,
+                          }}
+                        />
+                        Present ({presentDays.length})
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-3 w-3 rounded-full"
+                          style={{
+                            backgroundColor: modifierStyles.absent.backgroundColor,
+                          }}
+                        />
+                        Absent ({absentDays.length})
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className="inline-block h-3 w-3 rounded-full"
+                          style={{
+                            backgroundColor: modifierStyles.paid.backgroundColor,
+                          }}
+                        />
+                        Paid/Covered ({paidDays.length})
+                      </span>
+                    </div>
+                  </div>
+                  <p className="mt-4 text-center text-xs text-muted-foreground">
+                    Calendar shows attendance within the payslip period (
+                    {periodStartDate && periodEndDate
+                      ? formatDateRange(periodStartDate, periodEndDate)
+                      : "Invalid Range"}
+                    ). Days covered by a previous payout (
+                    {lastReleasedPayslipEndDate
+                      ? `up to ${format(new Date(lastReleasedPayslipEndDate), "PP")}`
+                      : "none"}
+                    ) are marked as Paid/Covered.
+                  </p>
+                </CardContent>
+              </Card>
+
+              {/* Commission Breakdown Card */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <DollarSign className="h-5 w-5" />
+                    Commission Breakdown for Period
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {filteredBreakdownItemsForDisplay.length > 0 ? (
+                    <ScrollArea className="h-[300px] pr-4">
+                      <div className="space-y-3">
+                        {filteredBreakdownItemsForDisplay.map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded-lg border bg-card p-4 shadow-sm"
+                          >
+                            <div className="mb-3 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Tag className="h-4 w-4 text-blue-500" />
+                                <span className="font-medium text-sm">
+                                  {item.serviceTitle || "Unknown Service"}
+                                </span>
+                              </div>
+                              <Badge className="bg-green-600 text-white">
+                                +{formatCurrency(item.commissionEarned)}
+                              </Badge>
+                            </div>
+                            <div className="space-y-1.5 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-2">
+                                <User className="h-3 w-3" />
+                                <span>Client: {item.customerName || "N/A"}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <PhilippinePeso className="h-3 w-3" />
+                                <span>Price: {formatCurrency(item.servicePrice)}</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <CalendarDays className="h-3 w-3" />
+                                <span>
+                                  Date Served:{" "}
+                                  {format(new Date(item.completedAt!), "PPpp")}
+                                </span>
+                              </div>
+                              {item.originatingSetTitle && (
+                                <div className="flex items-center gap-2">
+                                  <Tag className="h-3 w-3" />
+                                  <span>Set: {item.originatingSetTitle}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  ) : (
+                    <div className="py-8 text-center text-muted-foreground">
+                      {rawBreakdownItems?.length > 0 &&
+                      commissionFilteringTimestamp &&
+                      isValid(commissionFilteringTimestamp)
+                        ? `No commissions earned after ${format(commissionFilteringTimestamp, "PPpp")}.`
+                        : "No commissions earned yet in this period."}
+                    </div>
+                  )}
+                  <p className="mt-4 text-center text-xs text-muted-foreground">
+                    Commissions included are those completed after{" "}
+                    {commissionFilteringTimestamp &&
+                    isValid(commissionFilteringTimestamp)
+                      ? format(commissionFilteringTimestamp, "PPpp")
+                      : "the employee's start date"}
+                    .
+                  </p>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
+
+        <DialogFooter className="flex-col sm:flex-row sm:justify-between sm:gap-0 gap-2">
           {releaseError && (
-            <p className="flex items-center gap-1 text-sm text-red-600">
-              <AlertCircle size={14} /> {releaseError}
-            </p>
+            <div className="flex w-full items-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive sm:w-auto">
+              <AlertCircle className="h-4 w-4" />
+              <span>{releaseError}</span>
+            </div>
           )}
-        </div>
-        <div className="flex gap-3">
-          <Button
-            type="button"
-            onClick={onClose}
-            variant="secondary"
-            size="sm"
-            disabled={isReleasing}
-          >
-            Close
-          </Button>
-          {payslipData.status === PayslipStatus.PENDING && (
-            <Button
-              type="button"
-              onClick={handleReleaseClick}
-              disabled={isReleasing || isModalDataLoading}
-              size="sm"
-              variant="primary"
-              className="bg-green-600 hover:bg-green-700 focus-visible:ring-green-500"
-            >
-              {isReleasing ? (
-                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-              ) : (
-                <CheckCircle size={16} className="mr-1.5" />
-              )}
-              {isReleasing ? "Releasing..." : "Release Salary"}
+          <div className="flex w-full gap-2 sm:w-auto">
+            <Button variant="outline" onClick={onClose} disabled={isReleasing}>
+              Close
             </Button>
-          )}
-        </div>
-      </div>
-    </Modal>
+            {payslipData.status === PayslipStatus.PENDING && (
+              <Button
+                onClick={handleReleaseClick}
+                disabled={isReleasing || isModalDataLoading}
+                className="bg-green-600 hover:bg-green-700"
+              >
+                {isReleasing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Releasing...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="mr-2 h-4 w-4" />
+                    Release Salary
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

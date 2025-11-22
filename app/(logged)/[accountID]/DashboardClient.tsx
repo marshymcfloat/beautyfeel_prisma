@@ -8,7 +8,7 @@ import React, {
   useRef,
 } from "react";
 import { useSession } from "next-auth/react";
-import { useParams, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Status, Role, Branch as PrismaBranch } from "@prisma/client";
 import {
@@ -24,7 +24,6 @@ import {
   FileText,
 } from "lucide-react";
 import { io, Socket } from "socket.io-client";
-import { isValid, isAfter, addDays, startOfDay, isPast } from "date-fns";
 
 import {
   getCurrentAccountData,
@@ -33,7 +32,7 @@ import {
 } from "@/lib/ServerAction";
 
 import EmployeeWorkHistory from "@/components/ui/EmployeeWorkHistory";
-import CalendarUI from "@/components/ui/Calendar";
+import { Calendar } from "@/components/ui/Calendar";
 import UserServedTodayWidget from "@/components/ui/UserServedTodayWidget";
 import DialogTitle from "@/components/Dialog/DialogTitle";
 import Button from "@/components/Buttons/Button";
@@ -48,7 +47,6 @@ import ExpandedSales from "@/components/ui/ExpandedSales";
 import {
   AccountData,
   AvailedServicesProps,
-  TransactionProps,
   TransactionPropsForTransactions,
   MobileWidgetKey,
   SalesDataDetailed,
@@ -148,7 +146,6 @@ export default function DashboardClient({
     }
   }, []);
 
-  // Socket connection effect
   useEffect(() => {
     if (!(sessionStatus === "authenticated" && loggedInUserId)) {
       if (socketRef.current) {
@@ -217,7 +214,6 @@ export default function DashboardClient({
     };
   }, [sessionStatus, loggedInUserId]);
 
-  // Refresh function for client-side updates
   const refreshData = useCallback(async () => {
     if (!accountIdFromUrl || !loggedInUserId) return;
 
@@ -760,7 +756,7 @@ export default function DashboardClient({
           <div
             className={`flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-between md:col-span-2 md:gap-6 xl:col-span-1 xl:flex-row xl:flex-wrap xl:gap-4 ${isOwner || isAttendanceChecker ? "xl:col-start-3 xl:row-start-1" : "xl:col-start-1 xl:row-start-1"}`}
           >
-            <CalendarUI className="aspect-square w-full sm:w-auto xl:flex-1" />
+            <Calendar className="aspect-square w-full sm:w-auto xl:flex-1" />
             {loggedInUserId && (
               <UserServedTodayWidget
                 loggedInUserId={loggedInUserId}
@@ -838,7 +834,7 @@ export default function DashboardClient({
       <div className="block xl:hidden">
         {!isMobileViewModalOpen && (
           <div className="grid grid-cols-2 gap-3 p-2 sm:grid-cols-3 sm:gap-4">
-            <CalendarUI className="flex flex-col rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm" />
+            <Calendar className="flex flex-col rounded-lg border border-customGray/30 bg-customOffWhite/90 p-4 shadow-custom backdrop-blur-sm" />
             {loggedInUserId && (
               <UserServedTodayWidget loggedInUserId={loggedInUserId} />
             )}

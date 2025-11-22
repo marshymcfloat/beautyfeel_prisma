@@ -14,12 +14,25 @@ import {
   getAccountsAction,
   getBranchesForSelectAction,
 } from "@/lib/ServerAction";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 import { AccountForManagement, BranchForSelect } from "@/lib/Types";
 import { Role } from "@prisma/client";
-import { Plus, Edit3, Trash2, RefreshCw } from "lucide-react";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
+import { Plus, Edit3, Trash2, RefreshCw, Loader2 } from "lucide-react";
 import {
   getCachedData,
   setCachedData,
@@ -146,24 +159,57 @@ export default function ManageAccounts() {
     }
   }, [isModalOpen]);
 
-  const handleDelete = (accountId: string) => {
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this account? This action cannot be undone.",
-      )
-    )
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteAccountId, setPendingDeleteAccountId] = useState<string | null>(null);
+  const [pendingDeleteAccountName, setPendingDeleteAccountName] = useState<string | null>(null);
+
+  const handleDeleteClick = (account: AccountForManagement) => {
+    if (account.role.includes(Role.OWNER)) {
+      toast.error("Cannot delete OWNER", {
+        description: "OWNER accounts cannot be deleted.",
+      });
       return;
+    }
+    setPendingDeleteAccountId(account.id);
+    setPendingDeleteAccountName(account.name);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDelete = useCallback(async () => {
+    if (!pendingDeleteAccountId) {
+      setDeleteDialogOpen(false);
+      return;
+    }
     setListError(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
-      const res = await deleteAccountAction(accountId);
-      if (!res.success)
-        setListError(res.message || "Failed to delete account.");
-      else {
-        invalidateCache(ACCOUNTS_CACHE_KEY);
-        await loadData();
+      try {
+        const res = await deleteAccountAction(pendingDeleteAccountId);
+        if (!res.success) {
+          const errorMsg = res.message || "Failed to delete account.";
+          setListError(errorMsg);
+          toast.error("Failed to delete account", {
+            description: errorMsg,
+          });
+        } else {
+          toast.success("Account deleted", {
+            description: "The account has been successfully deleted.",
+          });
+          invalidateCache(ACCOUNTS_CACHE_KEY);
+          await loadData();
+        }
+      } catch (error: any) {
+        const errorMsg = error.message || "An unexpected error occurred.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteAccountId(null);
+        setPendingDeleteAccountName(null);
       }
     });
-  };
+  }, [pendingDeleteAccountId, loadData]);
 
   const handleSave = () => {
     if (!formRef.current) {
@@ -216,10 +262,16 @@ export default function ManageAccounts() {
           closeModal();
           invalidateCache(ACCOUNTS_CACHE_KEY);
           await loadData();
-          alert(res.message || "Account saved successfully!");
+          toast.success("Account saved", {
+            description: res.message || "The account has been saved successfully.",
+          });
         } else {
-          setFormError(res.message || "An error occurred.");
+          const errorMsg = res.message || "An error occurred.";
+          setFormError(errorMsg);
           if (res.errors) setFieldErrors(res.errors);
+          toast.error("Failed to save account", {
+            description: errorMsg,
+          });
         }
       } catch (err: any) {
         setFormError(
@@ -340,18 +392,22 @@ export default function ManageAccounts() {
                     )}
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       onClick={() => handleEdit(a)}
                       disabled={isPending}
-                      className="mr-2 inline-block p-1 text-indigo-600 hover:text-indigo-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-indigo-600 hover:text-indigo-800 hover:bg-indigo-50"
                       title="Edit"
                     >
                       <Edit3 size={16} />
-                    </button>
-                    <button
-                      onClick={() => handleDelete(a.id)}
+                    </Button>
+                    <Button
+                      onClick={() => handleDeleteClick(a)}
                       disabled={isPending || a.role.includes(Role.OWNER)}
-                      className={`inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50 ${a.role.includes(Role.OWNER) ? "cursor-not-allowed" : ""}`}
+                      variant="ghost"
+                      size="sm"
+                      className={`h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50 ${a.role.includes(Role.OWNER) ? "cursor-not-allowed" : ""}`}
                       title={
                         a.role.includes(Role.OWNER)
                           ? "Cannot delete OWNER"
@@ -359,7 +415,7 @@ export default function ManageAccounts() {
                       }
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -368,36 +424,43 @@ export default function ManageAccounts() {
         )}
       </div>
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={
-          <DialogTitle>
-            {editingAccount ? "Edit Account" : "Add New Account"}
-          </DialogTitle>
-        }
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
-        {formError && <p className={modalErrorStyle}>{formError}</p>}
-        <form
-          key={editingAccount?.id ?? "new-account-form"}
-          ref={formRef}
-          onSubmit={(e) => e.preventDefault()}
-          className="space-y-4"
-        >
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>
+              {editingAccount ? "Edit Account" : "Add New Account"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingAccount
+                ? "Update the account information below."
+                : "Fill in the form below to create a new account."}
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[calc(90vh-200px)]">
+            {formError && (
+              <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                {formError}
+              </div>
+            )}
+            <form
+              key={editingAccount?.id ?? "new-account-form"}
+              ref={formRef}
+              onSubmit={(e) => e.preventDefault()}
+              className="space-y-4"
+            >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="username" className={labelStyle}>
+              <Label htmlFor="username">
                 Username*
-              </label>
-              <input
+              </Label>
+              <Input
                 type="text"
                 name="username"
                 id="username"
                 required
                 maxLength={20}
                 defaultValue={editingAccount?.username ?? ""}
-                className={inputStyle(!!fieldErrors.username)}
+                className={fieldErrors.username ? "border-destructive" : ""}
                 aria-invalid={!!fieldErrors.username}
                 aria-describedby={
                   fieldErrors.username ? "username-error" : undefined
@@ -408,19 +471,19 @@ export default function ManageAccounts() {
                   {fieldErrors.username.join(", ")}
                 </p>
               )}
-              <p className="mt-1 text-xs text-gray-500">Max 20 chars.</p>
+              <p className="mt-1 text-xs text-muted-foreground">Max 20 chars.</p>
             </div>
             <div>
-              <label htmlFor="name" className={labelStyle}>
+              <Label htmlFor="name">
                 Full Name*
-              </label>
-              <input
+              </Label>
+              <Input
                 type="text"
                 name="name"
                 id="name"
                 required
                 defaultValue={editingAccount?.name ?? ""}
-                className={inputStyle(!!fieldErrors.name)}
+                className={fieldErrors.name ? "border-destructive" : ""}
                 aria-invalid={!!fieldErrors.name}
                 aria-describedby={fieldErrors.name ? "name-error" : undefined}
               />
@@ -431,16 +494,16 @@ export default function ManageAccounts() {
               )}
             </div>
             <div>
-              <label htmlFor="email" className={labelStyle}>
+              <Label htmlFor="email">
                 Email{editingAccount ? "" : "*"}
-              </label>
-              <input
+              </Label>
+              <Input
                 type="email"
                 name="email"
                 id="email"
                 required={!editingAccount}
                 defaultValue={editingAccount?.email ?? ""}
-                className={inputStyle(!!fieldErrors.email)}
+                className={fieldErrors.email ? "border-destructive" : ""}
                 aria-invalid={!!fieldErrors.email}
                 aria-describedby={fieldErrors.email ? "email-error" : undefined}
               />
@@ -450,16 +513,16 @@ export default function ManageAccounts() {
                 </p>
               )}
               {!editingAccount && (
-                <p className="mt-1 text-xs text-gray-500">
+                <p className="mt-1 text-xs text-muted-foreground">
                   Required. A temporary password will be sent.
                 </p>
               )}
             </div>
             <div>
-              <label htmlFor="dailyRate" className={labelStyle}>
+              <Label htmlFor="dailyRate">
                 Daily Rate (PHP)*
-              </label>
-              <input
+              </Label>
+              <Input
                 type="number"
                 name="dailyRate"
                 id="dailyRate"
@@ -467,7 +530,7 @@ export default function ManageAccounts() {
                 min="0"
                 step="1"
                 defaultValue={editingAccount?.dailyRate?.toString() ?? "350"}
-                className={inputStyle(!!fieldErrors.dailyRate)}
+                className={fieldErrors.dailyRate ? "border-destructive" : ""}
                 placeholder="e.g., 350"
                 aria-invalid={!!fieldErrors.dailyRate}
                 aria-describedby={
@@ -479,7 +542,7 @@ export default function ManageAccounts() {
                   {fieldErrors.dailyRate.join(", ")}
                 </p>
               )}
-              <p className="mt-1 text-xs text-gray-500">
+              <p className="mt-1 text-xs text-muted-foreground">
                 e.g., 350 for ₱350.00
               </p>
             </div>
@@ -541,25 +604,82 @@ export default function ManageAccounts() {
               <p className={fieldErrorStyle}>{fieldErrors.roles.join(", ")}</p>
             )}
           </fieldset>
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+            </form>
+          </ScrollArea>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
               disabled={isSaving}
-              invert
+              variant="outline"
             >
               Cancel
             </Button>
             <Button type="button" onClick={handleSave} disabled={isSaving}>
-              {isSaving
-                ? "Saving..."
-                : editingAccount
-                  ? "Save Changes"
-                  : "Create Account"}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : editingAccount ? (
+                "Save Changes"
+              ) : (
+                "Create Account"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteAccountId(null);
+          setPendingDeleteAccountName(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Account</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete the account for{" "}
+              <span className="font-semibold">{pendingDeleteAccountName}</span>?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteAccountId(null);
+                setPendingDeleteAccountName(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Account
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

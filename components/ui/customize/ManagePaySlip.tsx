@@ -3,7 +3,28 @@
 
 import React, { useState, useCallback, useEffect, useTransition } from "react";
 import ManagePayslipModal from "./ManagePaySlipModal";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { toast } from "sonner";
 import {
   Loader2,
   AlertCircle,
@@ -348,8 +369,6 @@ export default function ManagePayslips() {
             : null,
         );
 
-        // Fetch raw attendance and breakdown data for the *nominal period* of the payslip.
-        // The modal component will then use lastReleasedPayslipEndDate/Timestamp to FILTER this raw data for DISPLAY.
         const rawAttendanceData = await getAttendanceForPeriod(
           payslipSummary.employeeId,
           summaryPeriodStartDate,
@@ -403,6 +422,9 @@ export default function ManagePayslips() {
   const handleReleaseSalary: ReleaseSalaryHandler = useCallback(
     async (payslipId: string) => {
       if (!adminId) {
+        toast.error("Admin ID not found", {
+          description: "Please refresh the page and try again.",
+        });
         setReleaseError("Admin ID not found.");
         return;
       }
@@ -410,41 +432,31 @@ export default function ManagePayslips() {
       startReleaseTransition(async () => {
         try {
           await releaseSalary(payslipId, adminId);
-          // Invalidate cache for both ManagePayslips list and potentially the individual payslip
+          toast.success("Salary released", {
+            description: "The payslip has been successfully released.",
+          });
           invalidateCache(PAYSLIPS_LIST_CACHE_KEY);
-          // No specific cache key for a single payslip needed with current structure,
-          // as we refetch the list and find it.
-
-          // After releasing, refresh the list.
-          // We pass `true` to force a server re-fetch.
           const updatedPayslipsList = await loadPayslips(filterStatus, true);
 
-          // If the modal is still open and it was the payslip we just released:
           if (isModalOpen && selectedPayslip?.id === payslipId) {
-            // Find the updated payslip object in the newly loaded list
             const updatedPayslip = updatedPayslipsList.find(
               (p) => p.id === payslipId,
             );
 
-            // Re-open/update the modal with the found updated data
             if (updatedPayslip) {
-              // Call handleOpenModal again with the updated payslip data
-              // This will re-fetch the modal-specific attendance/breakdown data
-              // and update the status/releasedDate in the modal header.
               await handleOpenModal(updatedPayslip);
             } else {
-              // If for some reason the released payslip isn't found in the new list
-              // (e.g., filter changed, or list fetch failed), just close the modal.
               handleCloseModal();
-              // Optionally show an alert/error that the specific payslip couldn't be reloaded
             }
           } else {
-            // If the modal was not open for this payslip, just ensure list is refreshed
-            handleCloseModal(); // Close modal just in case (doesn't hurt if already closed)
+            handleCloseModal();
           }
         } catch (error: any) {
-          setReleaseError(error.message || "Failed to release salary.");
-          // Re-load payslips list even on error to show potential status changes/failures
+          const errorMsg = error.message || "Failed to release salary.";
+          setReleaseError(errorMsg);
+          toast.error("Failed to release salary", {
+            description: errorMsg,
+          });
           loadPayslips(filterStatus, true);
         }
       });
@@ -457,7 +469,7 @@ export default function ManagePayslips() {
       isModalOpen,
       selectedPayslip,
       handleOpenModal,
-      releaseSalary, // Added dependency
+      releaseSalary,
     ],
   );
 
@@ -484,28 +496,32 @@ export default function ManagePayslips() {
             newPermissionValue,
           );
           if (result.success) {
-            setPermissionUpdateSuccess(result.message || "Permission updated.");
+            toast.success("Permission updated", {
+              description:
+                result.message ||
+                "Employee payslip request permission has been updated.",
+              duration: 2000,
+            });
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
-            // Re-fetch accounts list after successful update
             loadAccounts(true);
           } else {
-            setPermissionUpdateError(
-              result.error || result.message || "Failed to update permission.",
-            );
-            setAccounts(originalAccounts); // Revert on failure
+            const errorMsg =
+              result.error || result.message || "Failed to update permission.";
+            toast.error("Failed to update permission", {
+              description: errorMsg,
+            });
+            setAccounts(originalAccounts);
           }
         } catch (error: any) {
-          setPermissionUpdateError(
+          const errorMsg =
             error.message ||
-              "An unexpected error occurred during permission update.",
-          );
-          setAccounts(originalAccounts); // Revert on failure
+            "An unexpected error occurred during permission update.";
+          toast.error("Error", {
+            description: errorMsg,
+          });
+          setAccounts(originalAccounts);
         } finally {
           setUpdatingAccountId(null);
-          setTimeout(() => {
-            setPermissionUpdateSuccess(null);
-            setPermissionUpdateError(null);
-          }, 3000);
         }
       });
     },
@@ -529,30 +545,32 @@ export default function ManagePayslips() {
             accountIdsToUpdate,
           );
           if (result.success) {
-            setPermissionUpdateSuccess(
-              result.message ||
-                `All permissions set to ${newStatus ? "Enabled" : "Disabled"}.`,
+            toast.success(
+              `All permissions ${newStatus ? "enabled" : "disabled"}`,
+              {
+                description:
+                  result.message ||
+                  `All employee payslip request permissions have been set to ${newStatus ? "enabled" : "disabled"}.`,
+              },
             );
             invalidateCache(ACCOUNTS_LIST_CACHE_KEY);
-            // Re-fetch accounts list after successful update
             loadAccounts(true);
           } else {
-            setPermissionUpdateError(
-              result.error || "Failed to update all permissions.",
-            );
-            setAccounts(originalAccounts); // Revert on failure
+            const errorMsg =
+              result.error || "Failed to update all permissions.";
+            toast.error("Failed to update permissions", {
+              description: errorMsg,
+            });
+            setAccounts(originalAccounts);
           }
         } catch (error: any) {
-          setPermissionUpdateError(
+          const errorMsg =
             error.message ||
-              "An unexpected error occurred while toggling all permissions.",
-          );
-          setAccounts(originalAccounts); // Revert on failure
-        } finally {
-          setTimeout(() => {
-            setPermissionUpdateSuccess(null);
-            setPermissionUpdateError(null);
-          }, 3000);
+            "An unexpected error occurred while toggling all permissions.";
+          toast.error("Error", {
+            description: errorMsg,
+          });
+          setAccounts(originalAccounts);
         }
       });
     },
@@ -565,7 +583,9 @@ export default function ManagePayslips() {
   const handleApproveRequest = useCallback(
     async (requestId: string) => {
       if (!adminId) {
-        setRequestProcessingError("Admin ID not found for approval.");
+        toast.error("Admin ID not found", {
+          description: "Please refresh the page and try again.",
+        });
         return;
       }
       setRequestProcessingError(null);
@@ -575,80 +595,103 @@ export default function ManagePayslips() {
         try {
           const result = await approvePayslipRequest(requestId, adminId);
           if (result.success) {
-            setRequestProcessingSuccess(
-              result.message || "Request approved and payslip generated.",
-            );
-            // Invalidate and reload requests and pending payslips list
+            toast.success("Request approved", {
+              description:
+                result.message ||
+                "Payslip request has been approved and payslip generated.",
+            });
             invalidateCache(REQUESTS_LIST_CACHE_KEY);
             invalidateCache(PAYSLIPS_LIST_CACHE_KEY);
             await loadPayslipRequests(true);
-            await loadPayslips(PayslipStatus.PENDING, true); // Refresh pending list specifically
+            await loadPayslips(PayslipStatus.PENDING, true);
           } else {
             throw new Error(
               result.error || "Failed to approve request and generate payslip.",
             );
           }
         } catch (error: any) {
-          setRequestProcessingError(
-            error.message || "Could not approve request.",
-          );
-          // Still reload requests list even on error
+          toast.error("Failed to approve request", {
+            description: error.message || "An unexpected error occurred.",
+          });
           loadPayslipRequests(true);
         } finally {
           setProcessingRequestId(null);
-          setTimeout(() => {
-            setRequestProcessingSuccess(null);
-            setRequestProcessingError(null);
-          }, 3000);
         }
       });
     },
-    [adminId, loadPayslipRequests, loadPayslips, approvePayslipRequest], // Added server action dependencies
+    [adminId, loadPayslipRequests, loadPayslips, approvePayslipRequest],
   );
 
-  const handleRejectRequest = useCallback(
-    async (requestId: string) => {
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
+  const [pendingRejectRequestId, setPendingRejectRequestId] = useState<
+    string | null
+  >(null);
+  const [rejectionReason, setRejectionReason] = useState("");
+
+  const handleRejectRequestClick = useCallback(
+    (requestId: string) => {
       if (!adminId) {
-        setRequestProcessingError("Admin ID not found for rejection.");
+        toast.error("Admin ID not found", {
+          description: "Please refresh the page and try again.",
+        });
         return;
       }
-      const reason = prompt("Optional: Enter reason for rejection:");
-      setRequestProcessingError(null);
-      setRequestProcessingSuccess(null);
-      setProcessingRequestId(requestId);
-      startRequestProcessingTransition(async () => {
-        try {
-          const result = await rejectPayslipRequest(
-            requestId,
-            adminId,
-            reason || undefined,
-          );
-          if (result.success) {
-            setRequestProcessingSuccess(
-              result.message || "Request rejected successfully.",
-            );
-            invalidateCache(REQUESTS_LIST_CACHE_KEY);
-            await loadPayslipRequests(true); // Refresh requests list
-          } else {
-            throw new Error(result.error || "Failed to reject request.");
-          }
-        } catch (error: any) {
-          setRequestProcessingError(
-            error.message || "Could not reject request.",
-          );
-          // Still reload requests list even on error
-          loadPayslipRequests(true);
-        } finally {
-          setProcessingRequestId(null);
-          setTimeout(() => {
-            setRequestProcessingSuccess(null);
-            setRequestProcessingError(null);
-          }, 3000);
-        }
-      });
+      setPendingRejectRequestId(requestId);
+      setRejectionReason("");
+      setRejectDialogOpen(true);
     },
-    [adminId, loadPayslipRequests, rejectPayslipRequest], // Added server action dependencies
+    [adminId],
   );
+
+  const handleRejectRequest = useCallback(async () => {
+    if (!adminId || !pendingRejectRequestId) {
+      toast.error("Missing information", {
+        description: "Please refresh the page and try again.",
+      });
+      setRejectDialogOpen(false);
+      return;
+    }
+    setRequestProcessingError(null);
+    setRequestProcessingSuccess(null);
+    setProcessingRequestId(pendingRejectRequestId);
+    setRejectDialogOpen(false);
+    const reason = rejectionReason.trim() || undefined;
+    startRequestProcessingTransition(async () => {
+      try {
+        const result = await rejectPayslipRequest(
+          pendingRejectRequestId,
+          adminId,
+          reason,
+        );
+        if (result.success) {
+          toast.success("Request rejected", {
+            description:
+              result.message ||
+              "Payslip request has been rejected successfully.",
+          });
+          invalidateCache(REQUESTS_LIST_CACHE_KEY);
+          await loadPayslipRequests(true);
+        } else {
+          throw new Error(result.error || "Failed to reject request.");
+        }
+      } catch (error: any) {
+        toast.error("Failed to reject request", {
+          description: error.message || "An unexpected error occurred.",
+        });
+        loadPayslipRequests(true);
+      } finally {
+        setProcessingRequestId(null);
+        setPendingRejectRequestId(null);
+        setRejectionReason("");
+      }
+    });
+  }, [
+    adminId,
+    pendingRejectRequestId,
+    rejectionReason,
+    loadPayslipRequests,
+    rejectPayslipRequest,
+  ]);
 
   const thStyleBase =
     "px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider";
@@ -682,20 +725,6 @@ export default function ManagePayslips() {
         <h2 className="text-md font-semibold text-gray-800 sm:text-lg">
           Pending Payslip Requests
         </h2>
-        {requestProcessingSuccess && (
-          <div
-            className={`${errorMsgStyle} border-green-300 bg-green-50 text-green-700`}
-          >
-            <CheckCircle size={16} /> <span>{requestProcessingSuccess}</span>
-          </div>
-        )}
-        {requestProcessingError && (
-          <div
-            className={`${errorMsgStyle} border-red-300 bg-red-50 text-red-700`}
-          >
-            <AlertCircle size={16} /> <span>{requestProcessingError}</span>
-          </div>
-        )}
         {isLoadingRequests && (
           <div className="flex items-center justify-center py-8 text-gray-500">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading
@@ -784,44 +813,57 @@ export default function ManagePayslips() {
                         className={`${tdStyleBase} space-x-1 whitespace-nowrap text-right sm:space-x-2`}
                       >
                         <Button
-                          size="xs"
-                          variant="primary"
+                          size="sm"
+                          variant="default"
                           onClick={() => handleApproveRequest(req.id)}
                           disabled={
                             isProcessingRequest &&
                             processingRequestId === req.id
                           }
-                          icon={
-                            isProcessingRequest &&
-                            processingRequestId === req.id ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              <ThumbsUp size={14} />
-                            )
-                          }
                           className="px-2 py-1 sm:px-3"
                         >
-                          <span className="hidden sm:inline">Approve</span>
-                          <span className="sm:hidden">OK</span>
+                          {isProcessingRequest &&
+                          processingRequestId === req.id ? (
+                            <>
+                              <Loader2
+                                size={14}
+                                className="mr-1 animate-spin"
+                              />
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <ThumbsUp size={14} className="mr-1" />
+                              <span className="hidden sm:inline">Approve</span>
+                              <span className="sm:hidden">OK</span>
+                            </>
+                          )}
                         </Button>
                         <Button
-                          size="xs"
-                          onClick={() => handleRejectRequest(req.id)}
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => handleRejectRequestClick(req.id)}
                           disabled={
                             isProcessingRequest &&
                             processingRequestId === req.id
                           }
-                          icon={
-                            isProcessingRequest &&
-                            processingRequestId === req.id ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : (
-                              <ThumbsDown size={14} />
-                            )
-                          }
                           className="px-2 py-1 sm:px-3"
                         >
-                          Reject
+                          {isProcessingRequest &&
+                          processingRequestId === req.id ? (
+                            <>
+                              <Loader2
+                                size={14}
+                                className="mr-1 animate-spin"
+                              />
+                              Processing...
+                            </>
+                          ) : (
+                            <>
+                              <ThumbsDown size={14} className="mr-1" />
+                              Reject
+                            </>
+                          )}
                         </Button>
                       </td>
                     </tr>
@@ -955,11 +997,20 @@ export default function ManagePayslips() {
                         {formatCurrency(payslip.netPay)}
                       </td>
                       <td className={`${tdStyleBase} whitespace-nowrap`}>
-                        <span
-                          className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold leading-5 sm:text-xs ${payslip.status === PayslipStatus.PENDING ? "bg-orange-100 text-orange-800" : "bg-green-100 text-green-800"}`}
+                        <Badge
+                          variant={
+                            payslip.status === PayslipStatus.PENDING
+                              ? "default"
+                              : "default"
+                          }
+                          className={
+                            payslip.status === PayslipStatus.PENDING
+                              ? "bg-orange-100 text-orange-800 hover:bg-orange-200"
+                              : "bg-green-100 text-green-800 hover:bg-green-200"
+                          }
                         >
                           {payslip.status}
-                        </span>
+                        </Badge>
                         {payslip.status === PayslipStatus.RELEASED &&
                           payslip.releasedDate && (
                             <div className="mt-0.5 text-[10px] text-gray-400">
@@ -974,27 +1025,33 @@ export default function ManagePayslips() {
                         className={`${tdStyleBase} whitespace-nowrap text-right`}
                       >
                         <Button
-                          size="xs"
+                          size="sm"
                           variant="secondary"
                           onClick={() => handleOpenModal(payslip)}
                           disabled={
                             isReleasing && selectedPayslip?.id === payslip.id
                           }
-                          icon={
-                            isReleasing &&
-                            selectedPayslip?.id === payslip.id ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : payslip.status === PayslipStatus.PENDING ? (
-                              <Settings size={14} />
-                            ) : (
-                              <Eye size={14} />
-                            )
-                          }
                           className="px-2 py-1 sm:px-3"
                         >
-                          {payslip.status === PayslipStatus.PENDING
-                            ? "Manage"
-                            : "View"}
+                          {isReleasing && selectedPayslip?.id === payslip.id ? (
+                            <>
+                              <Loader2
+                                size={14}
+                                className="mr-1 animate-spin"
+                              />
+                              Processing...
+                            </>
+                          ) : payslip.status === PayslipStatus.PENDING ? (
+                            <>
+                              <Settings size={14} className="mr-1" />
+                              Manage
+                            </>
+                          ) : (
+                            <>
+                              <Eye size={14} className="mr-1" />
+                              View
+                            </>
+                          )}
                         </Button>
                       </td>
                     </tr>
@@ -1014,7 +1071,7 @@ export default function ManagePayslips() {
           </h2>
           <div className="flex space-x-2">
             <Button
-              size="xs"
+              size="sm"
               variant="outline"
               onClick={() => handleToggleAllPermissions(true)}
               disabled={
@@ -1023,13 +1080,13 @@ export default function ManagePayslips() {
                 accounts.length === 0 ||
                 accounts.every((acc) => acc.canRequestPayslip)
               }
-              icon={<ToggleRight size={14} className="text-green-500" />}
               className="border-green-400 text-green-600 hover:bg-green-50"
             >
+              <ToggleRight size={14} className="mr-1 text-green-500" />
               Enable All
             </Button>
             <Button
-              size="xs"
+              size="sm"
               variant="outline"
               onClick={() => handleToggleAllPermissions(false)}
               disabled={
@@ -1038,27 +1095,13 @@ export default function ManagePayslips() {
                 accounts.length === 0 ||
                 accounts.every((acc) => !acc.canRequestPayslip)
               }
-              icon={<ToggleLeft size={14} className="text-red-500" />}
               className="border-red-400 text-red-600 hover:bg-red-50"
             >
+              <ToggleLeft size={14} className="mr-1 text-red-500" />
               Disable All
             </Button>
           </div>
         </div>
-        {permissionUpdateSuccess && (
-          <div
-            className={`${errorMsgStyle} border-green-300 bg-green-50 text-green-700`}
-          >
-            <CheckCircle size={16} /> <span>{permissionUpdateSuccess}</span>
-          </div>
-        )}
-        {permissionUpdateError && (
-          <div
-            className={`${errorMsgStyle} border-red-300 bg-red-50 text-red-700`}
-          >
-            <AlertCircle size={16} /> <span>{permissionUpdateError}</span>
-          </div>
-        )}
         {isLoadingAccounts && (
           <div className="flex items-center justify-center py-8 text-gray-500">
             <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Loading
@@ -1138,32 +1181,40 @@ export default function ManagePayslips() {
                       </td>
                       <td className={`${tdStyleBase} text-right`}>
                         <Button
-                          size="xs"
+                          size="sm"
                           variant="outline"
                           onClick={() => handleToggleCanRequestPayslip(account)}
                           disabled={
                             isSpecificAccountUpdating(account.id) ||
                             isTogglingAll
                           }
-                          icon={
-                            isSpecificAccountUpdating(account.id) ? (
-                              <Loader2 size={14} className="animate-spin" />
-                            ) : account.canRequestPayslip ? (
-                              <CheckCircle
-                                size={14}
-                                className="text-green-600"
-                              />
-                            ) : (
-                              <MinusCircle size={14} className="text-red-600" />
-                            )
-                          }
                           className={`min-w-[80px] justify-center px-2 py-1 sm:min-w-[100px] sm:px-3 ${account.canRequestPayslip ? "border-green-300 hover:bg-green-50" : "border-red-300 hover:bg-red-50"}`}
                         >
-                          {isSpecificAccountUpdating(account.id)
-                            ? "..."
-                            : account.canRequestPayslip
-                              ? "Yes"
-                              : "No"}
+                          {isSpecificAccountUpdating(account.id) ? (
+                            <>
+                              <Loader2
+                                size={14}
+                                className="mr-1 animate-spin"
+                              />
+                              ...
+                            </>
+                          ) : account.canRequestPayslip ? (
+                            <>
+                              <CheckCircle
+                                size={14}
+                                className="mr-1 text-green-600"
+                              />
+                              Yes
+                            </>
+                          ) : (
+                            <>
+                              <MinusCircle
+                                size={14}
+                                className="mr-1 text-red-600"
+                              />
+                              No
+                            </>
+                          )}
                         </Button>
                       </td>
                     </tr>
@@ -1183,7 +1234,6 @@ export default function ManagePayslips() {
           payslipData={selectedPayslip}
           attendanceRecords={modalAttendance}
           breakdownItems={modalBreakdown}
-          // Pass the last released dates/timestamps for filtering the display
           lastReleasedPayslipEndDate={modalLastReleasedPayslipEndDate}
           lastReleasedTimestamp={modalLastReleasedTimestamp}
           isModalDataLoading={isLoadingModalData}
@@ -1193,6 +1243,74 @@ export default function ManagePayslips() {
           releaseError={releaseError}
         />
       )}
+
+      {/* Rejection Reason Dialog */}
+      <Dialog
+        open={rejectDialogOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRejectDialogOpen(false);
+            setPendingRejectRequestId(null);
+            setRejectionReason("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reject Payslip Request</DialogTitle>
+            <DialogDescription>
+              Please provide an optional reason for rejecting this payslip
+              request.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="rejection-reason">Reason (Optional)</Label>
+              <Input
+                id="rejection-reason"
+                placeholder="Enter rejection reason..."
+                value={rejectionReason}
+                onChange={(e) => setRejectionReason(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleRejectRequest();
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setRejectDialogOpen(false);
+                setPendingRejectRequestId(null);
+                setRejectionReason("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRejectRequest}
+              disabled={isProcessingRequest && pendingRejectRequestId !== null}
+            >
+              {isProcessingRequest && pendingRejectRequestId !== null ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Rejecting...
+                </>
+              ) : (
+                <>
+                  <ThumbsDown className="mr-2 h-4 w-4" />
+                  Reject Request
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

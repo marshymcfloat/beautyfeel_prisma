@@ -14,6 +14,15 @@ import {
 import { Prisma } from "@prisma/client";
 
 import { z } from "zod";
+import {
+  validatePayslipRequest,
+  validatePayslipPeriod,
+} from "./payslipRequestValidation";
+import {
+  validateUpdatePayslipRequestStatus,
+  validateProcessAndReleasePayslip,
+  validateStatusTransition,
+} from "./payslipApprovalValidation";
 
 import { revalidatePath } from "next/cache";
 import {
@@ -25,12 +34,6 @@ import {
 } from "date-fns";
 
 import { toZonedTime, toDate, formatInTimeZone, format } from "date-fns-tz";
-const SALARY_COMMISSION_RATE = parseFloat(
-  process.env.SALARY_COMMISSION_RATE || "0.1",
-);
-const MASSEUSE_COMMISSION_RATE = parseFloat(
-  process.env.MASSEUSE_COMMISSION_RATE || "0.5", // Or your specific masseuse rate
-);
 
 type PayslipActionResult = {
   success: boolean;
@@ -453,49 +456,30 @@ export async function getEmployeeWorkHistory(
       EmployeeWorkHistoryData["commissionSummary"]["entries"][0]
     >();
 
+    // Use unified commission calculation helper for consistency
+    const { calculateUnitCommission } = await import(
+      "./salaryCalculationHelpers"
+    );
+
     for (const unit of servedUnitsSinceCutoff) {
       const as = unit.availedService;
       const txn = as?.transaction;
       if (!as || !txn || !unit.servedBy) continue;
 
-      // Calculate commission for this single unit, considering transaction-level discounts
-      const originalSumOfTxnAvailedServicePrices = txn.availedServices.reduce(
-        (sum: number, s: { price: number | null }) => sum + (s.price ?? 0),
-        0,
-      );
-      const totalTransactionDiscount =
-        originalSumOfTxnAvailedServicePrices > 0
-          ? Math.max(0, originalSumOfTxnAvailedServicePrices - txn.grandTotal) // Ensure discount isn't negative
-          : 0;
-      const availedServiceOriginalPrice = as.price ?? 0; // Total price for this AvailedService item
-
-      // Distribute transaction discount proportionally to this availed service
-      const asDiscountContribution =
-        originalSumOfTxnAvailedServicePrices > 0 &&
-        availedServiceOriginalPrice > 0
-          ? (availedServiceOriginalPrice /
-              originalSumOfTxnAvailedServicePrices) *
-            totalTransactionDiscount
-          : 0;
-
-      const availedServiceEffectivePrice = Math.max(
-        0,
-        availedServiceOriginalPrice - asDiscountContribution,
+      // Get all availed service prices for discount calculation
+      const transactionAvailedServicesPrices = txn.availedServices.map(
+        (s: { price: number | null }) => s.price ?? 0,
       );
 
-      // Effective price for one unit of this AvailedService
-      const effectiveUnitPriceForCommission =
-        as.quantity > 0 ? availedServiceEffectivePrice / as.quantity : 0;
-
-      let commissionRate = SALARY_COMMISSION_RATE; // Default rate
-      if (unit.servedBy.role.includes(Role.MASSEUSE)) {
-        commissionRate = MASSEUSE_COMMISSION_RATE;
-      }
-
-      const calculatedUnitCommission = Math.max(
-        0,
-        Math.floor(effectiveUnitPriceForCommission * commissionRate),
+      // Use unified commission calculation helper
+      const calculatedUnitCommission = calculateUnitCommission(
+        as.price ?? 0,
+        as.quantity,
+        transactionAvailedServicesPrices,
+        txn.grandTotal,
+        unit.servedBy.role,
       );
+
       totalCommissionSinceCutoff += calculatedUnitCommission;
 
       // Aggregate commission details by AvailedService
@@ -533,8 +517,14 @@ export async function getEmployeeWorkHistory(
       },
     });
 
+    // Calculate total earnings (attendance-based salary + commissions)
+    const totalEarnings = accountInfo.salary + totalCommissionSinceCutoff;
+
     return {
-      account: accountInfo,
+      account: {
+        ...accountInfo,
+        salary: totalEarnings, // Include commissions in the total earnings
+      },
       lastPayslip: lastReleasedPayslip
         ? {
             periodEndDate: lastReleasedPayslip.periodEndDate,
@@ -562,13 +552,22 @@ export async function getEmployeeWorkHistory(
 export async function requestPayslipAction(
   payload: RequestPayslipPayload,
 ): Promise<PayslipActionResult> {
-  const { accountId, notes } = payload;
-  const errors: Record<string, string[]> = {};
+  // Use Zod validation for robust input validation
+  const validationResult = validatePayslipRequest(payload);
 
-  if (!accountId) {
-    errors.general = ["Account ID is missing."];
-    return { success: false, message: "Validation failed.", errors };
+  if (!validationResult.success) {
+    console.error(
+      "[requestPayslipAction] Validation failed:",
+      validationResult.errors,
+    );
+    return {
+      success: false,
+      message: "Validation failed. Please check your input.",
+      errors: validationResult.errors,
+    };
   }
+
+  const { accountId, notes } = validationResult.data;
 
   const requestTime = new Date(); // Precise timestamp for the request and period end
   const periodEndDate = requestTime; // The end of the period is the exact time of the request
@@ -617,11 +616,16 @@ export async function requestPayslipAction(
     requiredPeriodStartDate = startOfDay(firstAttendance.date);
   }
 
-  // Validation: Ensure the determined start date is not after the end date.
-  if (requiredPeriodStartDate >= periodEndDate) {
+  // Validate the period using validation helper
+  const periodValidation = validatePayslipPeriod(
+    requiredPeriodStartDate,
+    periodEndDate,
+  );
+  if (!periodValidation.valid) {
     return {
       success: false,
-      message: "No new work records to process since the last payslip.",
+      message: periodValidation.error,
+      errors: { general: [periodValidation.error] },
     };
   }
 
@@ -629,7 +633,9 @@ export async function requestPayslipAction(
   const existingOverlapRequest = await prisma.payslipRequest.findFirst({
     where: {
       accountId,
-      status: { in: ["PENDING", "APPROVED"] },
+      status: {
+        in: [PayslipRequestStatus.PENDING, PayslipRequestStatus.APPROVED],
+      },
       periodStartDate: { lte: periodEndDate },
       periodEndDate: { gte: requiredPeriodStartDate },
     },
@@ -638,6 +644,11 @@ export async function requestPayslipAction(
     return {
       success: false,
       message: `An active request with status '${existingOverlapRequest.status}' already exists that overlaps this period.`,
+      errors: {
+        general: [
+          `An overlapping request with status '${existingOverlapRequest.status}' already exists.`,
+        ],
+      },
     };
   }
 
@@ -660,9 +671,32 @@ export async function requestPayslipAction(
       success: true,
       message: "Payslip request submitted successfully!",
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("[requestPayslipAction] Error:", error);
-    return { success: false, message: "An unexpected error occurred." };
+
+    let errorMessage = "An unexpected error occurred while requesting payslip.";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    }
+
+    // Handle Prisma errors specifically
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code: string }).code === "P2002"
+    ) {
+      errorMessage =
+        "A payslip request for this period already exists. Please check existing requests.";
+    }
+
+    return {
+      success: false,
+      message: errorMessage,
+      errors: { general: [errorMessage] },
+    };
   }
 }
 
@@ -695,6 +729,30 @@ export async function updatePayslipRequestStatusAction(
   adminAccountId?: string | undefined,
   notes?: string | null,
 ): Promise<{ success: boolean; message?: string; error?: string }> {
+  // Use Zod validation for robust input validation
+  const validationResult = validateUpdatePayslipRequestStatus({
+    requestId,
+    newStatus,
+    adminAccountId,
+    notes,
+  });
+
+  if (!validationResult.success) {
+    console.error(
+      "[updatePayslipRequestStatusAction] Validation failed:",
+      validationResult.errors,
+    );
+    const errorMessages = Object.values(validationResult.errors)
+      .flat()
+      .join(", ");
+    return {
+      success: false,
+      error: `Validation failed: ${errorMessages}`,
+    };
+  }
+
+  const { requestId: validatedRequestId, newStatus: validatedNewStatus, adminAccountId: validatedAdminAccountId, notes: validatedNotes } = validationResult.data;
+
   // --- Server-side authentication and authorization check ---
   // Ensure adminAccountId belongs to an authorized admin/owner.
   // const session = await auth(); // Example
@@ -703,19 +761,10 @@ export async function updatePayslipRequestStatusAction(
   // }
   // Assuming auth check passes...
 
-  if (!["APPROVED", "REJECTED"].includes(newStatus)) {
-    // Should not happen with correct typing/usage, but as a server-side safeguard
-    console.error(
-      "[updatePayslipRequestStatusAction] Invalid status provided:",
-      newStatus,
-    );
-    return { success: false, error: "Invalid status transition attempted." };
-  }
-
   try {
     // Find the request to get current status and requested period details for revalidation paths
     const request = await prisma.payslipRequest.findUnique({
-      where: { id: requestId },
+      where: { id: validatedRequestId },
       select: {
         id: true,
         status: true,
@@ -729,32 +778,30 @@ export async function updatePayslipRequestStatusAction(
       return { success: false, error: "Payslip request not found." };
     }
 
-    // Prevent updating requests that are already processed or failed
-    if (
-      request.status === PayslipRequestStatus.PROCESSED ||
-      request.status === PayslipRequestStatus.FAILED
-    ) {
+    // Validate status transition using helper function
+    const transitionValidation = validateStatusTransition(
+      request.status,
+      validatedNewStatus,
+    );
+    if (!transitionValidation.valid) {
       return {
         success: false,
-        error: `Cannot change status of a request that is already ${request.status}.`,
+        error: transitionValidation.error,
       };
     }
-    // Optional: Prevent approving a rejected request? Allow reversing decisions? Depends on workflow.
-    // The current logic *allows* going from REJECTED to APPROVED/PENDING or vice-versa if needed for corrections.
-    // Add specific checks here if only certain transitions are allowed.
 
     await prisma.payslipRequest.update({
-      where: { id: requestId },
+      where: { id: validatedRequestId },
       data: {
-        status: newStatus,
-        notes: notes, // Save notes only if provided
-        processedById: adminAccountId, // Record which admin updated it
+        status: validatedNewStatus,
+        notes: validatedNotes ?? null,
+        processedById: validatedAdminAccountId || null,
         processedTimestamp: new Date(),
       },
     });
 
     console.log(
-      `[updatePayslipRequestStatusAction] Request ${requestId} status updated to ${newStatus} by admin ${adminAccountId}.`,
+      `[updatePayslipRequestStatusAction] Request ${validatedRequestId} status updated to ${validatedNewStatus} by admin ${validatedAdminAccountId || "unknown"}.`,
     );
 
     // Revalidate paths potentially affected (admin list, employee's history)
@@ -763,16 +810,34 @@ export async function updatePayslipRequestStatusAction(
 
     return {
       success: true,
-      message: `Request ${newStatus.toLowerCase()} successfully.`,
+      message: `Request ${validatedNewStatus.toLowerCase()} successfully.`,
     };
-  } catch (error) {
+  } catch (error: unknown) {
     console.error(
-      `[updatePayslipRequestStatusAction] Error updating request ${requestId} to ${newStatus}:`,
+      `[updatePayslipRequestStatusAction] Error updating request ${validatedRequestId} to ${validatedNewStatus}:`,
       error,
     );
+
+    let errorMessage = "An unexpected error occurred while updating request status.";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    }
+
+    // Handle Prisma errors specifically
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code: string }).code === "P2025"
+    ) {
+      errorMessage = "Payslip request not found. It may have been deleted.";
+    }
+
     return {
       success: false,
-      error: `Failed to update request status: ${error instanceof Error ? error.message : String(error)}`,
+      error: `Failed to update request status: ${errorMessage}`,
     };
   }
 }
@@ -786,10 +851,32 @@ export async function processAndReleasePayslipAction(
   relatedPayslipId?: string;
   error?: string;
 }> {
+  // Use Zod validation for robust input validation
+  const validationResult = validateProcessAndReleasePayslip({
+    requestId,
+    adminAccountId,
+  });
+
+  if (!validationResult.success) {
+    console.error(
+      "[processAndReleasePayslipAction] Validation failed:",
+      validationResult.errors,
+    );
+    const errorMessages = Object.values(validationResult.errors)
+      .flat()
+      .join(", ");
+    return {
+      success: false,
+      error: `Validation failed: ${errorMessages}`,
+    };
+  }
+
+  const { requestId: validatedRequestId, adminAccountId: validatedAdminAccountId } = validationResult.data;
+
   try {
     return await prisma.$transaction(async (tx) => {
       const request = await tx.payslipRequest.findUnique({
-        where: { id: requestId, status: PayslipRequestStatus.APPROVED },
+        where: { id: validatedRequestId, status: PayslipRequestStatus.APPROVED },
         include: {
           account: {
             select: { id: true, name: true, dailyRate: true, role: true },
@@ -907,14 +994,32 @@ export async function processAndReleasePayslipAction(
       // 2. Calculate Base Salary for the period
       // Attendance.date is @db.Date (date-only), so comparison is date-based.
       // IMPORTANT: Only count attendance from AFTER the last payslip's period end date
+      // CRITICAL FIX: Use exclusive end boundary (lt) to match getPayslipBreakdownForPeriod
+      // Calculate the exclusive end date (day after period end in PHT)
+      const attendanceEndExclusive = getUtcForPhtStartOfNextDay(localizedPeriodEndDate);
+      
+      // Convert exclusive end boundary to UTC date-only format for comparison
+      const attendanceEndPhtDateStringExclusive = attendanceEndFormatter.format(
+        attendanceEndExclusive,
+      );
+      const [attEndYearExclusive, attEndMonthExclusive, attEndDayExclusive] =
+        attendanceEndPhtDateStringExclusive.split("-").map(Number);
+      const attendanceEndDateOnlyExclusive = new Date(
+        Date.UTC(attEndYearExclusive, attEndMonthExclusive - 1, attEndDayExclusive, 0, 0, 0, 0),
+      );
+      
+      console.log(
+        `[processAndReleasePayslipAction] Attendance calculation - Exclusive end boundary: ${attendanceEndDateOnlyExclusive.toISOString()}`,
+      );
+      
       const attendanceInPeriod = await tx.attendance.findMany({
         where: {
           accountId: employeeAccountId,
           isPresent: true, // Only count present days
           date: {
-            // Use the TRUE calculation start date (after last payslip) up to the period end
+            // Use the TRUE calculation start date (after last payslip) up to the period end (exclusive)
             gte: attendanceStartDateOnly,
-            lte: attendanceEndDateOnly,
+            lt: attendanceEndDateOnlyExclusive, // Use exclusive boundary (lt) to match request phase
           },
         },
         select: { date: true, isPresent: true },
@@ -925,28 +1030,15 @@ export async function processAndReleasePayslipAction(
         `[processAndReleasePayslipAction] Found ${attendanceInPeriod.length} attendance records in calculated range (excluding previous payslip periods).`,
       );
 
-      const allDatesInRange = eachDayOfInterval({
-        start: localizedPeriodStartDate, // Use localized boundaries for date-fns iteration
-        end: localizedPeriodEndDate,
-      });
-
-      const attendanceMap = new Map(
-        attendanceInPeriod.map((r) => [
-          format(r.date, "yyyy-MM-dd"),
-          r.isPresent,
-        ]),
-      );
-
-      const fullAttendanceRecords = allDatesInRange.map((date) => ({
-        date,
-        isPresent: attendanceMap.get(format(date, "yyyy-MM-dd")) ?? false,
-        hasRecord: attendanceMap.has(format(date, "yyyy-MM-dd")),
-      }));
-
-      const attendedDaysCount = fullAttendanceRecords.filter(
-        (a) => a.isPresent,
-      ).length;
+      // CRITICAL FIX: Count attendance the same way as getPayslipBreakdownForPeriod
+      // Count only the actual attendance records found (not the display records)
+      // This ensures consistency between request and release phases
+      const attendedDaysCount = attendanceInPeriod.length;
       const baseSalaryForPeriod = employeeDailyRate * attendedDaysCount;
+      
+      console.log(
+        `[processAndReleasePayslipAction] Calculated base salary: ${employeeDailyRate} * ${attendedDaysCount} days = ${baseSalaryForPeriod}`,
+      );
 
       // --- CRITICAL MODIFICATION: ALIGN COMMISSION CUTOFF LOGIC ---
       // This part now mirrors getPayslipBreakdownForPeriod and getEmployeeWorkHistory
@@ -965,28 +1057,63 @@ export async function processAndReleasePayslipAction(
         select: { releasedDate: true },
       });
 
-      let commissionCompletedAtCondition: { gt?: Date; gte?: Date };
-
+      // CRITICAL FIX: Align commission cutoff logic with getPayslipBreakdownForPeriod
+      // This ensures request and release phases calculate commissions from the same cutoff point
+      let commissionStartTimeUtc: Date;
+      
       if (lastReleasedPayslip?.releasedDate) {
         // If a previous payslip was released, commissions should be counted *strictly after* its release date and time.
-        commissionCompletedAtCondition = {
-          gt: lastReleasedPayslip.releasedDate,
-        };
+        commissionStartTimeUtc = new Date(lastReleasedPayslip.releasedDate);
+        console.log(
+          `[processAndReleasePayslipAction] Last released payslip timestamp: ${commissionStartTimeUtc.toISOString()}. Commission calculation starts strictly after this (gt).`,
+        );
       } else {
-        // If no previous payslip released, commissions start from the request's period start date (inclusive).
-        // This periodStartDate was set by requestPayslipAction (either first attendance or last_release_date).
-        commissionCompletedAtCondition = { gte: periodStartDate };
+        // If no previous payslip released, commissions start from epoch (inclusive).
+        commissionStartTimeUtc = new Date(0); // Epoch start (UTC)
+        console.log(
+          `[processAndReleasePayslipAction] No prior released timestamp. Commission calculation starts from epoch: ${commissionStartTimeUtc.toISOString()} (gte).`,
+        );
+      }
+      
+      let commissionServedAtCondition: { gt?: Date; gte?: Date };
+      if (lastReleasedPayslip?.releasedDate) {
+        commissionServedAtCondition = { gt: commissionStartTimeUtc };
+      } else {
+        commissionServedAtCondition = { gte: commissionStartTimeUtc };
       }
       // --- END CRITICAL MODIFICATION ---
 
       // 3. Calculate Total Commissions for the period
+      // CRITICAL FIX: Use servedAt instead of completedAt to match getPayslipBreakdownForPeriod
+      // Also use timezone-aware end boundary calculation for consistency
+      // Calculate the exclusive end boundary for commissions (same as getPayslipBreakdownForPeriod)
+      const periodEndDateInPht = getUtcForPhtStartOfDay(periodEndDate);
+      const commissionPeriodEndExclusive = getUtcForPhtStartOfNextDay(periodEndDateInPht);
+      
+      console.log(
+        `[processAndReleasePayslipAction] Commission calculation - Period end DateTime: ${periodEndDate.toISOString()}`,
+      );
+      console.log(
+        `[processAndReleasePayslipAction] Commission calculation - Period end date in PHT: ${periodEndDateInPht.toISOString()}`,
+      );
+      console.log(
+        `[processAndReleasePayslipAction] Commission calculation - Exclusive end boundary: ${commissionPeriodEndExclusive.toISOString()}`,
+      );
+      
       const servedUnitsInPeriod = (await tx.availedServiceUnit.findMany({
         where: {
           servedById: employeeAccountId,
           status: Status.DONE,
-          completedAt: {
-            ...commissionCompletedAtCondition, // Use the dynamically determined GT/GTE condition
-            lt: addDays(periodEndDate, 1), // Commissions up to the very end of the period's last day (request.periodEndDate)
+          servedAt: {
+            ...commissionServedAtCondition, // Use the dynamically determined GT/GTE condition
+            lt: commissionPeriodEndExclusive, // Use timezone-aware exclusive end boundary (same as request phase)
+            not: null, // servedAt must be set
+          },
+          availedService: {
+            commissionValue: { gt: 0 }, // Only include units that potentially earn commission
+            transaction: {
+              status: { not: Status.CANCELLED }, // Filter out units from cancelled transactions
+            },
           },
         },
         include: {
@@ -1009,47 +1136,39 @@ export async function processAndReleasePayslipAction(
             },
           },
         },
+        orderBy: { servedAt: "asc" },
       })) as AvailedServiceUnitWithRelations[];
 
+      console.log(
+        `[processAndReleasePayslipAction] Found ${servedUnitsInPeriod.length} served units for commission calculation.`,
+      );
+
       let totalCommissionsForPeriod = 0;
+
+      // Use unified commission calculation helper for consistency
+      const { calculateUnitCommission } = await import(
+        "./salaryCalculationHelpers"
+      );
 
       for (const unit of servedUnitsInPeriod) {
         const as = unit.availedService;
         const txn = as?.transaction;
         if (!as || !txn || !unit.servedBy) continue;
 
-        const originalSumOfTxnAvailedServicePrices = txn.availedServices.reduce(
-          (sum: number, s: { price: number | null }) => sum + (s.price ?? 0),
-          0,
+        // Get all availed service prices for discount calculation
+        const transactionAvailedServicesPrices = txn.availedServices.map(
+          (s: { price: number | null }) => s.price ?? 0,
         );
-        const totalTransactionDiscount =
-          originalSumOfTxnAvailedServicePrices > 0
-            ? Math.max(0, originalSumOfTxnAvailedServicePrices - txn.grandTotal)
-            : 0;
-        const availedServiceOriginalPrice = as.price ?? 0;
-        const asDiscountContribution =
-          originalSumOfTxnAvailedServicePrices > 0 &&
-          availedServiceOriginalPrice > 0
-            ? (availedServiceOriginalPrice /
-                originalSumOfTxnAvailedServicePrices) *
-              totalTransactionDiscount
-            : 0;
-        const availedServiceEffectivePrice = Math.max(
-          0,
-          availedServiceOriginalPrice - asDiscountContribution,
-        );
-        const effectiveUnitPriceForCommission =
-          as.quantity > 0 ? availedServiceEffectivePrice / as.quantity : 0;
 
-        let commissionRate = SALARY_COMMISSION_RATE;
-        if (unit.servedBy.role.includes(Role.MASSEUSE)) {
-          commissionRate = MASSEUSE_COMMISSION_RATE;
-        }
-
-        const calculatedUnitCommission = Math.max(
-          0,
-          Math.floor(effectiveUnitPriceForCommission * commissionRate),
+        // Use unified commission calculation helper
+        const calculatedUnitCommission = calculateUnitCommission(
+          as.price ?? 0,
+          as.quantity,
+          transactionAvailedServicesPrices,
+          txn.grandTotal,
+          unit.servedBy.role,
         );
+
         totalCommissionsForPeriod += calculatedUnitCommission;
       }
 
@@ -1093,27 +1212,58 @@ export async function processAndReleasePayslipAction(
 
       // 7. Update the Payslip Request status and link it
       await tx.payslipRequest.update({
-        where: { id: requestId },
+        where: { id: validatedRequestId },
         data: {
           status: PayslipRequestStatus.PROCESSED,
-          processedById: adminAccountId,
+          processedById: validatedAdminAccountId,
           processedTimestamp: new Date(),
           relatedPayslipId: newPayslip.id,
         },
       });
 
       // 8. Decrement Account's Running Salary
+      // Get current salary before decrementing to prevent negative values
+      const currentAccount = await tx.account.findUnique({
+        where: { id: employeeAccountId },
+        select: { salary: true },
+      });
+
+      if (!currentAccount) {
+        throw new Error(`Account ${employeeAccountId} not found.`);
+      }
+
+      const currentSalary = currentAccount.salary ?? 0;
+      const newSalary = Math.max(0, currentSalary - netPay);
+
+      // Decrement salary by netPay, but ensure it never goes below 0
+      // Note: If netPay includes commissions that weren't added to salary field,
+      // this will prevent the salary from going negative
       await tx.account.update({
         where: { id: employeeAccountId },
         data: {
-          salary: {
-            decrement: netPay,
-          },
+          salary: newSalary,
         },
       });
 
+      if (newSalary < currentSalary - netPay) {
+        console.warn(
+          `[processAndReleasePayslipAction] Salary would have gone negative for account ${employeeAccountId}. ` +
+            `Current: ${currentSalary}, NetPay: ${netPay}, ` +
+            `Would be: ${currentSalary - netPay}, Set to: ${newSalary}. ` +
+            `This may indicate that the payslip includes commissions not yet added to the salary field.`,
+        );
+      }
+
+      if (netPay > currentSalary) {
+        console.warn(
+          `[processAndReleasePayslipAction] Payslip netPay (${netPay}) exceeds current salary (${currentSalary}) ` +
+            `for account ${employeeAccountId}. This may indicate commissions are included in netPay ` +
+            `but not yet reflected in the salary field. Salary set to 0.`,
+        );
+      }
+
       console.log(
-        `[Payslip] Released ₱${netPay} for ${request.account.name}. Account salary decremented.`,
+        `[Payslip] Released ₱${netPay} for ${request.account.name}. Account salary updated from ${currentSalary} to ${newSalary}.`,
       );
 
       revalidatePath("/admin/payslips");
@@ -1125,11 +1275,33 @@ export async function processAndReleasePayslipAction(
         relatedPayslipId: newPayslip.id,
       };
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error("Error in processAndReleasePayslipAction:", error);
+
+    let errorMessage = "Failed to process payslip due to an internal error.";
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === "string") {
+      errorMessage = error;
+    }
+
+    // Handle Prisma errors specifically
+    if (
+      error &&
+      typeof error === "object" &&
+      "code" in error
+    ) {
+      const prismaError = error as { code: string };
+      if (prismaError.code === "P2002") {
+        errorMessage = "A payslip for this period already exists. Please check existing payslips.";
+      } else if (prismaError.code === "P2025") {
+        errorMessage = "Payslip request not found or already processed. Please refresh and try again.";
+      }
+    }
+
     return {
       success: false,
-      error: "Failed to process payslip due to an internal error.",
+      error: errorMessage,
     };
   }
 }
@@ -1530,44 +1702,30 @@ export async function getPayslipBreakdownForPeriod(requestId: string): Promise<{
       }
     >();
 
+    // Use unified commission calculation helper for consistency
+    const { calculateUnitCommission: calculateCommission } = await import(
+      "./salaryCalculationHelpers"
+    );
+
     for (const unit of servedUnitsInPeriod) {
       const as = unit.availedService;
       const txn = as?.transaction;
       if (!as || !txn || !unit.servedBy) continue;
 
-      // Commission calculation logic (remains correct)
-      const originalSumOfTxnAvailedServicePrices = txn.availedServices.reduce(
-        (sum, s) => sum + (s.price ?? 0),
-        0,
+      // Get all availed service prices for discount calculation
+      const transactionAvailedServicesPrices = txn.availedServices.map(
+        (s: { price: number | null }) => s.price ?? 0,
       );
-      const totalTransactionDiscount =
-        originalSumOfTxnAvailedServicePrices > 0
-          ? Math.max(0, originalSumOfTxnAvailedServicePrices - txn.grandTotal)
-          : 0;
-      const availedServiceOriginalPrice = as.price ?? 0;
-      const asDiscountContribution =
-        originalSumOfTxnAvailedServicePrices > 0 &&
-        availedServiceOriginalPrice > 0
-          ? (availedServiceOriginalPrice /
-              originalSumOfTxnAvailedServicePrices) *
-            totalTransactionDiscount
-          : 0;
-      const availedServiceEffectivePrice = Math.max(
-        0,
-        availedServiceOriginalPrice - asDiscountContribution,
-      );
-      const effectiveUnitPriceForCommission =
-        as.quantity > 0 ? availedServiceEffectivePrice / as.quantity : 0;
 
-      let commissionRate = SALARY_COMMISSION_RATE;
-      if (unit.servedBy.role.includes(Role.MASSEUSE)) {
-        commissionRate = MASSEUSE_COMMISSION_RATE;
-      }
-
-      const calculatedUnitCommission = Math.max(
-        0,
-        Math.floor(effectiveUnitPriceForCommission * commissionRate),
+      // Use unified commission calculation helper
+      const calculatedUnitCommission = calculateCommission(
+        as.price ?? 0,
+        as.quantity,
+        transactionAvailedServicesPrices,
+        txn.grandTotal,
+        unit.servedBy.role,
       );
+
       totalCommissionsForPeriod += calculatedUnitCommission;
 
       if (!commissionEntriesMap.has(as.id)) {

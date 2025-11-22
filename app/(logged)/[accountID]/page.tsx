@@ -11,11 +11,7 @@ import { Role } from "@prisma/client";
 import DashboardClient from "./DashboardClient";
 import { DashboardSkeleton } from "@/components/ui/skeletons/DashboardSkeleton";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import type {
-  AccountData,
-  TransactionPropsForTransactions,
-  SalesDataDetailed,
-} from "@/lib/Types";
+import type { TransactionPropsForTransactions } from "@/lib/Types";
 import type { Branch as PrismaBranch } from "@prisma/client";
 
 interface PageProps {
@@ -31,14 +27,12 @@ async function DashboardData({
   loggedInUserId: string;
   isOwner: boolean;
 }) {
-  // Fetch initial data in parallel
   const [accountData, transactions, salesData] = await Promise.all([
     getCurrentAccountData(accountID),
     getActiveTransactions(loggedInUserId),
     isOwner ? getSalesDataLast6Months() : Promise.resolve(null),
   ]);
 
-  // Extract branches from sales data if available
   let branches: PrismaBranch[] = [];
   if (salesData?.branches && salesData.branches.length > 0) {
     branches = salesData.branches.map((b) => ({

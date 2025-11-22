@@ -19,22 +19,12 @@ import {
   ServerTodaysAttendance,
 } from "@/lib/Types";
 
-const TARGET_TIMEZONE = "Asia/Manila";
+// Import centralized timezone helper for consistency with server
+import { getUtcForPhtStartOfDay, PHT_TIMEZONE } from "@/lib/timezoneHelpers";
 
 const getStartOfTodayTargetTimezoneUtc = () => {
   const nowUtc = new Date();
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TARGET_TIMEZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const targetDateString = formatter.format(nowUtc);
-  const [yearStr, monthStr, dayStr] = targetDateString.split("-");
-  const year = parseInt(yearStr, 10);
-  const month = parseInt(monthStr, 10) - 1;
-  const day = parseInt(dayStr, 10);
-  return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+  return getUtcForPhtStartOfDay(nowUtc);
 };
 
 export default function ManageAttendance({
@@ -245,7 +235,7 @@ export default function ManageAttendance({
       year: "numeric",
       month: "long",
       day: "numeric",
-      timeZone: TARGET_TIMEZONE,
+      timeZone: PHT_TIMEZONE,
     });
   }, []);
 

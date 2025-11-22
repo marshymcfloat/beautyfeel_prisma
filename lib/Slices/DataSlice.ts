@@ -108,7 +108,18 @@ export const DataSlice = createSlice({
       state.itemsError = null;
       state.branchesError = null;
     },
-    // You can add more specific reducers if needed
+    setServices: (state, action: PayloadAction<PrismaService[]>) => {
+      state.services = action.payload;
+      state.itemsError = null;
+    },
+    setServiceSets: (state, action: PayloadAction<PrismaServiceSet[]>) => {
+      state.serviceSets = action.payload;
+      state.itemsError = null;
+    },
+    setBranches: (state, action: PayloadAction<PrismaBranch[]>) => {
+      state.branches = action.payload;
+      state.branchesError = null;
+    },
   },
   extraReducers: (builder) => {
     // Handle fetchServices
@@ -176,5 +187,5 @@ export const DataSlice = createSlice({
   },
 });
 
-export const { clearAllData } = DataSlice.actions;
+export const { clearAllData, setServices, setServiceSets, setBranches } = DataSlice.actions;
 export default DataSlice.reducer;

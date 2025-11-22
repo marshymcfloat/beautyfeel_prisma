@@ -19,9 +19,14 @@ import type {
   ServiceSet as PrismaServiceSet,
   Branch as PrismaBranch,
 } from "@prisma/client";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card } from "@/components/ui/card";
+import { toast } from "sonner";
 import Select, { MultiValue, ActionMeta, SingleValue } from "react-select";
-import { RefreshCw, RotateCcw as RefreshIcon } from "lucide-react";
+import { RefreshCw, RotateCcw as RefreshIcon, Loader2 } from "lucide-react";
 
 import CustomerInput from "@/components/Inputs/CustomerInput";
 import type { CustomerWithRecommendations as CustomerData } from "@/lib/Types";
@@ -342,9 +347,10 @@ export default function ManageGiftCertificates() {
     startTransition(async () => {
       const result = await createGiftCertificateAction(gcData);
       if (result.success) {
-        setSuccessMessage(
-          result.message || "Gift certificate created successfully!",
-        );
+        const successMsg = result.message || "Gift certificate created successfully!";
+        toast.success("Gift certificate created", {
+          description: successMsg,
+        });
         formRef.current?.reset();
         setSelectedServicesOrSets([]);
         setSelectedCustomer(null);
@@ -369,14 +375,17 @@ export default function ManageGiftCertificates() {
           await loadItems(true);
         }
 
-        setTimeout(() => setSuccessMessage(null), 5000);
-      } else {
         setSuccessMessage(null);
-        setFormError(
-          result.errors ?? {
-            general: [result.message || "Failed to create certificate."],
-          },
-        );
+        setFormError({});
+      } else {
+        const errorMsg = result.message || "Failed to create certificate.";
+        const errors = result.errors ?? {
+          general: [errorMsg],
+        };
+        setFormError(errors);
+        toast.error("Failed to create gift certificate", {
+          description: errorMsg,
+        });
       }
     });
   };
@@ -417,21 +426,15 @@ export default function ManageGiftCertificates() {
         </Button>
       </div>
 
-      {}
-      <div className={formSectionStyle}>
+      <Card className={formSectionStyle}>
         <h2 className="mb-4 text-lg font-semibold text-customBlack">
           Create Gift Certificate
         </h2>
 
         {formError.general && (
-          <p className="mb-4 rounded border border-red-300 bg-red-100 p-2 text-sm text-red-600">
+          <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
             {formError.general.join(", ")}
-          </p>
-        )}
-        {successMessage && (
-          <p className="mb-4 rounded border border-green-300 bg-green-100 p-2 text-sm text-green-700">
-            {successMessage}
-          </p>
+          </div>
         )}
 
         <form
@@ -440,18 +443,18 @@ export default function ManageGiftCertificates() {
           onSubmit={(e) => e.preventDefault()}
         >
           <div>
-            <label htmlFor="code" className={labelStyle}>
+            <Label htmlFor="code">
               Certificate Code <span className="text-red-500">*</span>
-            </label>
+            </Label>
             <div className="mt-1 flex rounded-md shadow-sm">
-              <input
+              <Input
                 ref={codeInputRef}
                 type="text"
                 name="code"
                 id="code"
                 required
                 minLength={4}
-                className={`block w-full flex-1 rounded-none rounded-l-md border border-r-0 border-customGray p-2 uppercase focus:border-customDarkPink focus:ring-1 focus:ring-customDarkPink sm:text-sm`}
+                className="flex-1 rounded-none rounded-l-md border-r-0 uppercase"
                 placeholder="Enter or Generate"
                 aria-invalid={!!formError.code}
                 aria-describedby={formError.code ? "code-error" : undefined}
@@ -459,10 +462,10 @@ export default function ManageGiftCertificates() {
               <Button
                 type="button"
                 onClick={handleGenerateCode}
-                className="relative -ml-px inline-flex items-center space-x-2 rounded-r-md border border-customGray bg-customGray/10 px-3 py-2 text-sm font-medium hover:bg-customGray/20 focus:border-customDarkPink focus:outline-none focus:ring-1 focus:ring-customDarkPink"
+                variant="outline"
+                className="relative -ml-px rounded-none rounded-r-md border-l-0"
                 title="Generate Random Code (5 chars)"
                 size="sm"
-                invert
               >
                 <RefreshCw size={16} className="h-4 w-4" />
                 <span className="hidden sm:inline">Generate</span>
@@ -470,22 +473,19 @@ export default function ManageGiftCertificates() {
             </div>
             {formError.code && (
               <p id="code-error" className={errorTextStyle}>
-                {" "}
-                {formError.code.join(", ")}{" "}
+                {formError.code.join(", ")}
               </p>
             )}
-            <p className="mt-1 text-xs text-gray-500">
-              {" "}
-              Min 4 chars. Uppercase. Must be unique.{" "}
+            <p className="mt-1 text-xs text-muted-foreground">
+              Min 4 chars. Uppercase. Must be unique.
             </p>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="serviceTypeFilter" className={labelStyle}>
-                {" "}
-                Item Type <span className="text-red-500">*</span>{" "}
-              </label>
+              <Label htmlFor="serviceTypeFilter">
+                Item Type <span className="text-red-500">*</span>
+              </Label>
               <select
                 id="serviceTypeFilter"
                 name="serviceTypeFilter"
@@ -493,7 +493,7 @@ export default function ManageGiftCertificates() {
                 onChange={(e) =>
                   setServiceType(e.target.value as ServiceTypeFilter)
                 }
-                className={selectStyle}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={isSaving || isLoadingItems || isLoadingBranches}
               >
                 <option value="service">Single Service</option>
@@ -501,16 +501,15 @@ export default function ManageGiftCertificates() {
               </select>
             </div>
             <div>
-              <label htmlFor="branchFilter" className={labelStyle}>
-                {" "}
-                Filter by Branch{" "}
-              </label>
+              <Label htmlFor="branchFilter">
+                Filter by Branch
+              </Label>
               <select
                 id="branchFilter"
                 name="branchFilter"
                 value={selectedBranchId}
                 onChange={(e) => setSelectedBranchId(e.target.value)}
-                className={selectStyle}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 disabled={isLoadingBranches || isSaving || isLoadingItems}
               >
                 {isLoadingBranches ? (
@@ -518,8 +517,7 @@ export default function ManageGiftCertificates() {
                 ) : (
                   branches.map((branch) => (
                     <option key={branch.value} value={branch.value}>
-                      {" "}
-                      {branch.label}{" "}
+                      {branch.label}
                     </option>
                   ))
                 )}
@@ -528,10 +526,10 @@ export default function ManageGiftCertificates() {
           </div>
 
           <div>
-            <label htmlFor="serviceIds" className={labelStyle}>
+            <Label htmlFor="serviceIds">
               Included {serviceType === "service" ? "Services" : "Sets"}
               <span className="text-red-500">*</span>
-            </label>
+            </Label>
             <ServiceMultiSelectGC
               name="serviceIds"
               options={availableItems}
@@ -542,8 +540,7 @@ export default function ManageGiftCertificates() {
             />
             {formError.serviceIds && (
               <p className={errorTextStyle}>
-                {" "}
-                {formError.serviceIds.join(", ")}{" "}
+                {formError.serviceIds.join(", ")}
               </p>
             )}
           </div>
@@ -557,17 +554,15 @@ export default function ManageGiftCertificates() {
               />
             </div>
             <div>
-              <label htmlFor="recipientEmail" className={labelStyle}>
-                {" "}
-                Recipient Email (Auto-filled, Editable){" "}
-              </label>
-              <input
+              <Label htmlFor="recipientEmail">
+                Recipient Email (Auto-filled, Editable)
+              </Label>
+              <Input
                 type="email"
                 name="recipientEmail"
                 id="recipientEmail"
                 value={recipientEmail}
                 onChange={(e) => setRecipientEmail(e.target.value)}
-                className={inputStyle}
                 aria-invalid={!!formError.recipientEmail}
                 aria-describedby={
                   formError.recipientEmail ? "email-error" : undefined
@@ -576,23 +571,20 @@ export default function ManageGiftCertificates() {
               />
               {formError.recipientEmail && (
                 <p id="email-error" className={errorTextStyle}>
-                  {" "}
-                  {formError.recipientEmail.join(", ")}{" "}
+                  {formError.recipientEmail.join(", ")}
                 </p>
               )}
             </div>
           </div>
 
           <div>
-            <label htmlFor="expiresAt" className={labelStyle}>
-              {" "}
-              Expires At (Optional){" "}
-            </label>
-            <input
+            <Label htmlFor="expiresAt">
+              Expires At (Optional)
+            </Label>
+            <Input
               type="date"
               name="expiresAt"
               id="expiresAt"
-              className={inputStyle}
               min={new Date().toISOString().split("T")[0]}
               aria-invalid={!!formError.expiresAt}
               aria-describedby={
@@ -601,8 +593,7 @@ export default function ManageGiftCertificates() {
             />
             {formError.expiresAt && (
               <p id="expires-error" className={errorTextStyle}>
-                {" "}
-                {formError.expiresAt.join(", ")}{" "}
+                {formError.expiresAt.join(", ")}
               </p>
             )}
           </div>
@@ -613,22 +604,30 @@ export default function ManageGiftCertificates() {
               onClick={handleSaveClick}
               disabled={isSaving || isAnyLoading}
             >
-              {isSaving ? "Creating..." : "Create Certificate"}
+              {isSaving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Create Certificate"
+              )}
             </Button>
           </div>
         </form>
-      </div>
+      </Card>
 
-      <div className={listSectionStyle}>
+      <Card className={listSectionStyle}>
         <h3 className="border-b border-customGray/30 bg-customGray/10 p-3 text-base font-semibold text-gray-700">
           Active Gift Certificates
         </h3>
         <div className="min-w-full overflow-x-auto">
           {isLoadingGCs ? (
-            <p className="py-10 text-center text-customBlack/70">
-              {" "}
-              Loading certificates...{" "}
-            </p>
+            <div className="p-4 space-y-3">
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+              <Skeleton className="h-12 w-full" />
+            </div>
           ) : !formError.general?.some((e) => e.includes("active gift cert")) &&
             activeGCs.length === 0 ? (
             <p className="py-10 text-center text-customBlack/60">
@@ -705,7 +704,7 @@ export default function ManageGiftCertificates() {
             </table>
           )}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

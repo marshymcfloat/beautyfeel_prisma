@@ -11,7 +11,22 @@ import {
   getTransactionsAction,
   cancelTransactionAction,
 } from "@/lib/ServerAction";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import { TransactionListData, ServerActionResponse } from "@/lib/Types";
 import { Status } from "@prisma/client";
 import {
@@ -19,9 +34,8 @@ import {
   XCircle,
   SlidersHorizontal,
   RotateCcw as RefreshIcon,
+  Loader2,
 } from "lucide-react";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
 import { format } from "date-fns";
 import {
   getCachedData,
@@ -43,6 +57,8 @@ export default function ManageTransactions() {
     useState<TransactionListData | null>(null);
   const [isPending, startTransition] = useTransition();
   const [showFilters, setShowFilters] = useState(false);
+  const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
+  const [pendingCancelTransactionId, setPendingCancelTransactionId] = useState<string | null>(null);
 
   const today = new Date();
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
@@ -215,22 +231,47 @@ export default function ManageTransactions() {
     setActionError(null);
   };
 
-  const handleCancelTransaction = (transactionId: string) => {
-    if (!window.confirm("Are you sure you want to cancel this transaction?"))
+  const handleCancelClick = (transactionId: string) => {
+    setPendingCancelTransactionId(transactionId);
+    setCancelDialogOpen(true);
+  };
+
+  const handleCancelTransaction = useCallback(async () => {
+    if (!pendingCancelTransactionId) {
+      setCancelDialogOpen(false);
       return;
+    }
 
     setActionError(null);
+    setCancelDialogOpen(false);
     startTransition(async () => {
-      const res = await cancelTransactionAction(transactionId);
-      if (res.success) {
-        closeModal();
-        invalidateCache(TRANSACTIONS_CACHE_KEY);
-        await loadData(filters, true);
-      } else {
-        setActionError(res.message ?? null);
+      try {
+        const res = await cancelTransactionAction(pendingCancelTransactionId);
+        if (res.success) {
+          toast.success("Transaction cancelled", {
+            description: "The transaction has been successfully cancelled.",
+          });
+          closeModal();
+          invalidateCache(TRANSACTIONS_CACHE_KEY);
+          await loadData(filters, true);
+        } else {
+          const errorMsg = res.message || "Failed to cancel transaction.";
+          setActionError(errorMsg);
+          toast.error("Failed to cancel transaction", {
+            description: errorMsg,
+          });
+        }
+      } catch (err: any) {
+        const errorMsg = err.message || "An unexpected error occurred.";
+        setActionError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingCancelTransactionId(null);
       }
     });
-  };
+  }, [pendingCancelTransactionId, filters, loadData, closeModal]);
 
   const formatCurrency = (value: number | null | undefined): string => {
     return (value ?? 0).toLocaleString("en-PH", {
@@ -323,7 +364,7 @@ export default function ManageTransactions() {
           <Button
             onClick={() => setShowFilters(!showFilters)}
             size="sm"
-            invert
+            variant="outline"
             className="flex w-full items-center justify-center gap-1.5 sm:hidden"
             aria-controls="transaction-filters"
             aria-expanded={showFilters}
@@ -343,44 +384,42 @@ export default function ManageTransactions() {
       >
         <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
           <div>
-            <label htmlFor="startDate" className={labelStyle}>
+            <Label htmlFor="startDate">
               From Date
-            </label>
-            <input
+            </Label>
+            <Input
               type="date"
               id="startDate"
               name="startDate"
               value={filters.startDate}
               onChange={handleFilterChange}
-              className={inputStyle}
               max={filters.endDate}
             />
           </div>
           <div>
-            <label htmlFor="endDate" className={labelStyle}>
+            <Label htmlFor="endDate">
               To Date
-            </label>
-            <input
+            </Label>
+            <Input
               type="date"
               id="endDate"
               name="endDate"
               value={filters.endDate}
               onChange={handleFilterChange}
-              className={inputStyle}
               min={filters.startDate}
               max={format(today, "yyyy-MM-dd")}
             />
           </div>
           <div>
-            <label htmlFor="status" className={labelStyle}>
+            <Label htmlFor="status">
               Status
-            </label>
+            </Label>
             <select
               id="status"
               name="status"
               value={filters.status}
               onChange={handleFilterChange}
-              className={`${inputStyle} bg-white`}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
             >
               <option value="">All Statuses</option>
               {ALL_STATUSES.map((s) => (
@@ -396,7 +435,7 @@ export default function ManageTransactions() {
               onClick={resetFilters}
               disabled={isPending || isLoading}
               size="sm"
-              invert
+              variant="outline"
               className="w-full justify-center !py-1.5"
               title="Reset Filters"
             >
@@ -407,13 +446,18 @@ export default function ManageTransactions() {
       </form>
 
       {}
-      {listError && <p className={errorMsgStyle}>{listError}</p>}
+      {listError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
+      )}
 
-      {}
       {isLoading && (
-        <p className="py-10 text-center text-customBlack/70">
-          Loading transactions...
-        </p>
+        <div className="p-4 space-y-3">
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+          <Skeleton className="h-12 w-full" />
+        </div>
       )}
       {!isLoading && !listError && transactions.length === 0 && (
         <p className="py-10 text-center text-customBlack/60">
@@ -451,33 +495,44 @@ export default function ManageTransactions() {
                       {formatCurrency(t.grandTotal)}
                     </td>
                     <td className={tdStyleBase}>
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${getStatusColor(t.status)}`}
+                      <Badge
+                        variant={
+                          t.status === Status.DONE
+                            ? "default"
+                            : t.status === Status.PENDING
+                              ? "secondary"
+                              : "destructive"
+                        }
+                        className={getStatusColor(t.status)}
                       >
                         {formatStatus(t.status)}
-                      </span>
+                      </Badge>
                     </td>
                     <td
                       className={`${tdStyleBase} whitespace-nowrap text-right`}
                     >
-                      <button
-                        onClick={() => handleViewDetails(t)}
-                        className="mr-2 inline-block p-1 text-blue-600 hover:text-blue-800 disabled:opacity-50"
-                        title="View Details"
-                      >
-                        <Eye size={16} />
-                      </button>
-                      {t.status !== Status.CANCELLED &&
-                        t.status !== Status.DONE && (
-                          <button
-                            onClick={() => handleCancelTransaction(t.id)}
-                            disabled={isPending}
-                            className="inline-block p-1 text-red-600 hover:text-red-800 disabled:opacity-50"
-                            title="Cancel Transaction"
-                          >
-                            <XCircle size={16} />
-                          </button>
-                        )}
+                    <Button
+                      onClick={() => handleViewDetails(t)}
+                      variant="ghost"
+                      size="sm"
+                      className="mr-2 h-8 w-8 p-0 text-blue-600 hover:text-blue-800 hover:bg-blue-50"
+                      title="View Details"
+                    >
+                      <Eye size={16} />
+                    </Button>
+                    {t.status !== Status.CANCELLED &&
+                      t.status !== Status.DONE && (
+                        <Button
+                          onClick={() => handleCancelClick(t.id)}
+                          disabled={isPending}
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
+                          title="Cancel Transaction"
+                        >
+                          <XCircle size={16} />
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -512,23 +567,27 @@ export default function ManageTransactions() {
                     {formatStatus(t.status)}
                   </span>
                   <div className="flex space-x-2">
-                    <button
+                    <Button
                       onClick={() => handleViewDetails(t)}
-                      className="inline-block p-0.5 text-blue-600 hover:text-blue-800 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-blue-600 hover:text-blue-800 hover:bg-blue-50"
                       title="View Details"
                     >
                       <Eye size={18} />
-                    </button>
+                    </Button>
                     {t.status !== Status.CANCELLED &&
                       t.status !== Status.DONE && (
-                        <button
-                          onClick={() => handleCancelTransaction(t.id)}
+                        <Button
+                          onClick={() => handleCancelClick(t.id)}
                           disabled={isPending}
-                          className="inline-block p-0.5 text-red-600 hover:text-red-800 disabled:opacity-50"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
                           title="Cancel Transaction"
                         >
                           <XCircle size={18} />
-                        </button>
+                        </Button>
                       )}
                   </div>
                 </div>
@@ -538,17 +597,23 @@ export default function ManageTransactions() {
         </div>
       )}
 
-      {}
-      <Modal
-        isOpen={isModalOpen && selectedTransaction !== null}
-        onClose={closeModal}
-        title={<DialogTitle>Transaction Details</DialogTitle>}
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
-        {selectedTransaction && (
-          <div className="space-y-4 text-sm">
-            {actionError && <p className={modalErrorStyle}>{actionError}</p>}
-            {}
+      <Dialog open={isModalOpen && selectedTransaction !== null} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-2xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Transaction Details</DialogTitle>
+            <DialogDescription>
+              View detailed information about this transaction.
+            </DialogDescription>
+          </DialogHeader>
+          {selectedTransaction && (
+            <>
+              <ScrollArea className="max-h-[calc(90vh-200px)]">
+                <div className="space-y-4 p-4 text-sm">
+                  {actionError && (
+                    <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+                      {actionError}
+                    </div>
+                  )}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 rounded border border-customGray/20 p-3 md:grid-cols-3">
               <div>
                 <span className="font-medium text-customBlack/70">ID:</span>
@@ -566,11 +631,18 @@ export default function ManageTransactions() {
               </div>
               <div>
                 <span className="font-medium text-customBlack/70">Status:</span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-xs font-semibold ${getStatusColor(selectedTransaction.status)}`}
+                <Badge
+                  variant={
+                    selectedTransaction.status === Status.DONE
+                      ? "default"
+                      : selectedTransaction.status === Status.PENDING
+                        ? "secondary"
+                        : "destructive"
+                  }
+                  className={`ml-2 ${getStatusColor(selectedTransaction.status)}`}
                 >
                   {formatStatus(selectedTransaction.status)}
-                </span>
+                </Badge>
               </div>
               <div>
                 <span className="font-medium text-customBlack/70">
@@ -599,7 +671,6 @@ export default function ManageTransactions() {
                 </div>
               )}
             </div>
-            {}
             <div className="rounded border border-customGray/20 p-3">
               <h4 className="mb-1.5 text-xs font-semibold uppercase text-customBlack/70">
                 Customer
@@ -613,7 +684,6 @@ export default function ManageTransactions() {
                 {selectedTransaction.customer?.email ?? "N/A"}
               </p>
             </div>
-            {}
             <div className="overflow-x-auto rounded border border-customGray/20">
               <h4 className="bg-customGray/5 p-2 text-xs font-semibold uppercase text-customBlack/70">
                 Availed Items
@@ -672,20 +742,20 @@ export default function ManageTransactions() {
                   No items availed.
                 </p>
               )}
-            </div>
-            {}
-            <div className="mt-4 border-t border-customGray/30 pt-3 text-right">
-              <p className="text-lg font-semibold text-customBlack">
-                Grand Total: {formatCurrency(selectedTransaction.grandTotal)}
-              </p>
-            </div>
-            {}
-            <div className="mt-5 flex flex-col gap-3 border-t border-customGray/30 pt-4 sm:flex-row sm:justify-end sm:space-x-3">
+                </div>
+                <div className="mt-4 border-t border-customGray/30 pt-3 text-right">
+                  <p className="text-lg font-semibold text-customBlack">
+                    Grand Total: {formatCurrency(selectedTransaction.grandTotal)}
+                  </p>
+                </div>
+              </div>
+            </ScrollArea>
+            <DialogFooter>
               <Button
                 type="button"
                 onClick={closeModal}
                 disabled={isPending}
-                invert
+                variant="outline"
                 className="w-full sm:w-auto"
               >
                 Close
@@ -694,20 +764,75 @@ export default function ManageTransactions() {
                 selectedTransaction.status !== Status.DONE && (
                   <Button
                     type="button"
-                    onClick={() =>
-                      handleCancelTransaction(selectedTransaction.id)
-                    }
+                    onClick={() => handleCancelClick(selectedTransaction.id)}
                     disabled={isPending}
+                    variant="destructive"
                     className="w-full sm:w-auto"
                   >
-                    {isPending ? "Cancelling..." : "Cancel Transaction"}
-                    <XCircle size={16} className="ml-1" />
+                    {isPending ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Cancelling...
+                      </>
+                    ) : (
+                      <>
+                        <XCircle size={16} className="mr-2" />
+                        Cancel Transaction
+                      </>
+                    )}
                   </Button>
                 )}
-            </div>
-          </div>
+            </DialogFooter>
+          </>
         )}
-      </Modal>
+        </DialogContent>
+      </Dialog>
+
+      {/* Cancel Confirmation Dialog */}
+      <Dialog open={cancelDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setCancelDialogOpen(false);
+          setPendingCancelTransactionId(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Cancel Transaction</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to cancel this transaction? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setCancelDialogOpen(false);
+                setPendingCancelTransactionId(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleCancelTransaction}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Cancelling...
+                </>
+              ) : (
+                <>
+                  <XCircle className="mr-2 h-4 w-4" />
+                  Cancel Transaction
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

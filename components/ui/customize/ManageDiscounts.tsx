@@ -7,7 +7,21 @@ import React, {
   useCallback,
   useRef,
 } from "react";
-import Button from "@/components/Buttons/Button";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { toast } from "sonner";
 import { DiscountType } from "@prisma/client";
 import {
   getAllServices,
@@ -18,9 +32,7 @@ import {
 } from "@/lib/ServerAction";
 import { MultiSelectProps, UIDiscountRuleWithServices } from "@/lib/Types";
 import Select, { MultiValue, ActionMeta, GroupBase } from "react-select";
-import { Power, Trash2, Plus, RotateCcw as RefreshIcon } from "lucide-react";
-import Modal from "@/components/Dialog/Modal";
-import DialogTitle from "@/components/Dialog/DialogTitle";
+import { Power, Trash2, Plus, RotateCcw as RefreshIcon, Loader2 } from "lucide-react";
 
 import {
   getCachedData,
@@ -132,6 +144,8 @@ export default function ManageDiscounts() {
   const [formError, setFormError] = useState<Record<string, string[]>>({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [applyToSpecific, setApplyToSpecific] = useState(false);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [pendingDeleteRuleId, setPendingDeleteRuleId] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
 
   const [discountRules, setDiscountRules] = useState<
@@ -282,19 +296,23 @@ export default function ManageDiscounts() {
           return;
         }
         if (result.success) {
-          setSuccessMessage(
-            result.message || "Discount rule created successfully!",
-          );
+          const successMsg = result.message || "Discount rule created successfully!";
+          toast.success("Discount rule created", {
+            description: successMsg,
+          });
           closeModal();
           invalidateCache(DISCOUNT_RULES_CACHE_KEY);
           await loadDiscountRules(true);
-          setTimeout(() => setSuccessMessage(null), 4000);
+          setSuccessMessage(null);
+          setFormError({});
         } else {
-          setFormError(
-            result.errors ?? {
-              general: [result.message || "Failed to create rule."],
-            },
-          );
+          const errors = result.errors ?? {
+            general: [result.message || "Failed to create rule."],
+          };
+          setFormError(errors);
+          toast.error("Failed to create discount rule", {
+            description: result.message || "Failed to create rule.",
+          });
         }
       } catch (error) {
         console.error("Error creating discount rule:", error);
@@ -312,14 +330,19 @@ export default function ManageDiscounts() {
         if (res.success) {
           invalidateCache(DISCOUNT_RULES_CACHE_KEY);
           await loadDiscountRules(true);
-          setSuccessMessage(
-            res.message ||
-              `Rule ${currentStatus ? "deactivated" : "activated"}.`,
-          );
-          setTimeout(() => setSuccessMessage(null), 4000);
+          const successMsg = res.message ||
+            `Rule ${currentStatus ? "deactivated" : "activated"}.`;
+          toast.success("Rule status updated", {
+            description: successMsg,
+          });
+          setSuccessMessage(null);
+          setListError(null);
         } else {
-          setListError(res.message || "Error toggling rule status.");
-          setTimeout(() => setListError(null), 4000);
+          const errorMsg = res.message || "Error toggling rule status.";
+          setListError(errorMsg);
+          toast.error("Failed to update rule status", {
+            description: errorMsg,
+          });
         }
       } catch (error) {
         console.error("Error toggling discount rule:", error);
@@ -329,34 +352,48 @@ export default function ManageDiscounts() {
     });
   };
 
-  const handleDeleteRule = (id: string) => {
-    if (
-      !window.confirm(
-        "Are you sure you want to delete this discount rule permanently? This action cannot be undone.",
-      )
-    )
+  const handleDeleteClick = (id: string) => {
+    setPendingDeleteRuleId(id);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteRule = useCallback(async () => {
+    if (!pendingDeleteRuleId) {
+      setDeleteDialogOpen(false);
       return;
+    }
     setListError(null);
     setSuccessMessage(null);
+    setDeleteDialogOpen(false);
     startTransition(async () => {
       try {
-        const res = await deleteDiscountRuleAction(id);
+        const res = await deleteDiscountRuleAction(pendingDeleteRuleId);
         if (res.success) {
+          const successMsg = res.message || "Rule deleted successfully.";
+          toast.success("Discount rule deleted", {
+            description: successMsg,
+          });
           invalidateCache(DISCOUNT_RULES_CACHE_KEY);
           await loadDiscountRules(true);
-          setSuccessMessage(res.message || "Rule deleted successfully.");
-          setTimeout(() => setSuccessMessage(null), 4000);
         } else {
-          setListError(res.message || "Error deleting rule.");
-          setTimeout(() => setListError(null), 4000);
+          const errorMsg = res.message || "Error deleting rule.";
+          setListError(errorMsg);
+          toast.error("Failed to delete rule", {
+            description: errorMsg,
+          });
         }
       } catch (error) {
         console.error("Error deleting discount rule:", error);
-        setListError("An unexpected error occurred while deleting the rule.");
-        setTimeout(() => setListError(null), 4000);
+        const errorMsg = "An unexpected error occurred while deleting the rule.";
+        setListError(errorMsg);
+        toast.error("Error", {
+          description: errorMsg,
+        });
+      } finally {
+        setPendingDeleteRuleId(null);
       }
     });
-  };
+  }, [pendingDeleteRuleId, loadDiscountRules]);
 
   const handleStartDateChange = (
     event: React.ChangeEvent<HTMLInputElement>,
@@ -416,20 +453,22 @@ export default function ManageDiscounts() {
         </div>
       </div>
 
-      {listError && <p className={listErrorMessageClasses}>{listError}</p>}
-      {successMessage && (
-        <p className={successMessageClasses}>{successMessage}</p>
+      {listError && (
+        <div className="mb-4 rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          {listError}
+        </div>
       )}
 
-      <div className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
+      <Card className="min-w-full overflow-x-auto rounded border border-customGray/30 bg-white/80 shadow-sm">
         <h3 className="border-b border-customGray/30 bg-customGray/10 p-3 text-base font-semibold text-gray-700">
           Current Discount Rules
         </h3>
         {isLoadingList ? (
-          <p className="py-10 text-center text-customBlack/70">
-            {" "}
-            Loading rules...{" "}
-          </p>
+          <div className="p-4 space-y-3">
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+            <Skeleton className="h-12 w-full" />
+          </div>
         ) : !listError && discountRules.length === 0 ? (
           <p className="py-10 text-center text-customBlack/60">
             {" "}
@@ -508,45 +547,52 @@ export default function ManageDiscounts() {
                     )}
                   </td>
                   <td className={tdStyleBase}>
-                    <span
-                      className={`${statusBadgeBase} ${rule.isActive ? statusActiveClasses : statusInactiveClasses}`}
+                    <Badge
+                      variant={rule.isActive ? "default" : "secondary"}
+                      className={rule.isActive ? statusActiveClasses : statusInactiveClasses}
                     >
                       {rule.isActive ? "Active" : "Inactive"}
-                    </span>
+                    </Badge>
                   </td>
                   <td className={`${tdStyleBase} whitespace-nowrap text-right`}>
-                    <button
+                    <Button
                       title={
                         rule.isActive ? "Deactivate Rule" : "Activate Rule"
                       }
                       onClick={() => handleToggleActive(rule.id, rule.isActive)}
                       disabled={isProcessing}
-                      className={`mr-2 inline-block rounded p-1 transition-colors disabled:opacity-50 ${rule.isActive ? "text-yellow-600 hover:bg-yellow-100" : "text-green-600 hover:bg-green-100"}`}
+                      variant="ghost"
+                      size="sm"
+                      className={`mr-2 h-8 w-8 p-0 ${rule.isActive ? "text-yellow-600 hover:bg-yellow-100" : "text-green-600 hover:bg-green-100"}`}
                     >
                       <Power size={16} />
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       title="Delete Rule"
-                      onClick={() => handleDeleteRule(rule.id)}
+                      onClick={() => handleDeleteClick(rule.id)}
                       disabled={isProcessing}
-                      className="inline-block rounded p-1 text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 w-8 p-0 text-red-600 hover:bg-red-100"
                     >
                       <Trash2 size={16} />
-                    </button>
+                    </Button>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         )}
-      </div>
+      </Card>
 
-      <Modal
-        isOpen={isModalOpen}
-        onClose={closeModal}
-        title={<DialogTitle>Create Discount Rule</DialogTitle>}
-        containerClassName="relative m-auto max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-lg bg-customOffWhite p-6 shadow-xl"
-      >
+      <Dialog open={isModalOpen} onOpenChange={(open) => !open && closeModal()}>
+        <DialogContent className="max-h-[90vh] max-w-xl overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create Discount Rule</DialogTitle>
+            <DialogDescription>
+              Fill in the form below to create a new discount rule.
+            </DialogDescription>
+          </DialogHeader>
         {formError.general && (
           <p className={modalErrorStyle}>{formError.general.join(", ")}</p>
         )}
@@ -579,15 +625,14 @@ export default function ManageDiscounts() {
         >
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="discountType" className={labelClasses}>
-                {" "}
-                Type*{" "}
-              </label>
+              <Label htmlFor="discountType">
+                Type <span className="text-red-500">*</span>
+              </Label>
               <select
                 id="discountType"
                 name="discountType"
                 required
-                className={inputSelectClasses}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 aria-invalid={!!formError.discountType}
                 aria-describedby={
                   formError.discountType ? "discountType-error" : undefined
@@ -596,8 +641,7 @@ export default function ManageDiscounts() {
               >
                 <option value={DiscountType.PERCENTAGE}>Percentage (%)</option>
                 <option value={DiscountType.FIXED_AMOUNT}>
-                  {" "}
-                  Fixed Amount (PHP){" "}
+                  Fixed Amount (PHP)
                 </option>
               </select>
               {formError.discountType && (
@@ -607,18 +651,17 @@ export default function ManageDiscounts() {
               )}
             </div>
             <div>
-              <label htmlFor="discountValue" className={labelClasses}>
-                {" "}
-                Value*{" "}
-              </label>
-              <input
+              <Label htmlFor="discountValue">
+                Value <span className="text-red-500">*</span>
+              </Label>
+              <Input
                 type="number"
                 id="discountValue"
                 name="discountValue"
                 required
                 min="0"
                 step="any"
-                className={inputSelectClasses}
+                className={!!formError.discountValue ? "border-destructive" : ""}
                 aria-invalid={!!formError.discountValue}
                 aria-describedby={
                   formError.discountValue ? "discountValue-error" : undefined
@@ -633,15 +676,14 @@ export default function ManageDiscounts() {
           </div>
 
           <div>
-            <label htmlFor="applyTo" className={labelClasses}>
-              {" "}
-              Apply To*{" "}
-            </label>
+            <Label htmlFor="applyTo">
+              Apply To <span className="text-red-500">*</span>
+            </Label>
             <select
               id="applyTo"
               name="applyTo"
               required
-              className={inputSelectClasses}
+              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               onChange={(e) =>
                 setApplyToSpecific(e.target.value === "specific")
               }
@@ -654,10 +696,9 @@ export default function ManageDiscounts() {
 
           {applyToSpecific && (
             <div>
-              <label htmlFor="serviceIds" className={labelClasses}>
-                {" "}
-                Select Services*{" "}
-              </label>
+              <Label htmlFor="serviceIds">
+                Select Services <span className="text-red-500">*</span>
+              </Label>
               <ServiceMultiSelect
                 name="serviceIds"
                 options={availableServices}
@@ -669,8 +710,7 @@ export default function ManageDiscounts() {
               />
               {formError.serviceIds && (
                 <p className={errorTextClasses}>
-                  {" "}
-                  {formError.serviceIds.join(", ")}{" "}
+                  {formError.serviceIds.join(", ")}
                 </p>
               )}
             </div>
@@ -678,16 +718,15 @@ export default function ManageDiscounts() {
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <label htmlFor="startDate" className={labelClasses}>
-                {" "}
-                Start Date*{" "}
-              </label>
-              <input
+              <Label htmlFor="startDate">
+                Start Date <span className="text-red-500">*</span>
+              </Label>
+              <Input
                 type="date"
                 id="startDate"
                 name="startDate"
                 required
-                className={inputSelectClasses}
+                className={!!formError.startDate ? "border-destructive" : ""}
                 aria-invalid={!!formError.startDate}
                 aria-describedby={
                   formError.startDate ? "startDate-error" : undefined
@@ -697,22 +736,20 @@ export default function ManageDiscounts() {
               />
               {formError.startDate && (
                 <p id="startDate-error" className={errorTextClasses}>
-                  {" "}
                   {formError.startDate.join(", ")}
                 </p>
               )}
             </div>
             <div>
-              <label htmlFor="endDate" className={labelClasses}>
-                {" "}
-                End Date*{" "}
-              </label>
-              <input
+              <Label htmlFor="endDate">
+                End Date <span className="text-red-500">*</span>
+              </Label>
+              <Input
                 type="date"
                 id="endDate"
                 name="endDate"
                 required
-                className={inputSelectClasses}
+                className={!!formError.endDate ? "border-destructive" : ""}
                 aria-invalid={!!formError.endDate}
                 aria-describedby={
                   formError.endDate ? "endDate-error" : undefined
@@ -728,44 +765,94 @@ export default function ManageDiscounts() {
           </div>
 
           <div>
-            <label htmlFor="description" className={labelClasses}>
-              {" "}
-              Description (Optional){" "}
-            </label>
-            <input
+            <Label htmlFor="description">
+              Description (Optional)
+            </Label>
+            <Input
               type="text"
               id="description"
               name="description"
               placeholder="e.g., Summer Kickoff Sale, VIP Discount"
               maxLength={100}
-              className={inputSelectClasses}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              {" "}
-              A short note for internal reference or display (optional).{" "}
+            <p className="mt-1 text-xs text-muted-foreground">
+              A short note for internal reference or display (optional).
             </p>
           </div>
-
-          <div className="flex justify-end space-x-3 border-t border-customGray/30 pt-4">
+          </form>
+          <DialogFooter>
             <Button
               type="button"
               onClick={closeModal}
               disabled={isProcessing}
-              invert
+              variant="outline"
             >
-              {" "}
-              Cancel{" "}
+              Cancel
             </Button>
             <Button
               type="button"
               onClick={handleCreateRuleClick}
               disabled={isProcessing || isLoadingServices}
             >
-              {isProcessing ? "Creating..." : "Create Discount Rule"}
+              {isProcessing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                "Create Discount Rule"
+              )}
             </Button>
-          </div>
-        </form>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setDeleteDialogOpen(false);
+          setPendingDeleteRuleId(null);
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Discount Rule</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this discount rule permanently?
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setDeleteDialogOpen(false);
+                setPendingDeleteRuleId(null);
+              }}
+              disabled={isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteRule}
+              disabled={isPending}
+            >
+              {isPending ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Rule
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
